@@ -8,6 +8,7 @@
 #include "ui/components/IconButton.h"
 #include "ui/components/StatusIndicator.h"
 #include "ui/theme/IconFactory.h"
+#include "core/WindowEnumerator.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -61,7 +62,14 @@ void MainWindow::buildUi()
     auto* windowRow = new QHBoxLayout();
     windowRow->setSpacing(StyleTheme::SpacingS);
     m_windowCombo = new AppComboBox(content);
+    m_windowCombo->setIconSize(QSize(20, 20));
+    connect(m_windowCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::onWindowIndexChanged);
+
     auto* refreshBtn = new IconButton("⟳", content);
+    refreshBtn->setToolTip("Làm mới danh sách cửa sổ");
+    connect(refreshBtn, &IconButton::clicked, this, &MainWindow::refreshWindowList);
+
     windowRow->addWidget(m_windowCombo, 1);
     windowRow->addWidget(refreshBtn);
     contentLay->addLayout(windowRow);
@@ -196,10 +204,8 @@ void MainWindow::buildUi()
 
 void MainWindow::populateMockData()
 {
-    // Mock: danh sách cửa sổ
-    m_windowCombo->addItem(QIcon(IconFactory::makeGameThumbnailIcon(22)), "ELDEN RING™");
-    m_windowCombo->addItem("Notepad");
-    m_windowCombo->addItem("Google Chrome");
+    // Quét danh sách các cửa sổ đang chạy thực tế trên máy
+    refreshWindowList();
 
     // Mock: ngôn ngữ nguồn
     m_srcLangCombo->addItem(QIcon(IconFactory::makeTranslateIcon(18, QColor("#cbd5e1"))), "Tự động nhận diện");
@@ -216,6 +222,65 @@ void MainWindow::populateMockData()
     m_profileCombo->addItem(QIcon(IconFactory::makeProfileIcon(18, QColor("#60a5fa"))), "Elden Ring - Default");
     m_profileCombo->addItem(QIcon(IconFactory::makeProfileIcon(18, QColor("#60a5fa"))), "Genshin Impact - Quest");
     m_profileCombo->addItem(QIcon(IconFactory::makeProfileIcon(18, QColor("#60a5fa"))), "Manga reader - Fullscreen");
+}
+
+quintptr MainWindow::selectedWindowHandle() const
+{
+    if (m_windowCombo->currentIndex() < 0) return 0;
+    return m_windowCombo->currentData().value<quintptr>();
+}
+
+void MainWindow::onWindowIndexChanged(int index)
+{
+    if (index < 0 || index >= m_windowCombo->count()) {
+        emit targetWindowSelected(0, QString(), QString());
+        return;
+    }
+    quintptr handle = m_windowCombo->itemData(index).value<quintptr>();
+    QString title = m_windowCombo->itemText(index);
+    emit targetWindowSelected(handle, title, QString());
+}
+
+void MainWindow::refreshWindowList()
+{
+    quintptr currentHandle = selectedWindowHandle();
+
+    m_windowCombo->blockSignals(true);
+    m_windowCombo->clear();
+
+    const auto windows = EZTranslator::WindowEnumerator::enumerateWindows();
+    int restoreIndex = -1;
+
+    for (int i = 0; i < windows.size(); ++i) {
+        const auto& win = windows.at(i);
+        QString text = win.title;
+        if (!win.processName.isEmpty()) {
+            text += QString(" (%1)").arg(win.processName);
+        }
+
+        QIcon icon = win.icon.isNull() ? QIcon(IconFactory::makeGameThumbnailIcon(20)) : win.icon;
+        m_windowCombo->addItem(icon, text, QVariant::fromValue(win.handle));
+        m_windowCombo->setItemData(i, QString("Tiêu đề: %1\nTiến trình: %2").arg(win.title, win.processName), Qt::ToolTipRole);
+
+        if (currentHandle != 0 && win.handle == currentHandle) {
+            restoreIndex = i;
+        }
+    }
+
+    m_windowCombo->setPlaceholderText("-- Chọn cửa sổ cần dịch --");
+    if (windows.isEmpty()) {
+        m_windowCombo->addItem(QIcon(IconFactory::makeGameThumbnailIcon(20)), "Không tìm thấy cửa sổ ứng dụng nào");
+        m_windowCombo->setCurrentIndex(-1);
+    } else {
+        if (restoreIndex >= 0) {
+            m_windowCombo->setCurrentIndex(restoreIndex);
+        } else {
+            m_windowCombo->setCurrentIndex(-1);
+        }
+    }
+
+    m_windowCombo->blockSignals(false);
+    onWindowIndexChanged(m_windowCombo->currentIndex());
 }
 
 void MainWindow::onTranslationStarted()

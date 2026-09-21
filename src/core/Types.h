@@ -4,6 +4,7 @@
 #include <QColor>
 #include <QRectF>
 #include <QList>
+#include <QIcon>
 #include <utility>
 
 namespace EZTranslator {
@@ -88,6 +89,7 @@ struct WindowInfo {
     quintptr handle{0};          // Abstraction cho HWND để không include windows.h
     QString title;
     QString processName;
+    QIcon icon;
     bool isVisible{true};
 };
 

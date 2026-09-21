@@ -14,8 +14,10 @@ set(CMAKE_AUTOUIC OFF)
 set(SOURCES
     src/main.cpp
 
-    # Core (types only, no backend)
+    # Core
     src/core/Types.h
+    src/core/WindowEnumerator.h
+    src/core/WindowEnumerator.cpp
 
     # App
     src/app/AppController.h
@@ -82,6 +84,7 @@ if(WIN32)
         user32
         gdi32
         dwmapi
+        shell32
     )
 endif()
 

@@ -25,19 +25,27 @@ class MainWindow : public QWidget
 public:
     explicit MainWindow(QWidget* parent = nullptr);
 
+    /** Lấy handle HWND của cửa sổ đang được chọn */
+    quintptr selectedWindowHandle() const;
+
+    /** Làm mới danh sách các cửa sổ đang chạy */
+    void refreshWindowList();
+
 signals:
     void requestStartTranslation();
     void requestOpenRegionEditor();
     void requestOpenSettings();
 
-    // Dùng mock data trong UI phase
-    void targetWindowChanged(int index);
+    void targetWindowSelected(quintptr handle, const QString& title, const QString& processName);
     void profileSelected(const QString& profileId);
 
 public slots:
     /** Gọi từ AppController khi state thay đổi */
     void onTranslationStarted();
     void onTranslationStopped();
+
+private slots:
+    void onWindowIndexChanged(int index);
 
 private:
     void buildUi();
