@@ -1,0 +1,8 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+<qresource prefix="/">
+    <!-- Mock screenshot cho Region Editor (UI phase) -->
+    <file>images/mock_game_screen.jpg</file>
+    <file>icons/chevron_down.png</file>
+</qresource>
+</RCC>
