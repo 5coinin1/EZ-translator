@@ -95,12 +95,12 @@ Nhờ vậy dù việc dịch mất một chút thời gian, người dùng vẫ
 
 - **Hệ điều hành**: Windows 10 / 11 (64-bit)
 - **Tiêu chuẩn C++**: **C++20** (yêu cầu GCC 12+, Clang 15+, hoặc MSVC 2019/2022 v16.10+)
-- **Framework GUI**: **Qt 6** (tối thiểu Qt 6.4+, các module: `Core`, `Gui`, `Widgets`)
+- **Framework GUI**: **Qt 6** (tối thiểu Qt 6.4+)
 - **CMake**: Phiên bản **>= 3.24**
 
 ---
 
-## 8. Cách chạy dự án
+## 8. Cách chạy 
 
 - **Cách 1 (Khuyến nghị)**: Nhấp đúp chuột vào file script [run.bat](run.bat) (hoặc chạy `.\run.bat` từ terminal). File này đã được chuẩn bị sẵn để nạp các thư viện và plugin nền tảng cần thiết.
 - **Cách 2**: Chạy trực tiếp file thực thi tại đường dẫn:
