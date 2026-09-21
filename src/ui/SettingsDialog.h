@@ -26,14 +26,17 @@ signals:
 private:
     void buildUi();
     QWidget* buildGeneralPage();
-    QWidget* buildTranslationPage();
-    QWidget* buildOcrPage();
     QWidget* buildOverlayPage();
-    QWidget* buildPerformancePage();
+    QWidget* buildOcrPage();
     QWidget* buildHotkeysPage();
-    QWidget* buildAdvancedPage();
+
+    void updatePreview();
 
     QListWidget*    m_sidebar{nullptr};
     QStackedWidget* m_stack{nullptr};
     EZTranslator::AppSettings m_settings;
+
+    // Appearance preview widgets
+    class QFrame* m_previewFrame{nullptr};
+    class QLabel* m_previewTextLabel{nullptr};
 };

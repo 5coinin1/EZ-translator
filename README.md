@@ -88,3 +88,24 @@ Nhờ vậy dù việc dịch mất một chút thời gian, người dùng vẫ
 3. **Nhớ trước khi dịch** — thử lấy từ nơi đã lưu trước, chỉ dịch khi thật sự cần.
 4. **Xử lý ngay trên cửa sổ đích** — hạn chế copy qua lại để nhanh và mượt.
 5. **Không cố thắng tốc độ máy bằng mẹo code** — thay vào đó tập trung che độ trễ và hiện chữ dần.
+
+---
+
+## 7. Yêu cầu phiên bản (Requirements)
+
+- **Hệ điều hành**: Windows 10 / 11 (64-bit)
+- **Tiêu chuẩn C++**: **C++20** (yêu cầu GCC 12+, Clang 15+, hoặc MSVC 2019/2022 v16.10+)
+- **Framework GUI**: **Qt 6** (tối thiểu Qt 6.4+, các module: `Core`, `Gui`, `Widgets`)
+- **CMake**: Phiên bản **>= 3.24**
+
+---
+
+## 8. Cách chạy dự án
+
+- **Cách 1 (Khuyến nghị)**: Nhấp đúp chuột vào file script [run.bat](run.bat) (hoặc chạy `.\run.bat` từ terminal). File này đã được chuẩn bị sẵn để nạp các thư viện và plugin nền tảng cần thiết.
+- **Cách 2**: Chạy trực tiếp file thực thi tại đường dẫn:
+  ```cmd
+  build\EZTranslator.exe
+  ```
+
+

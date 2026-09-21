@@ -46,6 +46,8 @@ set(SOURCES
     src/ui/components/StatusIndicator.cpp
     src/ui/components/DisplayModeCard.h
     src/ui/components/DisplayModeCard.cpp
+    src/ui/components/ToggleSwitch.h
+    src/ui/components/ToggleSwitch.cpp
 
     # UI – Region editor graphics & overlay
     src/ui/region/RoiGraphicsItem.h

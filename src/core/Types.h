@@ -114,6 +114,18 @@ struct AppSettings {
     bool useGpuAcceleration{false};
     double overlayOpacity{1.0};
 
+    // Nhóm Giao diện (Appearance - phong cách Translumo)
+    QColor windowColor{QColor(15, 23, 42, 230)};  // Window color
+    QColor fontColor{QColor(255, 255, 255)};       // Font color
+    int fontSize{15};                              // Font size (pt)
+    bool isBold{true};                             // In đậm
+    int lineSpacing{14};                           // Khoảng cách dòng
+    bool keepSourceFormatting{false};              // Giữ định dạng gốc
+    int textAlignment{0};                          // 0: Left, 1: Center, 2: Right
+    bool autoClearWindow{false};                   // Tự động xóa cửa sổ
+    bool excludeFromCapture{true};                 // Ẩn khỏi chụp/quay màn hình
+    int windowOpacity{85};                         // Độ mờ đục (0 - 100)
+
     // Nhóm Phím tắt
     QString toggleTranslationHotkey{"F8"};
 };
