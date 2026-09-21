@@ -28,4 +28,19 @@ namespace IconFactory
 
     /** Thumbnail game nhỏ cho combobox cửa sổ (Elden Ring) */
     QPixmap makeGameThumbnailIcon(int size = 22);
+
+    /** Icon màn hình máy tính / TV (Section 3) */
+    QPixmap makeMonitorIcon(int size = 22, QColor color = QColor("#cbd5e1"));
+
+    /** Icon khung overlay viền nét đứt (Section 3) */
+    QPixmap makeDashedOverlayIcon(int size = 22, QColor color = QColor("#cbd5e1"));
+
+    /** Icon thùng rác xóa vùng (Section 4) */
+    QPixmap makeTrashIcon(int size = 18, QColor color = QColor("#94a3b8"));
+
+    /** Icon nút radio hình tròn chọn chế độ */
+    QPixmap makeRadioCircleIcon(bool checked, int size = 18);
+
+    /** Icon con mắt (eye) để xem / hiển thị vùng dịch */
+    QPixmap makeEyeIcon(int size = 18, QColor color = QColor("#94a3b8"));
 }

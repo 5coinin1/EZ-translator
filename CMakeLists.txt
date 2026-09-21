@@ -44,12 +44,18 @@ set(SOURCES
     src/ui/components/IconButton.cpp
     src/ui/components/StatusIndicator.h
     src/ui/components/StatusIndicator.cpp
+    src/ui/components/DisplayModeCard.h
+    src/ui/components/DisplayModeCard.cpp
 
-    # UI – Region editor graphics
+    # UI – Region editor graphics & overlay
     src/ui/region/RoiGraphicsItem.h
     src/ui/region/RoiGraphicsItem.cpp
     src/ui/region/RoiCommands.h
     src/ui/region/RoiCommands.cpp
+    src/ui/region/RegionSnipperOverlay.h
+    src/ui/region/RegionSnipperOverlay.cpp
+    src/ui/region/RegionHighlightOverlay.h
+    src/ui/region/RegionHighlightOverlay.cpp
 
     # UI – Windows
     src/ui/MainWindow.h

@@ -6,6 +6,8 @@
 
 class MainWindow;
 class RegionEditorWindow;
+class RegionSnipperOverlay;
+class RegionHighlightOverlay;
 class SettingsDialog;
 class MiniFloatBar;
 class TrayIconManager;
@@ -35,6 +37,10 @@ public slots:
     void onRegionEditorSaved(const QList<EZTranslator::TranslationRegion>& regions);
     void onRegionEditorCancelled();
 
+    void onRegionSnapped(const EZTranslator::NormalizedRect& rect, const QRect& screenRect);
+    void onRegionSnapCancelled();
+    void onShowRegion();
+
     void onOpenSettings();
     void onSettingsSaved(const EZTranslator::AppSettings& settings);
 
@@ -46,6 +52,8 @@ private:
 
     MainWindow*               m_mainWindow{nullptr};
     RegionEditorWindow*       m_regionEditor{nullptr};
+    RegionSnipperOverlay*     m_snipperOverlay{nullptr};
+    RegionHighlightOverlay*   m_highlightOverlay{nullptr};
     SettingsDialog*           m_settingsDialog{nullptr};
     MiniFloatBar*             m_miniFloatBar{nullptr};
     TrayIconManager*          m_trayManager{nullptr};
@@ -53,4 +61,5 @@ private:
     EZTranslator::TranslationState m_state{EZTranslator::TranslationState::Idle};
     EZTranslator::AppSettings m_settings;
     QList<EZTranslator::TranslationRegion> m_regions;
+    QRect m_currentScreenRect;
 };

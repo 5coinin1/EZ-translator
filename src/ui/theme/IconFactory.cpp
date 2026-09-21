@@ -343,4 +343,179 @@ QPixmap makeGameThumbnailIcon(int size)
     return pix;
 }
 
+// ── Monitor / Screen Icon ───────────────────────────────────────────────────
+QPixmap makeMonitorIcon(int size, QColor color)
+{
+    QPixmap pix(size, size);
+    pix.fill(Qt::transparent);
+    QPainter p(&pix);
+    p.setRenderHint(QPainter::Antialiasing);
+
+    float penWidth = qMax(1.6f, size * 0.075f);
+    p.setPen(QPen(color, penWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+
+    float mx = size * 0.10f;
+    float my = size * 0.14f;
+    float sw = size - mx * 2.0f;
+    float sh = size * 0.56f;
+
+    // Outer screen rounded rect
+    p.drawRoundedRect(QRectF(mx, my, sw, sh), size * 0.08f, size * 0.08f);
+
+    // Stand neck
+    float cx = size * 0.5f;
+    float neckTop = my + sh;
+    float neckBottom = size * 0.82f;
+    p.drawLine(QPointF(cx, neckTop), QPointF(cx, neckBottom));
+
+    // Stand base
+    float baseW = size * 0.42f;
+    p.drawLine(QPointF(cx - baseW * 0.5f, neckBottom), QPointF(cx + baseW * 0.5f, neckBottom));
+
+    return pix;
+}
+
+// ── Dashed Screen Overlay Icon ──────────────────────────────────────────────
+QPixmap makeDashedOverlayIcon(int size, QColor color)
+{
+    QPixmap pix(size, size);
+    pix.fill(Qt::transparent);
+    QPainter p(&pix);
+    p.setRenderHint(QPainter::Antialiasing);
+
+    float penWidth = qMax(2.0f, size * 0.09f);
+    QPen pen(color, penWidth, Qt::CustomDashLine, Qt::RoundCap, Qt::RoundJoin);
+    QVector<qreal> dashes;
+    dashes << 2.2 << 2.0;
+    pen.setDashPattern(dashes);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+
+    float m = size * 0.14f;
+    float w = size - m * 2.0f;
+    float h = size * 0.68f;
+    float y = (size - h) * 0.5f;
+
+    p.drawRoundedRect(QRectF(m, y, w, h), size * 0.12f, size * 0.12f);
+
+    return pix;
+}
+
+// ── Trash Icon ──────────────────────────────────────────────────────────────
+QPixmap makeTrashIcon(int size, QColor color)
+{
+    QPixmap pix(size, size);
+    pix.fill(Qt::transparent);
+    QPainter p(&pix);
+    p.setRenderHint(QPainter::Antialiasing);
+
+    float penWidth = qMax(1.4f, size * 0.075f);
+    p.setPen(QPen(color, penWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+
+    float cx = size * 0.5f;
+
+    // Handle on lid
+    float handleW = size * 0.24f;
+    float handleH = size * 0.09f;
+    float lidY = size * 0.22f;
+    p.drawPolyline(QPolygonF() << QPointF(cx - handleW * 0.5f, lidY)
+                               << QPointF(cx - handleW * 0.5f, lidY - handleH)
+                               << QPointF(cx + handleW * 0.5f, lidY - handleH)
+                               << QPointF(cx + handleW * 0.5f, lidY));
+
+    // Lid bar
+    float lidW = size * 0.64f;
+    p.drawLine(QPointF(cx - lidW * 0.5f, lidY), QPointF(cx + lidW * 0.5f, lidY));
+
+    // Can body
+    float bodyTopW = size * 0.50f;
+    float bodyBotW = size * 0.40f;
+    float bodyTopY = lidY + penWidth;
+    float bodyBotY = size * 0.84f;
+
+    QPainterPath body;
+    body.moveTo(cx - bodyTopW * 0.5f, bodyTopY);
+    body.lineTo(cx - bodyBotW * 0.5f, bodyBotY);
+    body.lineTo(cx + bodyBotW * 0.5f, bodyBotY);
+    body.lineTo(cx + bodyTopW * 0.5f, bodyTopY);
+    p.drawPath(body);
+
+    // 2 vertical lines inside
+    float slotOffset = size * 0.08f;
+    p.drawLine(QPointF(cx - slotOffset, bodyTopY + size * 0.12f),
+               QPointF(cx - slotOffset * 0.8f, bodyBotY - size * 0.10f));
+    p.drawLine(QPointF(cx + slotOffset, bodyTopY + size * 0.12f),
+               QPointF(cx + slotOffset * 0.8f, bodyBotY - size * 0.10f));
+
+    return pix;
+}
+
+// ── Radio Circle Icon ───────────────────────────────────────────────────────
+QPixmap makeRadioCircleIcon(bool checked, int size)
+{
+    QPixmap pix(size, size);
+    pix.fill(Qt::transparent);
+    QPainter p(&pix);
+    p.setRenderHint(QPainter::Antialiasing);
+
+    float cx = size * 0.5f;
+    float cy = size * 0.5f;
+    float r = size * 0.44f;
+
+    if (checked) {
+        // Outer halo / subtle ring
+        p.setPen(QPen(QColor("#3b82f6"), 1.8f));
+        p.setBrush(QColor(59, 130, 246, 40));
+        p.drawEllipse(QPointF(cx, cy), r, r);
+
+        // Inner solid blue dot
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#3b82f6"));
+        p.drawEllipse(QPointF(cx, cy), r * 0.52f, r * 0.52f);
+    } else {
+        // Unchecked ring
+        p.setPen(QPen(QColor("#475569"), 1.6f));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(QPointF(cx, cy), r, r);
+    }
+
+    return pix;
+}
+
+// ── Eye / Show Region Icon ───────────────────────────────────────────────────
+QPixmap makeEyeIcon(int size, QColor color)
+{
+    QPixmap pix(size, size);
+    pix.fill(Qt::transparent);
+    QPainter p(&pix);
+    p.setRenderHint(QPainter::Antialiasing);
+
+    float pw = qMax(1.3f, size * 0.08f);
+    p.setPen(QPen(color, pw, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+
+    float cx = size * 0.5f;
+    float cy = size * 0.5f;
+    // Outer eye arc (almond shape)
+    QPainterPath eyePath;
+    eyePath.moveTo(size * 0.10f, cy);
+    eyePath.quadTo(cx, size * 0.20f, size * 0.90f, cy);
+    eyePath.quadTo(cx, size * 0.80f, size * 0.10f, cy);
+    p.drawPath(eyePath);
+
+    // Pupil circle
+    float pr = size * 0.155f;
+    p.drawEllipse(QPointF(cx, cy), pr, pr);
+
+    // Highlight dot
+    p.setPen(Qt::NoPen);
+    p.setBrush(color);
+    float hr = size * 0.055f;
+    p.drawEllipse(QPointF(cx - size * 0.06f, cy - size * 0.06f), hr, hr);
+
+    return pix;
+}
+
 } // namespace IconFactory

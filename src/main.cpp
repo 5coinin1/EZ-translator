@@ -15,6 +15,8 @@ void logToFile(QtMsgType, const QMessageLogContext&, const QString& msg)
     if (f.open(QIODevice::WriteOnly | QIODevice::Append)) {
         QTextStream ts(&f);
         ts << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss.zzz ") << msg << "\n";
+        ts.flush();
+        f.flush();
     }
 }
 

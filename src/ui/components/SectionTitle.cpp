@@ -22,6 +22,12 @@ public:
             case SectionIconType::Translate:
                 pix = IconFactory::makeTranslateIcon(size, QColor("#cbd5e1"));
                 break;
+            case SectionIconType::Monitor:
+                pix = IconFactory::makeMonitorIcon(size, QColor("#cbd5e1"));
+                break;
+            case SectionIconType::Crop:
+                pix = IconFactory::makeCropIcon(size, QColor("#cbd5e1"));
+                break;
             case SectionIconType::Profile:
                 pix = IconFactory::makeProfileIcon(size, QColor("#60a5fa"));
                 break;
