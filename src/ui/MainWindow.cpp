@@ -83,8 +83,17 @@ void MainWindow::buildUi()
     langBlockLay->addWidget(srcLabel);
     langBlockLay->addWidget(m_srcLangCombo);
 
-    auto* swapBtn = new IconButton("⇄", content);
+    // Wrap swapBtn trong container có spacer trên đầu để căn giữa với combobox
+    auto* swapWrapper = new QWidget(content);
+    auto* swapWrapLay = new QVBoxLayout(swapWrapper);
+    swapWrapLay->setContentsMargins(0, 0, 0, 0);
+    swapWrapLay->setSpacing(0);
+
+    auto* swapBtn = new IconButton("⇄", swapWrapper);
     swapBtn->setToolTip("Hoán đổi ngôn ngữ");
+
+    swapWrapLay->addStretch();   // Đẩy nút xuống căn đáy (ngang bằng combobox)
+    swapWrapLay->addWidget(swapBtn);
 
     auto* dstBlock = new QWidget(content);
     auto* dstBlockLay = new QVBoxLayout(dstBlock);
@@ -98,7 +107,7 @@ void MainWindow::buildUi()
     dstBlockLay->addWidget(m_dstLangCombo);
 
     langRow->addWidget(langBlock, 1);
-    langRow->addWidget(swapBtn);
+    langRow->addWidget(swapWrapper);
     langRow->addWidget(dstBlock, 1);
     contentLay->addLayout(langRow);
 
@@ -165,21 +174,7 @@ void MainWindow::buildUi()
 
     m_statusIndicator = new StatusIndicator(footer);
 
-    auto* sep1 = new QLabel("•", footer);
-    sep1->setStyleSheet(QString("color: %1; font-size: 7pt;").arg(StyleTheme::ColorBorder));
-    auto* regionCount = new QLabel("5 vùng", footer);
-    regionCount->setStyleSheet(QString("color: %1; font-size: 9pt;").arg(StyleTheme::ColorTextSecondary));
-
-    auto* sep2 = new QLabel("•", footer);
-    sep2->setStyleSheet(sep1->styleSheet());
-    auto* cacheLabel = new QLabel("Bộ nhớ đệm: 124 câu", footer);
-    cacheLabel->setStyleSheet(regionCount->styleSheet());
-
     footerLay->addWidget(m_statusIndicator);
-    footerLay->addWidget(sep1);
-    footerLay->addWidget(regionCount);
-    footerLay->addWidget(sep2);
-    footerLay->addWidget(cacheLabel);
     footerLay->addStretch();
 
     auto* settingsBtn = new QPushButton("⚙  Cài đặt", footer);
