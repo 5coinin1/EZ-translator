@@ -56,6 +56,7 @@ void AppController::initConnections()
 {
     // MainWindow signals
     connect(m_mainWindow, &MainWindow::requestStartTranslation, this, &AppController::onStartTranslation);
+    connect(m_mainWindow, &MainWindow::requestStopTranslation,  this, &AppController::onStopTranslation);
     connect(m_mainWindow, &MainWindow::requestOpenRegionEditor, this, &AppController::onOpenRegionEditor);
     connect(m_mainWindow, &MainWindow::requestClearRegion,      this, [this]() {
         m_regions.clear();
@@ -103,13 +104,13 @@ void AppController::start()
 
 void AppController::onStartTranslation()
 {
+    if (m_mainWindow->selectedWindowHandle() == 0) {
+        m_mainWindow->showSelectWindowWarning();
+        return;
+    }
+
     m_state = EZTranslator::TranslationState::Running;
     m_mainWindow->onTranslationStarted();
-    m_mainWindow->hide();
-
-    m_miniFloatBar->setRunning(true);
-    m_miniFloatBar->show();
-
     m_trayManager->updateState(true);
 }
 
@@ -117,13 +118,6 @@ void AppController::onStopTranslation()
 {
     m_state = EZTranslator::TranslationState::Idle;
     m_mainWindow->onTranslationStopped();
-    m_mainWindow->show();
-    m_mainWindow->raise();
-    m_mainWindow->activateWindow();
-
-    m_miniFloatBar->setRunning(false);
-    m_miniFloatBar->hide();
-
     m_trayManager->updateState(false);
 }
 
@@ -139,6 +133,11 @@ void AppController::onToggleTranslation()
 void AppController::onOpenRegionEditor()
 {
     quintptr handle = m_mainWindow->selectedWindowHandle();
+    if (handle == 0) {
+        m_mainWindow->showSelectWindowWarning();
+        return;
+    }
+
     QRect targetRect;
 
 #ifdef _WIN32

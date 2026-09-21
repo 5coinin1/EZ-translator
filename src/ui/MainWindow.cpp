@@ -294,7 +294,7 @@ void MainWindow::buildUi()
     m_clearRegionBtn->setToolTip("Xóa vùng dịch đã chọn và quay về chế độ dịch toàn bộ cửa sổ");
     m_clearRegionBtn->setStyleSheet(deleteBtnStyle);
 
-    connect(m_selectRegionBtn, &QPushButton::clicked, this, &MainWindow::requestOpenRegionEditor);
+    connect(m_selectRegionBtn, &QPushButton::clicked, this, &MainWindow::onSelectRegionClicked);
     connect(m_showRegionBtn,   &QPushButton::clicked, this, &MainWindow::requestShowRegion);
     connect(m_clearRegionBtn,  &QPushButton::clicked, this, &MainWindow::clearRegion);
 
@@ -337,9 +337,9 @@ void MainWindow::buildUi()
     contentLay->addStretch();
 
     // ── Nút Bắt đầu dịch ──────────────────────────────────────────────────────
-    auto* startBtn = new PrimaryButton(QIcon(IconFactory::makePlayIcon(18, Qt::white)), "  Bắt đầu dịch (F8)", content);
-    startBtn->setFixedHeight(46);
-    startBtn->setStyleSheet(R"(
+    m_startBtn = new PrimaryButton(QIcon(IconFactory::makePlayIcon(18, Qt::white)), "  Bắt đầu dịch (F8)", content);
+    m_startBtn->setFixedHeight(46);
+    m_startBtn->setStyleSheet(R"(
         QPushButton {
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6);
             color: #ffffff;
@@ -356,15 +356,15 @@ void MainWindow::buildUi()
             background: #1e40af;
         }
     )");
-    connect(startBtn, &QPushButton::clicked, this, &MainWindow::requestStartTranslation);
-    contentLay->addWidget(startBtn);
+    connect(m_startBtn, &QPushButton::clicked, this, &MainWindow::onStartButtonClicked);
+    contentLay->addWidget(m_startBtn);
 
     // Phím tắt bàn phím tiện lợi
     auto* f6 = new QShortcut(QKeySequence(Qt::Key_F6), this);
-    connect(f6, &QShortcut::activated, this, &MainWindow::requestOpenRegionEditor);
+    connect(f6, &QShortcut::activated, this, &MainWindow::onSelectRegionClicked);
 
     auto* f8 = new QShortcut(QKeySequence(Qt::Key_F8), this);
-    connect(f8, &QShortcut::activated, this, &MainWindow::requestStartTranslation);
+    connect(f8, &QShortcut::activated, this, &MainWindow::onStartButtonClicked);
 
     root->addWidget(content, 1);
 
@@ -563,19 +563,89 @@ MainWindow::DisplayMode MainWindow::displayMode() const
     return DisplayMode::FloatingWindow;
 }
 
+void MainWindow::onSelectRegionClicked()
+{
+    if (selectedWindowHandle() == 0) {
+        showSelectWindowWarning();
+        return;
+    }
+    emit requestOpenRegionEditor();
+}
+
+void MainWindow::onStartButtonClicked()
+{
+    if (m_isTranslating) {
+        emit requestStopTranslation();
+        return;
+    }
+
+    if (selectedWindowHandle() == 0) {
+        showSelectWindowWarning();
+        return;
+    }
+
+    emit requestStartTranslation();
+}
+
 void MainWindow::onTranslationStarted()
 {
+    m_isTranslating = true;
     m_statusIndicator->setState("Đang dịch...", QColor(StyleTheme::ColorSuccess));
+
+    if (m_startBtn) {
+        m_startBtn->setText("  Đang dịch (F8 để dừng)");
+        m_startBtn->setIcon(QIcon(IconFactory::makeStopIcon(16, Qt::white)));
+        m_startBtn->setStyleSheet(R"(
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #059669, stop:1 #10b981);
+                color: #ffffff;
+                border: none;
+                border-radius: 10px;
+                font-size: 10.5pt;
+                font-weight: 600;
+                padding: 0 20px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #047857, stop:1 #059669);
+            }
+            QPushButton:pressed {
+                background: #065f46;
+            }
+        )");
+    }
 }
 
 void MainWindow::onTranslationStopped()
 {
+    m_isTranslating = false;
     m_statusIndicator->setState("Sẵn sàng", QColor(StyleTheme::ColorSuccess));
+
+    if (m_startBtn) {
+        m_startBtn->setText("  Bắt đầu dịch (F8)");
+        m_startBtn->setIcon(QIcon(IconFactory::makePlayIcon(18, Qt::white)));
+        m_startBtn->setStyleSheet(R"(
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #3b82f6);
+                color: #ffffff;
+                border: none;
+                border-radius: 10px;
+                font-size: 10.5pt;
+                font-weight: 600;
+                padding: 0 20px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1d4ed8, stop:1 #2563eb);
+            }
+            QPushButton:pressed {
+                background: #1e40af;
+            }
+        )");
+    }
 }
 
 void MainWindow::showSelectWindowWarning()
 {
-    m_statusIndicator->setState("Vui lòng chọn cửa sổ trước!", QColor(StyleTheme::ColorWarning));
+    m_statusIndicator->setState("Vui lòng chọn cửa sổ cần dịch trước!", QColor(StyleTheme::ColorWarning));
     m_windowCombo->setFocus();
     m_windowCombo->showPopup();
 }

@@ -518,4 +518,20 @@ QPixmap makeEyeIcon(int size, QColor color)
     return pix;
 }
 
+QPixmap makeStopIcon(int size, QColor color)
+{
+    QPixmap pix(size, size);
+    pix.fill(Qt::transparent);
+    QPainter p(&pix);
+    p.setRenderHint(QPainter::Antialiasing);
+
+    float m = size * 0.24f;
+    float s = size - m * 2.0f;
+    QRectF r(m, m, s, s);
+    p.setPen(Qt::NoPen);
+    p.setBrush(color);
+    p.drawRoundedRect(r, 2.5, 2.5);
+    return pix;
+}
+
 } // namespace IconFactory

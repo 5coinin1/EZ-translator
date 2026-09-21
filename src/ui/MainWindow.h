@@ -57,6 +57,7 @@ public:
 
 signals:
     void requestStartTranslation();
+    void requestStopTranslation();
     void requestOpenRegionEditor();
     void requestClearRegion();
     void requestShowRegion();
@@ -72,6 +73,8 @@ public slots:
 
 private slots:
     void onWindowIndexChanged(int index);
+    void onSelectRegionClicked();
+    void onStartButtonClicked();
 
 private:
     void buildUi();
@@ -96,6 +99,9 @@ private:
     QLabel*          m_regionTitleLabel{nullptr};
     QLabel*          m_regionDetailLabel{nullptr};
     QLabel*          m_regionBadgeLabel{nullptr};
+
+    QPushButton*     m_startBtn{nullptr};
+    bool             m_isTranslating{false};
 
     bool                          m_hasRegion{false};
     EZTranslator::NormalizedRect  m_currentRegion;

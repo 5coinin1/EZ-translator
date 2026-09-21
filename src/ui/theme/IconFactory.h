@@ -43,4 +43,7 @@ namespace IconFactory
 
     /** Icon con mắt (eye) để xem / hiển thị vùng dịch */
     QPixmap makeEyeIcon(int size = 18, QColor color = QColor("#94a3b8"));
+
+    /** Icon hình vuông Stop ⏹ khi đang dịch */
+    QPixmap makeStopIcon(int size = 18, QColor color = Qt::white);
 }
