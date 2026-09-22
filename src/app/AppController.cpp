@@ -173,6 +173,11 @@ void AppController::onOpenRegionEditor()
     if (handle != 0) {
         HWND targetHwnd = reinterpret_cast<HWND>(handle);
         if (IsWindow(targetHwnd)) {
+            HWND rootHwnd = GetAncestor(targetHwnd, GA_ROOT);
+            if (rootHwnd && IsWindow(rootHwnd)) {
+                targetHwnd = rootHwnd;
+            }
+
             if (IsIconic(targetHwnd)) {
                 ShowWindow(targetHwnd, SW_RESTORE);
             }
@@ -203,6 +208,9 @@ void AppController::onOpenRegionEditor()
                 qRound(physW / dpr),
                 qRound(physH / dpr)
             );
+            qDebug() << "[AppController] TargetWindow:" << (void*)targetHwnd
+                     << "physClient:" << physX << physY << physW << physH
+                     << "dpr:" << dpr << "targetRect:" << targetRect;
         }
     }
 #endif
