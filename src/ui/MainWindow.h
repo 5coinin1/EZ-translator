@@ -61,6 +61,7 @@ signals:
     void requestOpenRegionEditor();
     void requestClearRegion();
     void requestShowRegion();
+    void requestPreviewRoi();
     void requestOpenSettings();
     void displayModeChanged(DisplayMode mode);
 
@@ -92,8 +93,9 @@ private:
 
     // Section 4: Chọn vùng dịch & Hiển thị vùng
     QPushButton*     m_selectRegionBtn{nullptr};
-    QPushButton*     m_clearRegionBtn{nullptr};
     QPushButton*     m_showRegionBtn{nullptr};
+    QPushButton*     m_previewRoiBtn{nullptr};
+    QPushButton*     m_clearRegionBtn{nullptr};
     QFrame*          m_regionDisplayFrame{nullptr};
     class RegionThumbnailWidget* m_regionThumbnail{nullptr};
     QLabel*          m_regionTitleLabel{nullptr};

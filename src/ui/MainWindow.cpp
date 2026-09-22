@@ -287,6 +287,13 @@ void MainWindow::buildUi()
     m_showRegionBtn->setToolTip("Hiển thị khung đỏ tại vị trí vùng dịch đã chọn trên màn hình");
     m_showRegionBtn->setStyleSheet(actionBtnStyle);
 
+    m_previewRoiBtn = new QPushButton(content);
+    m_previewRoiBtn->setIcon(QIcon(IconFactory::makeMonitorIcon(16, QColor("#38bdf8"))));
+    m_previewRoiBtn->setText("  Preview ROI");
+    m_previewRoiBtn->setFixedHeight(38);
+    m_previewRoiBtn->setToolTip("Xem trước trực tiếp hình ảnh thực tế cắt từ vùng dịch (ROI)");
+    m_previewRoiBtn->setStyleSheet(actionBtnStyle);
+
     m_clearRegionBtn = new QPushButton(content);
     m_clearRegionBtn->setIcon(QIcon(IconFactory::makeTrashIcon(16, QColor("#94a3b8"))));
     m_clearRegionBtn->setText("  Xóa vùng");
@@ -296,10 +303,12 @@ void MainWindow::buildUi()
 
     connect(m_selectRegionBtn, &QPushButton::clicked, this, &MainWindow::onSelectRegionClicked);
     connect(m_showRegionBtn,   &QPushButton::clicked, this, &MainWindow::requestShowRegion);
+    connect(m_previewRoiBtn,  &QPushButton::clicked, this, &MainWindow::requestPreviewRoi);
     connect(m_clearRegionBtn,  &QPushButton::clicked, this, &MainWindow::clearRegion);
 
     regionBtnRow->addWidget(m_selectRegionBtn, 4);
     regionBtnRow->addWidget(m_showRegionBtn, 3);
+    regionBtnRow->addWidget(m_previewRoiBtn, 3);
     regionBtnRow->addWidget(m_clearRegionBtn, 3);
     contentLay->addLayout(regionBtnRow);
 

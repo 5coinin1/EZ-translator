@@ -50,12 +50,15 @@ struct TranslationRegion {
 
     NormalizedRect normalizedRect;
 
+    bool enabled{true};              ///< false → RegionManager bỏ qua region này khi extract
+
     QColor tagColor{QColor(37, 99, 235)}; // Màu badge phân loại
     QString fontFamily{"Segoe UI"};
     int fontSize{14};
     QColor textColor{QColor(248, 250, 252)};
     QColor backgroundColor{QColor(17, 22, 34)}; // Màu che chữ gốc
 };
+
 
 /**
  * @brief Hồ sơ cấu hình các vùng dịch tương ứng một ứng dụng/màn hình

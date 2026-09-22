@@ -1,11 +1,14 @@
-﻿#include "capture/GdiWindowCapture.h"
+#include "capture/GdiWindowCapture.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
 
-// PW_RENDERFULLCONTENT may not be defined in older MinGW headers (Win8.1+ constant)
+// PrintWindow flags (Win8.1+)
+#ifndef PW_CLIENTONLY
+#define PW_CLIENTONLY 0x00000001
+#endif
 #ifndef PW_RENDERFULLCONTENT
 #define PW_RENDERFULLCONTENT 0x00000002
 #endif
@@ -109,10 +112,16 @@ private slots:
 
         HGDIOBJ hOld = SelectObject(hdcMem, hBmp);
 
-        // PrintWindow with PW_RENDERFULLCONTENT captures DWM/GPU-accelerated content
-        BOOL ok = PrintWindow(m_hwnd, hdcMem, PW_RENDERFULLCONTENT);
+        // Chụp chính xác Client Area (loại bỏ title bar và viền cửa sổ)
+        BOOL ok = PrintWindow(m_hwnd, hdcMem, PW_CLIENTONLY | PW_RENDERFULLCONTENT);
         if (!ok) {
-            // Fallback: BitBlt (works for software-rendered windows)
+            ok = PrintWindow(m_hwnd, hdcMem, PW_CLIENTONLY);
+        }
+        if (!ok) {
+            ok = PrintWindow(m_hwnd, hdcMem, PW_RENDERFULLCONTENT);
+        }
+        if (!ok) {
+            // Fallback: BitBlt (hdcSrc từ GetDC(m_hwnd) là Client DC)
             ok = BitBlt(hdcMem, 0, 0, w, h, hdcSrc, 0, 0, SRCCOPY | CAPTUREBLT);
         }
 

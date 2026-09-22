@@ -4,6 +4,7 @@
 #include <QPointer>
 #include "core/Types.h"
 #include "capture/IWindowCapture.h"
+#include "region/RegionManager.h"
 
 class MainWindow;
 class RegionEditorWindow;
@@ -13,7 +14,10 @@ class SettingsDialog;
 class MiniFloatBar;
 class TrayIconManager;
 
-namespace EZTranslator { class GdiWindowCapture; }
+namespace EZTranslator {
+    class GdiWindowCapture;
+    class RoiPreviewDialog;
+}
 
 /**
  * AppController – Điều phối luồng và trạng thái giữa các màn hình UI.
@@ -43,6 +47,8 @@ public slots:
     void onRegionSnapped(const EZTranslator::NormalizedRect& rect, const QRect& screenRect);
     void onRegionSnapCancelled();
     void onShowRegion();
+    void onPreviewRoiRequested();
+    void onPreviewClosed();
 
     void onOpenSettings();
     void onSettingsSaved(const EZTranslator::AppSettings& settings);
@@ -70,9 +76,12 @@ private:
     MiniFloatBar*             m_miniFloatBar{nullptr};
     TrayIconManager*          m_trayManager{nullptr};
     EZTranslator::GdiWindowCapture* m_capture{nullptr};
+    EZTranslator::RoiPreviewDialog* m_roiPreviewDialog{nullptr};
+    EZTranslator::RegionManager      m_regionManager;
 
     EZTranslator::TranslationState m_state{EZTranslator::TranslationState::Idle};
     EZTranslator::AppSettings m_settings;
     QList<EZTranslator::TranslationRegion> m_regions;
     QRect m_currentScreenRect;
+    bool  m_captureStartedForPreview{false};
 };

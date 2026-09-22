@@ -7,6 +7,8 @@
 #include "ui/MiniFloatBar.h"
 #include "ui/TrayIconManager.h"
 #include "capture/GdiWindowCapture.h"
+#include "region/RegionManager.h"
+#include "ui/RoiPreviewDialog.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -53,6 +55,7 @@ AppController::~AppController()
     delete m_snipperOverlay;
     delete m_highlightOverlay;
     delete m_miniFloatBar;
+    delete m_roiPreviewDialog;
 }
 
 void AppController::initConnections()
@@ -63,12 +66,14 @@ void AppController::initConnections()
     connect(m_mainWindow, &MainWindow::requestOpenRegionEditor, this, &AppController::onOpenRegionEditor);
     connect(m_mainWindow, &MainWindow::requestClearRegion,      this, [this]() {
         m_regions.clear();
+        m_regionManager.clear();
         if (m_highlightOverlay) {
             m_highlightOverlay->hideOverlay();
         }
         m_mainWindow->setShowRegionActive(false);
     });
     connect(m_mainWindow, &MainWindow::requestShowRegion,       this, &AppController::onShowRegion);
+    connect(m_mainWindow, &MainWindow::requestPreviewRoi,       this, &AppController::onPreviewRoiRequested);
     connect(m_mainWindow, &MainWindow::requestOpenSettings,     this, &AppController::onOpenSettings);
     // Khi user chon window moi -> bat dau/chuyen capture
     connect(m_mainWindow, &MainWindow::targetWindowSelected,    this, &AppController::onTargetWindowSelected);
@@ -136,7 +141,12 @@ void AppController::onStopTranslation()
     m_trayManager->updateState(false);
 
     if (m_capture) {
-        m_capture->stop();
+        if (!m_roiPreviewDialog || !m_roiPreviewDialog->isVisible()) {
+            m_capture->stop();
+            m_captureStartedForPreview = false;
+        } else {
+            m_captureStartedForPreview = true;
+        }
     }
 }
 
@@ -169,9 +179,30 @@ void AppController::onOpenRegionEditor()
             SetForegroundWindow(targetHwnd);
             BringWindowToTop(targetHwnd);
 
-            RECT rc = {};
-            GetWindowRect(targetHwnd, &rc);
-            targetRect = QRect(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top);
+            // Lấy client area (nội dung thực tế cần dịch) sang toạ độ màn hình (physical px)
+            RECT clientRc = {};
+            GetClientRect(targetHwnd, &clientRc);
+            POINT pt = {0, 0};
+            ClientToScreen(targetHwnd, &pt);
+
+            int physX = pt.x;
+            int physY = pt.y;
+            int physW = clientRc.right - clientRc.left;
+            int physH = clientRc.bottom - clientRc.top;
+
+            // Chuyển sang toạ độ logical của Qt theo tỉ lệ High-DPI của màn hình
+            qreal dpr = 1.0;
+            if (QScreen* screen = QGuiApplication::primaryScreen()) {
+                dpr = screen->devicePixelRatio();
+            }
+            if (dpr <= 0.0) dpr = 1.0;
+
+            targetRect = QRect(
+                qRound(physX / dpr),
+                qRound(physY / dpr),
+                qRound(physW / dpr),
+                qRound(physH / dpr)
+            );
         }
     }
 #endif
@@ -200,6 +231,7 @@ void AppController::onRegionSnapped(const EZTranslator::NormalizedRect& rect, co
 
     m_regions.clear();
     m_regions.append(reg);
+    m_regionManager.setRegions(m_regions);
     m_currentScreenRect = screenRect;
 
     if (m_highlightOverlay && m_highlightOverlay->isVisible()) {
@@ -261,9 +293,28 @@ void AppController::onShowRegion()
     if (handle != 0) {
         HWND targetHwnd = reinterpret_cast<HWND>(handle);
         if (IsWindow(targetHwnd)) {
-            RECT rc = {};
-            GetWindowRect(targetHwnd, &rc);
-            targetRect = QRect(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top);
+            RECT clientRc = {};
+            GetClientRect(targetHwnd, &clientRc);
+            POINT pt = {0, 0};
+            ClientToScreen(targetHwnd, &pt);
+
+            int physX = pt.x;
+            int physY = pt.y;
+            int physW = clientRc.right - clientRc.left;
+            int physH = clientRc.bottom - clientRc.top;
+
+            qreal dpr = 1.0;
+            if (QScreen* screen = QGuiApplication::primaryScreen()) {
+                dpr = screen->devicePixelRatio();
+            }
+            if (dpr <= 0.0) dpr = 1.0;
+
+            targetRect = QRect(
+                qRound(physX / dpr),
+                qRound(physY / dpr),
+                qRound(physW / dpr),
+                qRound(physH / dpr)
+            );
         }
     }
 #endif
@@ -278,10 +329,51 @@ void AppController::onShowRegion()
     m_mainWindow->setShowRegionActive(true);
 }
 
+void AppController::onPreviewRoiRequested()
+{
+    quintptr handle = m_mainWindow->selectedWindowHandle();
+    if (handle == 0) {
+        m_mainWindow->showSelectWindowWarning();
+        return;
+    }
+
+    if (m_regionManager.isEmpty()) {
+        m_mainWindow->setStatus("Chưa chọn vùng dịch! Bấm 'Chọn vùng' để tạo ROI.", QColor("#f59e0b"));
+        return;
+    }
+
+    if (!m_roiPreviewDialog) {
+        m_roiPreviewDialog = new EZTranslator::RoiPreviewDialog(nullptr);
+        connect(m_roiPreviewDialog, &EZTranslator::RoiPreviewDialog::closed,
+                this, &AppController::onPreviewClosed);
+    }
+
+    if (m_state != EZTranslator::TranslationState::Running && m_capture) {
+        if (!m_capture->isRunning()) {
+            m_capture->start(handle);
+            m_captureStartedForPreview = true;
+        }
+    }
+
+    m_roiPreviewDialog->show();
+    m_roiPreviewDialog->raise();
+    m_roiPreviewDialog->activateWindow();
+}
+
+void AppController::onPreviewClosed()
+{
+    if (m_captureStartedForPreview) {
+        if (m_capture && m_state != EZTranslator::TranslationState::Running) {
+            m_capture->stop();
+        }
+        m_captureStartedForPreview = false;
+    }
+}
 
 void AppController::onRegionEditorSaved(const QList<EZTranslator::TranslationRegion>& regions)
 {
     m_regions = regions;
+    m_regionManager.setRegions(regions);
     m_regionEditor->hide();
     m_mainWindow->show();
     m_mainWindow->raise();
@@ -322,7 +414,7 @@ void AppController::onQuit()
 
 void AppController::onTargetWindowSelected(quintptr handle, const QString& /*title*/, const QString& /*processName*/)
 {
-    if (m_state == EZTranslator::TranslationState::Running) {
+    if (m_state == EZTranslator::TranslationState::Running || m_captureStartedForPreview) {
         if (m_capture) m_capture->stop();
         if (handle != 0) {
             m_capture->start(handle);
@@ -332,8 +424,30 @@ void AppController::onTargetWindowSelected(quintptr handle, const QString& /*tit
 
 void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
 {
-    Q_UNUSED(frame)
-    // Sẵn sàng cấp frame cho pipeline tiếp theo: Region -> Detection -> OCR -> Translation
+    if (m_regionManager.isEmpty()) {
+        // Chưa có region nào – frame đi thẳng vào pipeline khi có detection sau này
+        return;
+    }
+
+    const QList<EZTranslator::RegionFrame> regionFrames = m_regionManager.extractRegions(frame);
+
+    // Cập nhật lên cửa sổ Preview ROI nếu người dùng đang mở
+    if (m_roiPreviewDialog && m_roiPreviewDialog->isVisible()) {
+        m_roiPreviewDialog->updateFrames(regionFrames);
+    }
+
+    // TODO (task detection/): gửi regionFrames vào ChangeDetector
+    // Hiện tại chỉ log để xác nhận pipeline hoạt động
+    if (!regionFrames.isEmpty()) {
+        qDebug() << "[RegionManager] Extracted" << regionFrames.size() << "RegionFrame(s)"
+                 << "from frame" << frame.image.width() << "x" << frame.image.height()
+                 << "ts=" << frame.timestamp;
+        for (const auto& rf : regionFrames) {
+            qDebug() << "  [ROI]" << rf.regionId << rf.regionName
+                     << "pixel:" << rf.pixelRect
+                     << "crop:" << rf.image.width() << "x" << rf.image.height();
+        }
+    }
 }
 
 void AppController::onCaptureError(EZTranslator::CaptureError error, const QString& detail)

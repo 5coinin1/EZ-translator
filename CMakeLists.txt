@@ -24,6 +24,11 @@ set(SOURCES
     src/capture/GdiWindowCapture.h
     src/capture/GdiWindowCapture.cpp
 
+    # Region – ROI extract pipeline
+    src/region/RegionFrame.h
+    src/region/RegionManager.h
+    src/region/RegionManager.cpp
+
     # App
     src/app/AppController.h
     src/app/AppController.cpp
@@ -71,6 +76,8 @@ set(SOURCES
     src/ui/RegionEditorWindow.cpp
     src/ui/SettingsDialog.h
     src/ui/SettingsDialog.cpp
+    src/ui/RoiPreviewDialog.h
+    src/ui/RoiPreviewDialog.cpp
     src/ui/MiniFloatBar.h
     src/ui/MiniFloatBar.cpp
     src/ui/TrayIconManager.h
@@ -104,4 +111,22 @@ endif()
 # UTF-8 source encoding (MinGW/GCC)
 if(MINGW OR GCC)
     target_compile_options(EZTranslator PRIVATE -finput-charset=UTF-8 -fexec-charset=UTF-8)
+endif()
+
+# --- Unit Tests ---
+find_package(Qt6 COMPONENTS Test QUIET)
+if(Qt6Test_FOUND)
+    add_executable(test_region_manager
+        tests/test_region_manager.cpp
+        src/region/RegionManager.h
+        src/region/RegionManager.cpp
+        src/region/RegionFrame.h
+        src/core/Types.h
+        src/capture/IWindowCapture.h
+    )
+    target_include_directories(test_region_manager PRIVATE src)
+    target_link_libraries(test_region_manager PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+    if(MINGW OR GCC)
+        target_compile_options(test_region_manager PRIVATE -finput-charset=UTF-8 -fexec-charset=UTF-8)
+    endif()
 endif()
