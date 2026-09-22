@@ -91,21 +91,40 @@ Nhờ vậy dù việc dịch mất một chút thời gian, người dùng vẫ
 
 ---
 
-## 7. Yêu cầu phiên bản (Requirements)
+## 7. Requirements
 
-- **Hệ điều hành**: Windows 10 / 11 (64-bit)
-- **Tiêu chuẩn C++**: **C++20** (yêu cầu GCC 12+, Clang 15+, hoặc MSVC 2019/2022 v16.10+)
-- **Framework GUI**: **Qt 6** (tối thiểu Qt 6.4+)
-- **CMake**: Phiên bản **>= 3.24**
+- CMake >= 3.24
+- C++20 compiler (GCC 12+, Clang 15+, or MSVC 2019/2022 v16.10+)
+- Qt 6.4+ (`Core`, `Gui`, `Widgets`)
+- MSYS2 / MinGW-w64 (Windows)
+
+| Platform | Install |
+|---|---|
+| Windows (MSYS2 / MinGW-w64) | `pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-qt6-base` |
 
 ---
 
-## 8. Cách chạy 
+## 8. Build
 
-- **Cách 1 (Khuyến nghị)**: Nhấp đúp chuột vào file script [run.bat](run.bat) (hoặc chạy `.\run.bat` từ terminal). File này đã được chuẩn bị sẵn để nạp các thư viện và plugin nền tảng cần thiết.
-- **Cách 2**: Chạy trực tiếp file thực thi tại đường dẫn:
-  ```cmd
-  build\EZTranslator.exe
-  ```
+Windows (MSYS2):
 
+```bash
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
 
+---
+
+## 9. Run
+
+Double-click `run.bat`, or from a terminal:
+
+```cmd
+.\run.bat
+```
+
+Or run directly (ensure `C:\msys64\mingw64\bin` is in `PATH`):
+
+```cmd
+build\EZTranslator.exe
+```
