@@ -49,6 +49,11 @@ bool isCandidateWindow(HWND hwnd, DWORD currentPid)
         return false;
     }
 
+    // Chỉ lấy cửa sổ cấp cao nhất thực sự (không phải popup/window con có owner)
+    if (GetWindow(hwnd, GW_OWNER) != nullptr) {
+        return false;
+    }
+
     // Lọc theo Extended Style: bỏ ToolWindow trừ khi có AppWindow
     LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
     if ((exStyle & WS_EX_TOOLWINDOW) && !(exStyle & WS_EX_APPWINDOW)) {

@@ -57,30 +57,19 @@ void RegionSnipperOverlay::paintEvent(QPaintEvent* /*event*/)
         p.fillRect(rect(), Qt::black);
     }
 
-    // 2. Làm tối toàn bộ màn hình để tạo hiệu ứng lớp phủ
-    p.fillRect(rect(), QColor(10, 15, 29, 120));
-
-    // 3. Làm sáng rõ vùng cửa sổ đích nếu có
-    if (m_targetRect.isValid() && m_targetRect.width() > 0 && m_targetRect.height() > 0 && !m_background.isNull()) {
-        // Vẽ lại ảnh chụp gốc sáng rõ tại vùng cửa sổ đích
-        p.drawPixmap(m_targetRect.topLeft(), m_background, m_targetRect);
-
-        // Viền thanh mảnh nhận diện cửa sổ (không có tiêu đề/badge)
-        p.setPen(QPen(QColor(56, 189, 248), 2, Qt::SolidLine));
-        p.setBrush(Qt::NoBrush);
-        p.drawRect(m_targetRect);
-    }
+    // 2. Làm tối toàn bộ màn hình để tạo hiệu ứng lớp phủ đồng nhất (Snipping Tool chuẩn)
+    p.fillRect(rect(), QColor(10, 15, 29, 130));
 
     p.setRenderHint(QPainter::Antialiasing, true);
 
-    // 4. Vẽ vùng đang kéo chuột chọn (Rubberband)
+    // 3. Vẽ vùng đang kéo chuột chọn (Rubberband)
     QRect sel = currentSelectionRect();
     if (sel.isValid() && sel.width() > 2 && sel.height() > 2) {
-        // Phủ xanh dương nhẹ trong suốt lên trên nền đã tối sẵn
-        p.fillRect(sel, QColor(37, 99, 235, 50));
+        // Phủ xanh dương nhẹ trong suốt
+        p.fillRect(sel, QColor(37, 99, 235, 45));
 
-        // Viền vùng chọn
-        p.setPen(QPen(QColor(59, 130, 246), 2, Qt::SolidLine));
+        // Viền vùng chọn sáng nét
+        p.setPen(QPen(QColor(56, 189, 248), 2, Qt::SolidLine));
         p.setBrush(Qt::NoBrush);
         p.drawRect(sel);
 
@@ -107,7 +96,7 @@ void RegionSnipperOverlay::paintEvent(QPaintEvent* /*event*/)
         p.drawText(pillRect, Qt::AlignCenter, sizeText);
     }
 
-    // 5. Thanh hướng dẫn trên đầu màn hình
+    // 4. Thanh hướng dẫn trên đầu màn hình
     int bannerW = 440;
     int bannerH = 34;
     QRect bannerRect((width() - bannerW) / 2, 20, bannerW, bannerH);
@@ -152,7 +141,10 @@ void RegionSnipperOverlay::mouseReleaseEvent(QMouseEvent* event)
         hide();
 
         if (sel.width() >= 10 && sel.height() >= 10) {
-            if (m_targetRect.isValid() && m_targetRect.width() > 0 && m_targetRect.height() > 0) {
+            // Nếu vùng chọn giao với targetRect của cửa sổ đích
+            if (m_targetRect.isValid() && m_targetRect.width() > 50 && m_targetRect.height() > 50
+                && m_targetRect.intersects(sel))
+            {
                 double nx = (double)(sel.x() - m_targetRect.x()) / m_targetRect.width();
                 double ny = (double)(sel.y() - m_targetRect.y()) / m_targetRect.height();
                 double nw = (double)sel.width() / m_targetRect.width();
@@ -163,23 +155,20 @@ void RegionSnipperOverlay::mouseReleaseEvent(QMouseEvent* event)
                 nw = std::clamp(nw, 0.0, 1.0 - nx);
                 nh = std::clamp(nh, 0.0, 1.0 - ny);
 
-                if (nw < 0.01 || nh < 0.01) {
-                    double fnx = (double)sel.x() / width();
-                    double fny = (double)sel.y() / height();
-                    double fnw = (double)sel.width() / width();
-                    double fnh = (double)sel.height() / height();
-                    EZTranslator::NormalizedRect norm{fnx, fny, fnw, fnh};
-                    emit regionSnapped(norm, sel);
-                    return;
-                }
-
                 EZTranslator::NormalizedRect norm{nx, ny, nw, nh};
                 emit regionSnapped(norm, sel);
             } else {
+                // Fallback: nếu kéo ngoài targetRect hoặc không có targetRect, chuẩn hoá theo kích thước màn hình
                 double nx = (double)sel.x() / width();
                 double ny = (double)sel.y() / height();
                 double nw = (double)sel.width() / width();
                 double nh = (double)sel.height() / height();
+
+                nx = std::clamp(nx, 0.0, 1.0);
+                ny = std::clamp(ny, 0.0, 1.0);
+                nw = std::clamp(nw, 0.0, 1.0 - nx);
+                nh = std::clamp(nh, 0.0, 1.0 - ny);
+
                 EZTranslator::NormalizedRect norm{nx, ny, nw, nh};
                 emit regionSnapped(norm, sel);
             }
