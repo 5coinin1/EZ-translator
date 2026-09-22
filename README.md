@@ -88,3 +88,43 @@ Nhờ vậy dù việc dịch mất một chút thời gian, người dùng vẫ
 3. **Nhớ trước khi dịch** — thử lấy từ nơi đã lưu trước, chỉ dịch khi thật sự cần.
 4. **Xử lý ngay trên cửa sổ đích** — hạn chế copy qua lại để nhanh và mượt.
 5. **Không cố thắng tốc độ máy bằng mẹo code** — thay vào đó tập trung che độ trễ và hiện chữ dần.
+
+---
+
+## 7. Requirements
+
+- CMake >= 3.24
+- C++20 compiler (GCC 12+, Clang 15+, or MSVC 2019/2022 v16.10+)
+- Qt 6.4+ (`Core`, `Gui`, `Widgets`)
+- MSYS2 / MinGW-w64 (Windows)
+
+| Platform | Install |
+|---|---|
+| Windows (MSYS2 / MinGW-w64) | `pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-qt6-base` |
+
+---
+
+## 8. Build
+
+Windows (MSYS2):
+
+```bash
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+---
+
+## 9. Run
+
+Double-click `run.bat`, or from a terminal:
+
+```cmd
+.\run.bat
+```
+
+Or run directly (ensure `C:\msys64\mingw64\bin` is in `PATH`):
+
+```cmd
+build\EZTranslator.exe
+```
