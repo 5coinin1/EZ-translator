@@ -19,6 +19,11 @@ set(SOURCES
     src/core/WindowEnumerator.h
     src/core/WindowEnumerator.cpp
 
+    # Capture – GDI window capture pipeline
+    src/capture/IWindowCapture.h
+    src/capture/GdiWindowCapture.h
+    src/capture/GdiWindowCapture.cpp
+
     # App
     src/app/AppController.h
     src/app/AppController.cpp

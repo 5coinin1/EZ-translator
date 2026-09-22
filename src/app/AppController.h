@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QPointer>
 #include "core/Types.h"
+#include "capture/IWindowCapture.h"
 
 class MainWindow;
 class RegionEditorWindow;
@@ -11,6 +12,8 @@ class RegionHighlightOverlay;
 class SettingsDialog;
 class MiniFloatBar;
 class TrayIconManager;
+
+namespace EZTranslator { class GdiWindowCapture; }
 
 /**
  * AppController – Điều phối luồng và trạng thái giữa các màn hình UI.
@@ -47,6 +50,15 @@ public slots:
     void onShowMainWindow();
     void onQuit();
 
+    /** Goi khi user chon cua so moi tu dropdown */
+    void onTargetWindowSelected(quintptr handle, const QString& title, const QString& processName);
+
+    /** Nhan frame tu capture va chuyen len MainWindow preview */
+    void onCaptureFrame(const EZTranslator::CapturedFrame& frame);
+
+    /** Nhan loi tu capture va hien thi warning */
+    void onCaptureError(EZTranslator::CaptureError error, const QString& detail);
+
 private:
     void initConnections();
 
@@ -57,6 +69,7 @@ private:
     SettingsDialog*           m_settingsDialog{nullptr};
     MiniFloatBar*             m_miniFloatBar{nullptr};
     TrayIconManager*          m_trayManager{nullptr};
+    EZTranslator::GdiWindowCapture* m_capture{nullptr};
 
     EZTranslator::TranslationState m_state{EZTranslator::TranslationState::Idle};
     EZTranslator::AppSettings m_settings;

@@ -6,6 +6,7 @@
 #include "ui/SettingsDialog.h"
 #include "ui/MiniFloatBar.h"
 #include "ui/TrayIconManager.h"
+#include "capture/GdiWindowCapture.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -38,6 +39,8 @@ AppController::AppController(QObject* parent)
     m_miniFloatBar = new MiniFloatBar();
     qDebug() << "Creating TrayIconManager...";
     m_trayManager = new TrayIconManager(this);
+    qDebug() << "Creating GdiWindowCapture...";
+    m_capture = new EZTranslator::GdiWindowCapture(this);
     qDebug() << "Setting mock regions...";
 
     initConnections();
@@ -67,6 +70,14 @@ void AppController::initConnections()
     });
     connect(m_mainWindow, &MainWindow::requestShowRegion,       this, &AppController::onShowRegion);
     connect(m_mainWindow, &MainWindow::requestOpenSettings,     this, &AppController::onOpenSettings);
+    // Khi user chon window moi -> bat dau/chuyen capture
+    connect(m_mainWindow, &MainWindow::targetWindowSelected,    this, &AppController::onTargetWindowSelected);
+
+    // Capture signals -> MainWindow preview (QueuedConnection dam bao cross-thread an toan)
+    connect(m_capture, &EZTranslator::GdiWindowCapture::frameReady,
+            this, &AppController::onCaptureFrame, Qt::QueuedConnection);
+    connect(m_capture, &EZTranslator::GdiWindowCapture::captureError,
+            this, &AppController::onCaptureError, Qt::QueuedConnection);
 
     // HighlightOverlay signals
     connect(m_highlightOverlay, &RegionHighlightOverlay::closed, this, [this]() {
@@ -112,6 +123,10 @@ void AppController::onStartTranslation()
     m_state = EZTranslator::TranslationState::Running;
     m_mainWindow->onTranslationStarted();
     m_trayManager->updateState(true);
+
+    if (m_capture) {
+        m_capture->start(m_mainWindow->selectedWindowHandle());
+    }
 }
 
 void AppController::onStopTranslation()
@@ -119,6 +134,10 @@ void AppController::onStopTranslation()
     m_state = EZTranslator::TranslationState::Idle;
     m_mainWindow->onTranslationStopped();
     m_trayManager->updateState(false);
+
+    if (m_capture) {
+        m_capture->stop();
+    }
 }
 
 void AppController::onToggleTranslation()
@@ -299,4 +318,46 @@ void AppController::onShowMainWindow()
 void AppController::onQuit()
 {
     qApp->quit();
+}
+
+void AppController::onTargetWindowSelected(quintptr handle, const QString& /*title*/, const QString& /*processName*/)
+{
+    if (m_state == EZTranslator::TranslationState::Running) {
+        if (m_capture) m_capture->stop();
+        if (handle != 0) {
+            m_capture->start(handle);
+        }
+    }
+}
+
+void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
+{
+    Q_UNUSED(frame)
+    // Sẵn sàng cấp frame cho pipeline tiếp theo: Region -> Detection -> OCR -> Translation
+}
+
+void AppController::onCaptureError(EZTranslator::CaptureError error, const QString& detail)
+{
+    Q_UNUSED(detail)
+    using CE = EZTranslator::CaptureError;
+    switch (error) {
+    case CE::WindowClosed:
+        m_mainWindow->setStatus("Cửa sổ đã đóng", QColor("#f59e0b"));
+        if (m_state == EZTranslator::TranslationState::Running) {
+            onStopTranslation();
+        }
+        break;
+    case CE::WindowMinimized:
+        // Không làm gì - capture tiếp tục khi window được restore
+        break;
+    case CE::PermissionDenied:
+        m_mainWindow->setStatus("Không có quyền capture cửa sổ này", QColor("#ef4444"));
+        if (m_state == EZTranslator::TranslationState::Running) {
+            onStopTranslation();
+        }
+        break;
+    default:
+        qDebug() << "[Capture] error:" << static_cast<int>(error) << detail;
+        break;
+    }
 }
