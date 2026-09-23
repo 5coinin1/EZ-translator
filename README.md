@@ -106,7 +106,24 @@ Nhờ vậy dù việc dịch mất một chút thời gian, người dùng vẫ
 
 ## 8. Build
 
-Windows (MSYS2):
+Lần đầu cần tải dependency nhị phân (ONNX Runtime + model OCR). `build.bat` tự
+gọi script này khi thiếu, hoặc chạy tay:
+
+```powershell
+pwsh -File scripts/fetch_deps.ps1
+```
+
+Script tải từ nguồn chính thức và **kiểm tra SHA256** mỗi file:
+ONNX Runtime DirectML (NuGet), DirectML runtime (NuGet), model PP-OCRv4 (RapidOCR),
+từ điển (PaddleOCR). Đã có sẵn thì bỏ qua.
+
+Sau đó:
+
+```cmd
+build.bat
+```
+
+Hoặc thủ công (MSYS2 / CMake):
 
 ```bash
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release

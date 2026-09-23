@@ -5,6 +5,19 @@ set "ROOT=%~dp0"
 set "BUILD=%ROOT%build"
 set "CONFIG=Release"
 
+rem ---------- 0. Tai dependency nhi phan (ONNX Runtime + model) neu thieu ----------
+set "NEED_DEPS="
+if not exist "%ROOT%third_party\onnxruntime\bin\onnxruntime.dll" set "NEED_DEPS=1"
+if not exist "%ROOT%models\ch_PP-OCRv4_det_infer.onnx" set "NEED_DEPS=1"
+if defined NEED_DEPS (
+    echo [build] Thieu dependency - dang tai ^(ONNX Runtime + model^)...
+    pwsh -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\fetch_deps.ps1"
+    if errorlevel 1 (
+        echo [build] Tai dependency that bai.
+        exit /b 1
+    )
+)
+
 rem ---------- 1. Tim Qt6 ----------
 set "QT="
 if defined QTDIR if exist "%QTDIR%\bin\Qt6Core.dll" set "QT=%QTDIR%"
@@ -50,6 +63,11 @@ if exist "%WDQ%" (
     "%WDQ%" --release --no-translations "%APPDIR%\EZTranslator.exe"
 ) else (
     echo [build] Khong co windeployqt - chay se dua vao PATH/QT_PLUGIN_PATH.
+)
+
+rem Qt6Test.dll cho cac target unit test (neu co)
+if exist "%QT%\bin\Qt6Test.dll" if exist "%APPDIR%\test_detection.exe" (
+    copy /y "%QT%\bin\Qt6Test.dll" "%APPDIR%\" >nul
 )
 
 echo.

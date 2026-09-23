@@ -7,7 +7,10 @@
 #include "ui/MiniFloatBar.h"
 #include "ui/TrayIconManager.h"
 #include "capture/GdiWindowCapture.h"
+#include "capture/WgcWindowCapture.h"
 #include "region/RegionManager.h"
+#include "ocr/OcrTextAssembler.h"
+#include "overlay/TextOverlay.h"
 #include "ui/RoiPreviewDialog.h"
 
 #ifdef _WIN32
@@ -41,8 +44,13 @@ AppController::AppController(QObject* parent)
     m_miniFloatBar = new MiniFloatBar();
     qDebug() << "Creating TrayIconManager...";
     m_trayManager = new TrayIconManager(this);
+    qDebug() << "Creating WgcWindowCapture...";
+    m_wgcCapture = new EZTranslator::WgcWindowCapture(this);
     qDebug() << "Creating GdiWindowCapture...";
-    m_capture = new EZTranslator::GdiWindowCapture(this);
+    m_gdiCapture = new EZTranslator::GdiWindowCapture(this);
+    m_capture = m_wgcCapture; // mặc định ưu tiên WGC, fallback trong startCapture()
+    qDebug() << "Creating TextOverlay...";
+    m_textOverlay = new EZTranslator::TextOverlay();
     qDebug() << "Setting mock regions...";
 
     initConnections();
@@ -56,6 +64,7 @@ AppController::~AppController()
     delete m_highlightOverlay;
     delete m_miniFloatBar;
     delete m_roiPreviewDialog;
+    delete m_textOverlay;
 }
 
 void AppController::initConnections()
@@ -67,6 +76,10 @@ void AppController::initConnections()
     connect(m_mainWindow, &MainWindow::requestClearRegion,      this, [this]() {
         m_regions.clear();
         m_regionManager.clear();
+        m_changeDetector.reset();
+        m_regionTextBoxes.clear();
+        if (m_textOverlay)
+            m_textOverlay->hideOverlay();
         if (m_highlightOverlay) {
             m_highlightOverlay->hideOverlay();
         }
@@ -78,11 +91,15 @@ void AppController::initConnections()
     // Khi user chon window moi -> bat dau/chuyen capture
     connect(m_mainWindow, &MainWindow::targetWindowSelected,    this, &AppController::onTargetWindowSelected);
 
-    // Capture signals -> MainWindow preview (QueuedConnection dam bao cross-thread an toan)
-    connect(m_capture, &EZTranslator::GdiWindowCapture::frameReady,
-            this, &AppController::onCaptureFrame, Qt::QueuedConnection);
-    connect(m_capture, &EZTranslator::GdiWindowCapture::captureError,
-            this, &AppController::onCaptureError, Qt::QueuedConnection);
+    // Capture signals -> AppController (QueuedConnection dam bao cross-thread an toan)
+    // Cả 2 backend cùng nối; chỉ backend đang chạy mới phát signal.
+    EZTranslator::IWindowCapture* const backends[] = {m_wgcCapture, m_gdiCapture};
+    for (EZTranslator::IWindowCapture* capture : backends) {
+        connect(capture, &EZTranslator::IWindowCapture::frameReady,
+                this, &AppController::onCaptureFrame, Qt::QueuedConnection);
+        connect(capture, &EZTranslator::IWindowCapture::captureError,
+                this, &AppController::onCaptureError, Qt::QueuedConnection);
+    }
 
     // HighlightOverlay signals
     connect(m_highlightOverlay, &RegionHighlightOverlay::closed, this, [this]() {
@@ -111,6 +128,104 @@ void AppController::initConnections()
     connect(m_settingsDialog, &SettingsDialog::settingsSaved, this, &AppController::onSettingsSaved);
 }
 
+bool AppController::startCapture(quintptr windowHandle)
+{
+    if (windowHandle == 0)
+        return false;
+
+    // Ưu tiên Windows.Graphics.Capture; nếu không start được (OS cũ, helper lỗi,
+    // cửa sổ không hỗ trợ) thì fallback sang GDI PrintWindow.
+    if (m_wgcCapture && m_wgcCapture->start(windowHandle)) {
+        m_capture = m_wgcCapture;
+        qDebug() << "[AppController] Capture backend: WGC";
+        return true;
+    }
+
+    if (m_gdiCapture && m_gdiCapture->start(windowHandle)) {
+        m_capture = m_gdiCapture;
+        qDebug() << "[AppController] Capture backend: GDI (fallback)";
+        return true;
+    }
+
+    qWarning() << "[AppController] No capture backend could start";
+    return false;
+}
+
+namespace {
+
+/** Thư mục model OCR: ưu tiên biến môi trường EZ_MODELS_DIR, mặc định trong repo. */
+QString ocrModelsDir()
+{
+    const QByteArray override = qgetenv("EZ_MODELS_DIR");
+    if (!override.isEmpty())
+        return QString::fromLocal8Bit(override);
+    return QStringLiteral(EZ_DEFAULT_MODELS_DIR);
+}
+
+} // namespace
+
+bool AppController::ensureOcrLoaded()
+{
+    if (m_ocrEngine.isLoaded())
+        return true;
+    if (m_ocrLoadAttempted)
+        return false;
+    m_ocrLoadAttempted = true;
+
+    const QString dir = ocrModelsDir();
+    const bool english = m_settings.sourceLanguage.startsWith(QStringLiteral("en"),
+                                                             Qt::CaseInsensitive);
+
+    EZTranslator::OcrOptions options;
+    options.detModelPath = dir + QStringLiteral("/ch_PP-OCRv4_det_infer.onnx");
+    if (english) {
+        options.recModelPath = dir + QStringLiteral("/en_PP-OCRv4_rec_mobile.onnx");
+        options.dictionaryPath = dir + QStringLiteral("/en_dict.txt");
+    } else {
+        options.recModelPath = dir + QStringLiteral("/ch_PP-OCRv4_rec_infer.onnx");
+        options.dictionaryPath = dir + QStringLiteral("/ppocr_keys_v1.txt");
+    }
+    options.useGpu = true;
+
+    QString error;
+    if (!m_ocrEngine.load(options, &error)) {
+        qWarning() << "[OCR] Load failed:" << error;
+        return false;
+    }
+    qInfo() << "[OCR] Loaded. Provider =" << m_ocrEngine.providerName()
+            << "det =" << options.detModelPath << "rec =" << options.recModelPath;
+    return true;
+}
+
+QRect AppController::targetClientRect() const
+{
+    QRect rect;
+#ifdef _WIN32
+    const quintptr handle = m_mainWindow->selectedWindowHandle();
+    if (handle != 0) {
+        HWND targetHwnd = reinterpret_cast<HWND>(handle);
+        if (IsWindow(targetHwnd)) {
+            RECT clientRc = {};
+            POINT origin = {0, 0};
+            if (GetClientRect(targetHwnd, &clientRc) && ClientToScreen(targetHwnd, &origin)) {
+                const int physW = clientRc.right - clientRc.left;
+                const int physH = clientRc.bottom - clientRc.top;
+                qreal dpr = 1.0;
+                if (QScreen* screen = QGuiApplication::primaryScreen())
+                    dpr = screen->devicePixelRatio();
+                if (dpr <= 0.0)
+                    dpr = 1.0;
+                if (physW > 0 && physH > 0) {
+                    rect = QRect(qRound(origin.x / dpr), qRound(origin.y / dpr),
+                                 qRound(physW / dpr), qRound(physH / dpr));
+                }
+            }
+        }
+    }
+#endif
+    return rect;
+}
+
 void AppController::start()
 {
     m_mainWindow->show();
@@ -129,8 +244,10 @@ void AppController::onStartTranslation()
     m_mainWindow->onTranslationStarted();
     m_trayManager->updateState(true);
 
+    ensureOcrLoaded();
+
     if (m_capture) {
-        m_capture->start(m_mainWindow->selectedWindowHandle());
+        startCapture(m_mainWindow->selectedWindowHandle());
     }
 }
 
@@ -139,6 +256,9 @@ void AppController::onStopTranslation()
     m_state = EZTranslator::TranslationState::Idle;
     m_mainWindow->onTranslationStopped();
     m_trayManager->updateState(false);
+
+    if (m_textOverlay)
+        m_textOverlay->hideOverlay();
 
     if (m_capture) {
         if (!m_roiPreviewDialog || !m_roiPreviewDialog->isVisible()) {
@@ -240,6 +360,8 @@ void AppController::onRegionSnapped(const EZTranslator::NormalizedRect& rect, co
     m_regions.clear();
     m_regions.append(reg);
     m_regionManager.setRegions(m_regions);
+    m_changeDetector.reset();
+    m_regionTextBoxes.clear();
     m_currentScreenRect = screenRect;
 
     if (m_highlightOverlay && m_highlightOverlay->isVisible()) {
@@ -358,7 +480,7 @@ void AppController::onPreviewRoiRequested()
 
     if (m_state != EZTranslator::TranslationState::Running && m_capture) {
         if (!m_capture->isRunning()) {
-            m_capture->start(handle);
+            startCapture(handle);
             m_captureStartedForPreview = true;
         }
     }
@@ -382,6 +504,8 @@ void AppController::onRegionEditorSaved(const QList<EZTranslator::TranslationReg
 {
     m_regions = regions;
     m_regionManager.setRegions(regions);
+    m_changeDetector.reset();
+    m_regionTextBoxes.clear();
     m_regionEditor->hide();
     m_mainWindow->show();
     m_mainWindow->raise();
@@ -425,7 +549,7 @@ void AppController::onTargetWindowSelected(quintptr handle, const QString& /*tit
     if (m_state == EZTranslator::TranslationState::Running || m_captureStartedForPreview) {
         if (m_capture) m_capture->stop();
         if (handle != 0) {
-            m_capture->start(handle);
+            startCapture(handle);
         }
     }
 }
@@ -433,7 +557,8 @@ void AppController::onTargetWindowSelected(quintptr handle, const QString& /*tit
 void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
 {
     if (m_regionManager.isEmpty()) {
-        // Chưa có region nào – frame đi thẳng vào pipeline khi có detection sau này
+        if (m_textOverlay && m_textOverlay->isShowing())
+            m_textOverlay->hideOverlay();
         return;
     }
 
@@ -444,18 +569,65 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
         m_roiPreviewDialog->updateFrames(regionFrames);
     }
 
-    // TODO (task detection/): gửi regionFrames vào ChangeDetector
-    // Hiện tại chỉ log để xác nhận pipeline hoạt động
-    if (!regionFrames.isEmpty()) {
-        qDebug() << "[RegionManager] Extracted" << regionFrames.size() << "RegionFrame(s)"
-                 << "from frame" << frame.image.width() << "x" << frame.image.height()
-                 << "ts=" << frame.timestamp;
-        for (const auto& rf : regionFrames) {
-            qDebug() << "  [ROI]" << rf.regionId << rf.regionName
-                     << "pixel:" << rf.pixelRect
-                     << "crop:" << rf.image.width() << "x" << rf.image.height();
+    QSize frameSize;
+    for (const EZTranslator::RegionFrame& regionFrame : regionFrames) {
+        if (!regionFrame.isValid())
+            continue;
+
+        frameSize = regionFrame.sourceFrameSize;
+
+        // Nguyên tắc #2: bỏ qua vùng không đổi để tránh OCR/dịch lại
+        if (!m_changeDetector.hasChanged(regionFrame.regionId, regionFrame.image))
+            continue;
+
+        if (!m_ocrEngine.isLoaded())
+            continue;
+
+        // Detection (box) + Recognition (text) tách riêng, rồi ghép thành văn bản.
+        const QList<EZTranslator::OcrTextBox> boxes = m_ocrEngine.recognize(regionFrame.image);
+        const QString text = EZTranslator::OcrTextAssembler::assemble(boxes);
+
+        const EZTranslator::OcrTimings timings = m_ocrEngine.lastTimings();
+        qDebug() << "[OCR]" << regionFrame.regionId << "->" << boxes.size() << "line(s),"
+                 << "det" << timings.detMs << "ms, rec" << timings.recMs << "ms"
+                 << "(cached" << timings.recCached << ")";
+        if (!text.isEmpty())
+            qDebug().noquote() << "[OCR text]" << text;
+
+        // Map box từ toạ độ ROI sang toạ độ frame để overlay đặt đúng vị trí.
+        QList<EZTranslator::OcrTextBox> frameBoxes;
+        frameBoxes.reserve(boxes.size());
+        for (const EZTranslator::OcrTextBox& box : boxes) {
+            EZTranslator::OcrTextBox mapped = box;
+            mapped.rect = box.rect.translated(regionFrame.pixelRect.topLeft());
+            frameBoxes.append(mapped);
         }
+        m_regionTextBoxes.insert(regionFrame.regionId, frameBoxes);
+
+        // TODO (task translation/): đưa text vào ITranslator rồi thay text hiển thị
     }
+
+    updateOverlay(frameSize);
+}
+
+void AppController::updateOverlay(const QSize& frameSize)
+{
+    if (!m_textOverlay)
+        return;
+
+    QList<EZTranslator::OcrTextBox> all;
+    for (auto it = m_regionTextBoxes.constBegin(); it != m_regionTextBoxes.constEnd(); ++it)
+        all.append(it.value());
+
+    const QRect client = targetClientRect();
+    if (all.isEmpty() || frameSize.isEmpty() || !client.isValid() || client.isEmpty()) {
+        if (m_textOverlay->isShowing())
+            m_textOverlay->hideOverlay();
+        return;
+    }
+
+    m_textOverlay->showOverTarget(client);
+    m_textOverlay->setTextBoxes(all, frameSize);
 }
 
 void AppController::onCaptureError(EZTranslator::CaptureError error, const QString& detail)

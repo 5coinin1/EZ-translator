@@ -30,6 +30,10 @@ ui_*.h
 *.log
 ez_debug.log
 
+# Binary deps tải bằng scripts/fetch_deps.ps1 (ONNX Runtime + model OCR)
+models/
+third_party/onnxruntime/
+
 # IDE & Editor specific files
 .vscode/
 .vs/
