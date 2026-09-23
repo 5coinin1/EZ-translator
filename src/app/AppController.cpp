@@ -185,15 +185,25 @@ bool AppController::ensureOcrLoaded()
         options.recModelPath = dir + QStringLiteral("/ch_PP-OCRv4_rec_infer.onnx");
         options.dictionaryPath = dir + QStringLiteral("/ppocr_keys_v1.txt");
     }
-    options.useGpu = true;
+    options.useGpu = m_settings.ocrUseGpu;
 
     QString error;
     if (!m_ocrEngine.load(options, &error)) {
         qWarning() << "[OCR] Load failed:" << error;
+        m_mainWindow->setStatus(QStringLiteral("Không nạp được OCR: ") + error, QColor("#ef4444"));
         return false;
     }
-    qInfo() << "[OCR] Loaded. Provider =" << m_ocrEngine.providerName()
+
+    const QString provider = m_ocrEngine.providerName();
+    qInfo() << "[OCR] Loaded. Provider =" << provider
             << "det =" << options.detModelPath << "rec =" << options.recModelPath;
+
+    // Cho người dùng biết đang chạy GPU hay CPU (máy không có GPU rời sẽ là CPU).
+    if (provider == QLatin1String("CPU"))
+        m_mainWindow->setStatus(QStringLiteral("OCR: CPU (không có GPU DX12/DirectML)"),
+                                QColor("#f59e0b"));
+    else
+        m_mainWindow->setStatus(QStringLiteral("OCR: ") + provider, QColor("#22c55e"));
     return true;
 }
 

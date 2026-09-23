@@ -110,6 +110,7 @@ struct AppSettings {
     QString translationEngine{"offline"}; // "offline", "google"
     QString ocrEngine{"windows_ocr"};     // "windows_ocr", "tesseract"
     QString sourceLanguage{"en"};         // ngôn ngữ nguồn cho OCR ("en", "zh", ...)
+    bool ocrUseGpu{true};                 // true = thử GPU (DirectML), tự fallback CPU
     int cacheCapacityLines{5000};
 
     // Nhóm Hiển thị & Hiệu suất

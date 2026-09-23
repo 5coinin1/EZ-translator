@@ -26,7 +26,9 @@ int main(int argc, char** argv)
     options.detModelPath = dir + QStringLiteral("/ch_PP-OCRv4_det_infer.onnx");
     options.recModelPath = dir + QStringLiteral("/en_PP-OCRv4_rec_mobile.onnx");
     options.dictionaryPath = dir + QStringLiteral("/en_dict.txt");
-    options.useGpu = true;
+    // EZ_OCR_USE_GPU=0 để thử nhánh CPU (fallback khi máy không có GPU).
+    const QByteArray gpuEnv = qgetenv("EZ_OCR_USE_GPU");
+    options.useGpu = gpuEnv.isEmpty() ? true : (gpuEnv != "0");
 
     OcrEngine engine;
     QString error;

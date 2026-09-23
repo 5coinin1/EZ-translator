@@ -35,6 +35,20 @@ theo khe) → phát hiện đoạn theo khe dòng / thụt đầu dòng → `ass
 `recognize(image)` = `OcrDetector.detect` → `OcrRecognizer.recognize`. Giữ ONNX
 Runtime kín trong `OcrRuntime` (Detector/Recognizer không phụ thuộc header ORT).
 
+## Execution Provider (GPU → CPU fallback)
+
+`OcrRuntime` chọn provider lúc chạy: thử **DirectML/CUDA**, nếu build ORT không có
+symbol hoặc append/session lỗi thì **tự fallback về CPU** — không cần cấu hình gì.
+Máy không có GPU rời (hoặc không có DX12) vẫn chạy được.
+
+- `OcrRuntime::configure(useGpu)` trả tên provider thực tế; `OcrEngine::providerName()`
+  cho biết đang chạy `DirectML`/`CUDA`/`CPU`.
+- Trên **GPU**: rec **batch** nhiều dòng (DirectML không cho Run song song).
+- Trên **CPU**: tắt batch, chạy các dòng **song song** nhiều worker (tối ưu cho máy
+  không GPU).
+- App hiển thị provider lên thanh trạng thái; cờ `AppSettings::ocrUseGpu` (mặc định
+  true) để buộc CPU nếu cần.
+
 ## Tài nguyên
 
 - ONNX Runtime (DirectML) vendored ở `third_party/onnxruntime/`.
