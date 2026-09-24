@@ -10,6 +10,13 @@
 #include <windows.h>
 #endif
 
+// Header ONNX Runtime dùng `_stdcall` (chỉ MSVC định nghĩa); MinGW chỉ có
+// `__stdcall`. Shim để build được ONNX Runtime (bản DirectML chính thức là MSVC)
+// bằng MinGW — ABI trên x64 vốn không phân biệt calling convention.
+#if defined(__MINGW32__) && !defined(_stdcall)
+#define _stdcall __stdcall
+#endif
+// SAL annotation chỉ MSVC có; ORT tự fallback nhưng MinGW sal.h định nghĩa trước.
 #if defined(_WIN32) && !defined(_Frees_ptr_opt_)
 #define _Frees_ptr_opt_
 #endif
