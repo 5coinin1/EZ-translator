@@ -55,6 +55,10 @@ set(SOURCES
     src/app/AppController.h
     src/app/AppController.cpp
 
+    # Offline translation
+    src/translation/OfflineTranslator.h
+    src/translation/OfflineTranslator.cpp
+
     # UI – theme
     src/ui/theme/StyleTheme.h
     src/ui/theme/StyleTheme.cpp

@@ -1,15 +1,18 @@
 #pragma once
 
-#include <QObject>
-#include <QPointer>
-#include <QHash>
-#include "core/Types.h"
 #include "capture/IWindowCapture.h"
-#include "region/RegionManager.h"
+#include "core/Types.h"
 #include "detection/ChangeDetector.h"
 #include "ocr/OcrEngine.h"
+#include "region/RegionManager.h"
+#include <QHash>
+#include <QObject>
+#include <QPointer>
 
 class MainWindow;
+class OfflineTranslator;
+class QDialog;
+class QPlainTextEdit;
 class RegionEditorWindow;
 class RegionSnipperOverlay;
 class RegionHighlightOverlay;
@@ -17,24 +20,25 @@ class SettingsDialog;
 class MiniFloatBar;
 class TrayIconManager;
 
-namespace EZTranslator {
+namespace EZTranslator
+{
     class GdiWindowCapture;
     class WgcWindowCapture;
     class RoiPreviewDialog;
     class TextOverlay;
-}
+} // namespace EZTranslator
 
 /**
  * AppController – Điều phối luồng và trạng thái giữa các màn hình UI.
  *
- * Đảm bảo các Window không gọi trực tiếp lẫn nhau. Mọi tương tác chuyển màn hình,
- * chuyển trạng thái đều đi qua AppController bằng Qt Signals & Slots.
+ * Đảm bảo các Window không gọi trực tiếp lẫn nhau. Mọi tương tác chuyển màn
+ * hình, chuyển trạng thái đều đi qua AppController bằng Qt Signals & Slots.
  */
 class AppController : public QObject
 {
     Q_OBJECT
 public:
-    explicit AppController(QObject* parent = nullptr);
+    explicit AppController(QObject *parent = nullptr);
     ~AppController() override;
 
     /** Khởi động ứng dụng, hiển thị MainWindow và khay hệ thống */
@@ -46,32 +50,52 @@ public slots:
     void onToggleTranslation();
 
     void onOpenRegionEditor();
-    void onRegionEditorSaved(const QList<EZTranslator::TranslationRegion>& regions);
+    void
+    onRegionEditorSaved(const QList<EZTranslator::TranslationRegion> &regions);
     void onRegionEditorCancelled();
 
-    void onRegionSnapped(const EZTranslator::NormalizedRect& rect, const QRect& screenRect);
+    void onRegionSnapped(const EZTranslator::NormalizedRect &rect,
+                         const QRect &screenRect);
     void onRegionSnapCancelled();
     void onShowRegion();
     void onPreviewRoiRequested();
     void onPreviewClosed();
 
     void onOpenSettings();
-    void onSettingsSaved(const EZTranslator::AppSettings& settings);
+    void onSettingsSaved(const EZTranslator::AppSettings &settings);
 
     void onShowMainWindow();
     void onQuit();
 
     /** Goi khi user chon cua so moi tu dropdown */
-    void onTargetWindowSelected(quintptr handle, const QString& title, const QString& processName);
+    void onTargetWindowSelected(quintptr handle, const QString &title,
+                                const QString &processName);
 
     /** Nhan frame tu capture va chuyen len MainWindow preview */
-    void onCaptureFrame(const EZTranslator::CapturedFrame& frame);
+    void onCaptureFrame(const EZTranslator::CapturedFrame &frame);
 
     /** Nhan loi tu capture va hien thi warning */
-    void onCaptureError(EZTranslator::CaptureError error, const QString& detail);
+    void onCaptureError(EZTranslator::CaptureError error, const QString &detail);
 
 private:
     void initConnections();
+
+    void initTranslationUi();
+    void resetTranslationSession();
+
+    OfflineTranslator *m_translator{nullptr};
+    QDialog *m_translationWindow{nullptr};
+
+    QPlainTextEdit *m_sourceText{nullptr};
+    QPlainTextEdit *m_translatedText{nullptr};
+
+    QHash<QString, QImage> m_ocrImages;
+    QHash<QString, QString> m_ocrTexts;
+
+    QString m_lastSubmittedText;
+
+    qint64 m_acceptFramesAfter{0};
+    qint64 m_nextOcrAt{0};
 
     /** Chọn backend capture: ưu tiên WGC, fallback GDI. */
     bool startCapture(quintptr windowHandle);
@@ -83,24 +107,24 @@ private:
     [[nodiscard]] QRect targetClientRect() const;
 
     /** Cập nhật overlay từ box OCR đã tích luỹ theo vùng. */
-    void updateOverlay(const QSize& frameSize);
+    void updateOverlay(const QSize &frameSize);
 
-    MainWindow*               m_mainWindow{nullptr};
-    RegionEditorWindow*       m_regionEditor{nullptr};
-    RegionSnipperOverlay*     m_snipperOverlay{nullptr};
-    RegionHighlightOverlay*   m_highlightOverlay{nullptr};
-    SettingsDialog*           m_settingsDialog{nullptr};
-    MiniFloatBar*             m_miniFloatBar{nullptr};
-    TrayIconManager*          m_trayManager{nullptr};
-    EZTranslator::WgcWindowCapture* m_wgcCapture{nullptr};
-    EZTranslator::GdiWindowCapture* m_gdiCapture{nullptr};
-    EZTranslator::IWindowCapture*   m_capture{nullptr}; ///< backend đang hoạt động
-    EZTranslator::RoiPreviewDialog* m_roiPreviewDialog{nullptr};
-    EZTranslator::TextOverlay*      m_textOverlay{nullptr};
-    EZTranslator::RegionManager      m_regionManager;
-    EZTranslator::ChangeDetector     m_changeDetector;
-    EZTranslator::OcrEngine          m_ocrEngine;
-    bool                             m_ocrLoadAttempted{false};
+    MainWindow *m_mainWindow{nullptr};
+    RegionEditorWindow *m_regionEditor{nullptr};
+    RegionSnipperOverlay *m_snipperOverlay{nullptr};
+    RegionHighlightOverlay *m_highlightOverlay{nullptr};
+    SettingsDialog *m_settingsDialog{nullptr};
+    MiniFloatBar *m_miniFloatBar{nullptr};
+    TrayIconManager *m_trayManager{nullptr};
+    EZTranslator::WgcWindowCapture *m_wgcCapture{nullptr};
+    EZTranslator::GdiWindowCapture *m_gdiCapture{nullptr};
+    EZTranslator::IWindowCapture *m_capture{nullptr}; ///< backend đang hoạt động
+    EZTranslator::RoiPreviewDialog *m_roiPreviewDialog{nullptr};
+    EZTranslator::TextOverlay *m_textOverlay{nullptr};
+    EZTranslator::RegionManager m_regionManager;
+    EZTranslator::ChangeDetector m_changeDetector;
+    EZTranslator::OcrEngine m_ocrEngine;
+    bool m_ocrLoadAttempted{false};
     /// Box đã OCR theo từng vùng (toạ độ frame), giữ lại để overlay luôn đầy đủ
     /// kể cả khi vùng đó không đổi ở frame hiện tại.
     QHash<QString, QList<EZTranslator::OcrTextBox>> m_regionTextBoxes;
@@ -109,5 +133,5 @@ private:
     EZTranslator::AppSettings m_settings;
     QList<EZTranslator::TranslationRegion> m_regions;
     QRect m_currentScreenRect;
-    bool  m_captureStartedForPreview{false};
+    bool m_captureStartedForPreview{false};
 };

@@ -23,13 +23,13 @@
 class RegionThumbnailWidget : public QWidget
 {
 public:
-    explicit RegionThumbnailWidget(QWidget* parent = nullptr)
+    explicit RegionThumbnailWidget(QWidget *parent = nullptr)
         : QWidget(parent)
     {
         setFixedSize(44, 32);
     }
 
-    void setRegion(bool hasRegion, const EZTranslator::NormalizedRect& rect)
+    void setRegion(bool hasRegion, const EZTranslator::NormalizedRect &rect)
     {
         m_hasRegion = hasRegion;
         m_rect = rect;
@@ -37,7 +37,7 @@ public:
     }
 
 protected:
-    void paintEvent(QPaintEvent*) override
+    void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
@@ -51,7 +51,8 @@ protected:
         p.setBrush(bgCol);
         p.drawRoundedRect(winRect, 3, 3);
 
-        if (m_hasRegion && m_rect.isValid()) {
+        if (m_hasRegion && m_rect.isValid())
+        {
             // Vùng chọn bên trong cửa sổ
             float innerX = winRect.x() + 2;
             float innerY = winRect.y() + 2;
@@ -70,7 +71,9 @@ protected:
             p.setPen(QPen(QColor("#38bdf8"), 1.2f));
             p.setBrush(QColor(56, 189, 248, 120));
             p.drawRoundedRect(selRect, 2, 2);
-        } else {
+        }
+        else
+        {
             // Biểu tượng toàn màn hình (khung nét đứt mờ)
             QPen dash(QColor("#475569"), 1.0f, Qt::DashLine);
             p.setPen(dash);
@@ -84,7 +87,7 @@ private:
     EZTranslator::NormalizedRect m_rect;
 };
 
-MainWindow::MainWindow(QWidget* parent)
+MainWindow::MainWindow(QWidget *parent)
     : QWidget(parent)
 {
     setWindowTitle("EZ-Translator");
@@ -101,7 +104,7 @@ MainWindow::MainWindow(QWidget* parent)
 
 void MainWindow::buildUi()
 {
-    auto* root = new QVBoxLayout(this);
+    auto *root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
     root->setSizeConstraint(QLayout::SetMinimumSize);
@@ -109,18 +112,18 @@ void MainWindow::buildUi()
     // ── TitleBar ─────────────────────────────────────────────────────────────
     m_titleBar = new TitleBar(this);
     connect(m_titleBar, &TitleBar::minimizeRequested, this, &QWidget::showMinimized);
-    connect(m_titleBar, &TitleBar::closeRequested,    this, &QWidget::close);
+    connect(m_titleBar, &TitleBar::closeRequested, this, &QWidget::close);
     root->addWidget(m_titleBar);
 
     // ── Divider ───────────────────────────────────────────────────────────────
-    auto* divider = new QFrame(this);
+    auto *divider = new QFrame(this);
     divider->setFixedHeight(1);
     divider->setStyleSheet(QString("background-color: %1;").arg(StyleTheme::ColorBorder));
     root->addWidget(divider);
 
     // ── Content ───────────────────────────────────────────────────────────────
-    auto* content = new QWidget(this);
-    auto* contentLay = new QVBoxLayout(content);
+    auto *content = new QWidget(this);
+    auto *contentLay = new QVBoxLayout(content);
     contentLay->setContentsMargins(20, 14, 20, 14);
     contentLay->setSpacing(12);
     contentLay->setSizeConstraint(QLayout::SetMinimumSize);
@@ -128,14 +131,14 @@ void MainWindow::buildUi()
     // ── Section 1: Chọn cửa sổ ───────────────────────────────────────────────
     contentLay->addWidget(new SectionTitle(SectionIconType::Gamepad, "1. Chọn cửa sổ cần dịch", content));
 
-    auto* windowRow = new QHBoxLayout();
+    auto *windowRow = new QHBoxLayout();
     windowRow->setSpacing(StyleTheme::SpacingS);
     m_windowCombo = new AppComboBox(content);
     m_windowCombo->setIconSize(QSize(20, 20));
     connect(m_windowCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onWindowIndexChanged);
 
-    auto* refreshBtn = new IconButton("⟳", content);
+    auto *refreshBtn = new IconButton("⟳", content);
     refreshBtn->setToolTip("Làm mới danh sách cửa sổ");
     connect(refreshBtn, &IconButton::clicked, this, &MainWindow::refreshWindowList);
 
@@ -146,38 +149,38 @@ void MainWindow::buildUi()
     // ── Section 2: Ngôn ngữ ──────────────────────────────────────────────────
     contentLay->addWidget(new SectionTitle(SectionIconType::Translate, "2. Ngôn ngữ", content));
 
-    auto* langRow = new QHBoxLayout();
+    auto *langRow = new QHBoxLayout();
     langRow->setSpacing(StyleTheme::SpacingS);
 
-    auto* langBlock = new QWidget(content);
-    auto* langBlockLay = new QVBoxLayout(langBlock);
+    auto *langBlock = new QWidget(content);
+    auto *langBlockLay = new QVBoxLayout(langBlock);
     langBlockLay->setContentsMargins(0, 0, 0, 0);
     langBlockLay->setSpacing(4);
 
-    auto* srcLabel = new QLabel("Ngôn ngữ gốc", langBlock);
+    auto *srcLabel = new QLabel("Ngôn ngữ gốc", langBlock);
     srcLabel->setStyleSheet(QString("color: %1; font-size: 8pt;").arg(StyleTheme::ColorTextSecondary));
     m_srcLangCombo = new AppComboBox(langBlock);
     langBlockLay->addWidget(srcLabel);
     langBlockLay->addWidget(m_srcLangCombo);
 
     // Wrap swapBtn trong container có spacer trên đầu để căn giữa với combobox
-    auto* swapWrapper = new QWidget(content);
-    auto* swapWrapLay = new QVBoxLayout(swapWrapper);
+    auto *swapWrapper = new QWidget(content);
+    auto *swapWrapLay = new QVBoxLayout(swapWrapper);
     swapWrapLay->setContentsMargins(0, 0, 0, 0);
     swapWrapLay->setSpacing(0);
 
-    auto* swapBtn = new IconButton("⇄", swapWrapper);
+    auto *swapBtn = new IconButton("⇄", swapWrapper);
     swapBtn->setToolTip("Hoán đổi ngôn ngữ");
 
-    swapWrapLay->addStretch();   // Đẩy nút xuống căn đáy (ngang bằng combobox)
+    swapWrapLay->addStretch(); // Đẩy nút xuống căn đáy (ngang bằng combobox)
     swapWrapLay->addWidget(swapBtn);
 
-    auto* dstBlock = new QWidget(content);
-    auto* dstBlockLay = new QVBoxLayout(dstBlock);
+    auto *dstBlock = new QWidget(content);
+    auto *dstBlockLay = new QVBoxLayout(dstBlock);
     dstBlockLay->setContentsMargins(0, 0, 0, 0);
     dstBlockLay->setSpacing(4);
 
-    auto* dstLabel = new QLabel("Ngôn ngữ đích", dstBlock);
+    auto *dstLabel = new QLabel("Ngôn ngữ đích", dstBlock);
     dstLabel->setStyleSheet(QString("color: %1; font-size: 8pt;").arg(StyleTheme::ColorTextSecondary));
     m_dstLangCombo = new AppComboBox(dstBlock);
     dstBlockLay->addWidget(dstLabel);
@@ -191,7 +194,7 @@ void MainWindow::buildUi()
     // ── Section 3: Hiển thị bản dịch ────────────────────────────────────────
     contentLay->addWidget(new SectionTitle(SectionIconType::Monitor, "3. Hiển thị bản dịch", content));
 
-    auto* displayRow = new QHBoxLayout();
+    auto *displayRow = new QHBoxLayout();
     displayRow->setSpacing(StyleTheme::SpacingM);
 
     m_cardFloat = new DisplayModeCard(
@@ -211,17 +214,17 @@ void MainWindow::buildUi()
     m_cardFloat->setSelected(true);
     m_cardOverlay->setSelected(false);
 
-    connect(m_cardFloat, &DisplayModeCard::clicked, this, [this]() {
+    connect(m_cardFloat, &DisplayModeCard::clicked, this, [this]()
+            {
         m_cardFloat->setSelected(true);
         m_cardOverlay->setSelected(false);
-        emit displayModeChanged(DisplayMode::FloatingWindow);
-    });
+        emit displayModeChanged(DisplayMode::FloatingWindow); });
 
-    connect(m_cardOverlay, &DisplayModeCard::clicked, this, [this]() {
+    connect(m_cardOverlay, &DisplayModeCard::clicked, this, [this]()
+            {
         m_cardFloat->setSelected(false);
         m_cardOverlay->setSelected(true);
-        emit displayModeChanged(DisplayMode::ScreenOverlay);
-    });
+        emit displayModeChanged(DisplayMode::ScreenOverlay); });
 
     displayRow->addWidget(m_cardFloat, 1);
     displayRow->addWidget(m_cardOverlay, 1);
@@ -230,7 +233,7 @@ void MainWindow::buildUi()
     // ── Section 4: Chọn vùng dịch ────────────────────────────────────────────
     contentLay->addWidget(new SectionTitle(SectionIconType::Crop, "4. Chọn vùng dịch", content));
 
-    auto* regionBtnRow = new QHBoxLayout();
+    auto *regionBtnRow = new QHBoxLayout();
     regionBtnRow->setSpacing(StyleTheme::SpacingS);
 
     const QString actionBtnStyle = R"(
@@ -302,9 +305,9 @@ void MainWindow::buildUi()
     m_clearRegionBtn->setStyleSheet(deleteBtnStyle);
 
     connect(m_selectRegionBtn, &QPushButton::clicked, this, &MainWindow::onSelectRegionClicked);
-    connect(m_showRegionBtn,   &QPushButton::clicked, this, &MainWindow::requestShowRegion);
-    connect(m_previewRoiBtn,  &QPushButton::clicked, this, &MainWindow::requestPreviewRoi);
-    connect(m_clearRegionBtn,  &QPushButton::clicked, this, &MainWindow::clearRegion);
+    connect(m_showRegionBtn, &QPushButton::clicked, this, &MainWindow::requestShowRegion);
+    connect(m_previewRoiBtn, &QPushButton::clicked, this, &MainWindow::requestPreviewRoi);
+    connect(m_clearRegionBtn, &QPushButton::clicked, this, &MainWindow::clearRegion);
 
     regionBtnRow->addWidget(m_selectRegionBtn, 4);
     regionBtnRow->addWidget(m_showRegionBtn, 3);
@@ -317,13 +320,13 @@ void MainWindow::buildUi()
     m_regionDisplayFrame->setObjectName("regionDisplayFrame");
     m_regionDisplayFrame->setFixedHeight(54);
 
-    auto* rdispLay = new QHBoxLayout(m_regionDisplayFrame);
+    auto *rdispLay = new QHBoxLayout(m_regionDisplayFrame);
     rdispLay->setContentsMargins(12, 6, 12, 6);
     rdispLay->setSpacing(12);
 
     m_regionThumbnail = new RegionThumbnailWidget(m_regionDisplayFrame);
 
-    auto* textContainer = new QVBoxLayout();
+    auto *textContainer = new QVBoxLayout();
     textContainer->setContentsMargins(0, 0, 0, 0);
     textContainer->setSpacing(3);
 
@@ -369,21 +372,21 @@ void MainWindow::buildUi()
     contentLay->addWidget(m_startBtn);
 
     // Phím tắt bàn phím tiện lợi
-    auto* f6 = new QShortcut(QKeySequence(Qt::Key_F6), this);
+    auto *f6 = new QShortcut(QKeySequence(Qt::Key_F6), this);
     connect(f6, &QShortcut::activated, this, &MainWindow::onSelectRegionClicked);
 
-    auto* f8 = new QShortcut(QKeySequence(Qt::Key_F8), this);
+    auto *f8 = new QShortcut(QKeySequence(Qt::Key_F8), this);
     connect(f8, &QShortcut::activated, this, &MainWindow::onStartButtonClicked);
 
     root->addWidget(content, 1);
 
     // ── Footer ────────────────────────────────────────────────────────────────
-    auto* footer = new QWidget(this);
+    auto *footer = new QWidget(this);
     footer->setFixedHeight(40);
     footer->setStyleSheet(QString("background-color: %1; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;")
                               .arg(StyleTheme::ColorSurface));
 
-    auto* footerLay = new QHBoxLayout(footer);
+    auto *footerLay = new QHBoxLayout(footer);
     footerLay->setContentsMargins(StyleTheme::SpacingXL, 0, StyleTheme::SpacingM, 0);
     footerLay->setSpacing(StyleTheme::SpacingM);
 
@@ -392,7 +395,7 @@ void MainWindow::buildUi()
     footerLay->addWidget(m_statusIndicator);
     footerLay->addStretch();
 
-    auto* settingsBtn = new QPushButton("⚙  Cài đặt", footer);
+    auto *settingsBtn = new QPushButton("⚙  Cài đặt", footer);
     settingsBtn->setFixedHeight(26);
     settingsBtn->setStyleSheet(QString(R"(
         QPushButton {
@@ -402,7 +405,9 @@ void MainWindow::buildUi()
             border: none;
         }
         QPushButton:hover { color: %2; }
-    )").arg(StyleTheme::ColorTextSecondary).arg(StyleTheme::ColorTextPrimary));
+    )")
+                                   .arg(StyleTheme::ColorTextSecondary)
+                                   .arg(StyleTheme::ColorTextPrimary));
     connect(settingsBtn, &QPushButton::clicked, this, &MainWindow::requestOpenSettings);
     footerLay->addWidget(settingsBtn);
 
@@ -411,30 +416,26 @@ void MainWindow::buildUi()
 
 void MainWindow::populateMockData()
 {
-    // Quét danh sách các cửa sổ đang chạy thực tế trên máy
     refreshWindowList();
 
-    // Mock: ngôn ngữ nguồn
-    m_srcLangCombo->addItem(QIcon(IconFactory::makeTranslateIcon(18, QColor("#cbd5e1"))), "Tự động nhận diện");
-    m_srcLangCombo->addItem("🇬🇧  Tiếng Anh (EN)");
-    m_srcLangCombo->addItem("🇯🇵  Tiếng Nhật (JA)");
-    m_srcLangCombo->addItem("🇰🇷  Tiếng Hàn (KO)");
-    m_srcLangCombo->addItem("🇨🇳  Tiếng Trung (ZH)");
+    m_srcLangCombo->clear();
+    m_srcLangCombo->addItem("Tiếng Anh (EN)", "en");
 
-    // Mock: ngôn ngữ đích
-    m_dstLangCombo->addItem(QIcon(IconFactory::makeVietnamFlag(20, 14)), "Tiếng Việt");
-    m_dstLangCombo->addItem("🇬🇧  Tiếng Anh (EN)");
+    m_dstLangCombo->clear();
+    m_dstLangCombo->addItem("Tiếng Việt (VI)", "vi");
 }
 
 quintptr MainWindow::selectedWindowHandle() const
 {
-    if (m_windowCombo->currentIndex() < 0) return 0;
+    if (m_windowCombo->currentIndex() < 0)
+        return 0;
     return m_windowCombo->currentData().value<quintptr>();
 }
 
 void MainWindow::onWindowIndexChanged(int index)
 {
-    if (index < 0 || index >= m_windowCombo->count()) {
+    if (index < 0 || index >= m_windowCombo->count())
+    {
         emit targetWindowSelected(0, QString(), QString());
         return;
     }
@@ -453,10 +454,12 @@ void MainWindow::refreshWindowList()
     const auto windows = EZTranslator::WindowEnumerator::enumerateWindows();
     int restoreIndex = -1;
 
-    for (int i = 0; i < windows.size(); ++i) {
-        const auto& win = windows.at(i);
+    for (int i = 0; i < windows.size(); ++i)
+    {
+        const auto &win = windows.at(i);
         QString text = win.title;
-        if (!win.processName.isEmpty()) {
+        if (!win.processName.isEmpty())
+        {
             text += QString(" (%1)").arg(win.processName);
         }
 
@@ -464,19 +467,26 @@ void MainWindow::refreshWindowList()
         m_windowCombo->addItem(icon, text, QVariant::fromValue(win.handle));
         m_windowCombo->setItemData(i, QString("Tiêu đề: %1\nTiến trình: %2").arg(win.title, win.processName), Qt::ToolTipRole);
 
-        if (currentHandle != 0 && win.handle == currentHandle) {
+        if (currentHandle != 0 && win.handle == currentHandle)
+        {
             restoreIndex = i;
         }
     }
 
     m_windowCombo->setPlaceholderText("-- Chọn cửa sổ cần dịch --");
-    if (windows.isEmpty()) {
+    if (windows.isEmpty())
+    {
         m_windowCombo->addItem(QIcon(IconFactory::makeGameThumbnailIcon(20)), "Không tìm thấy cửa sổ ứng dụng nào");
         m_windowCombo->setCurrentIndex(-1);
-    } else {
-        if (restoreIndex >= 0) {
+    }
+    else
+    {
+        if (restoreIndex >= 0)
+        {
             m_windowCombo->setCurrentIndex(restoreIndex);
-        } else {
+        }
+        else
+        {
             m_windowCombo->setCurrentIndex(-1);
         }
     }
@@ -489,7 +499,8 @@ void MainWindow::updateRegionDisplay()
 {
     bool valid = m_hasRegion && (m_currentRegion.isValid() || (m_currentScreenRect.isValid() && m_currentScreenRect.width() >= 10 && m_currentScreenRect.height() >= 10));
 
-    if (!valid) {
+    if (!valid)
+    {
         m_regionThumbnail->setRegion(false, {});
 
         m_regionDisplayFrame->setStyleSheet(R"(
@@ -508,7 +519,9 @@ void MainWindow::updateRegionDisplay()
 
         m_regionBadgeLabel->setText("TOÀN CỬA SỔ");
         m_regionBadgeLabel->setStyleSheet("color: #94a3b8; background-color: #141f30; border-radius: 4px; padding: 3px 8px; font-size: 7.5pt; font-weight: 600; border: none;");
-    } else {
+    }
+    else
+    {
         m_regionThumbnail->setRegion(true, m_currentRegion);
 
         m_regionDisplayFrame->setStyleSheet(R"(
@@ -519,14 +532,17 @@ void MainWindow::updateRegionDisplay()
             }
         )");
 
-        if (m_currentScreenRect.isValid() && m_currentScreenRect.width() > 0 && m_currentScreenRect.height() > 0) {
+        if (m_currentScreenRect.isValid() && m_currentScreenRect.width() > 0 && m_currentScreenRect.height() > 0)
+        {
             m_regionTitleLabel->setText(QString("Đã khoanh 1 vùng dịch riêng (%1 × %2 px)")
                                             .arg(m_currentScreenRect.width())
                                             .arg(m_currentScreenRect.height()));
             m_regionDetailLabel->setText(QString("Vị trí màn hình: X: %1, Y: %2  •  Bấm F6 để chọn lại hoặc \"Xóa vùng\" để hủy")
                                              .arg(m_currentScreenRect.x())
                                              .arg(m_currentScreenRect.y()));
-        } else {
+        }
+        else
+        {
             int pctX = qRound(m_currentRegion.x * 100.0);
             int pctY = qRound(m_currentRegion.y * 100.0);
             int pctW = qRound(m_currentRegion.width * 100.0);
@@ -534,7 +550,8 @@ void MainWindow::updateRegionDisplay()
 
             m_regionTitleLabel->setText(QString("Đã khoanh 1 vùng dịch riêng (%1% × %2%)").arg(pctW).arg(pctH));
             m_regionDetailLabel->setText(QString("Vị trí: Lệch trái %1%, đỉnh %2%  •  Bấm F6 để chọn lại hoặc \"Xóa vùng\" để hủy")
-                                             .arg(pctX).arg(pctY));
+                                             .arg(pctX)
+                                             .arg(pctY));
         }
 
         m_regionTitleLabel->setStyleSheet("color: #60a5fa; font-size: 9pt; font-weight: 600; border: none; background: transparent;");
@@ -545,7 +562,7 @@ void MainWindow::updateRegionDisplay()
     }
 }
 
-void MainWindow::setRegion(const EZTranslator::NormalizedRect& rect, const QRect& screenRect)
+void MainWindow::setRegion(const EZTranslator::NormalizedRect &rect, const QRect &screenRect)
 {
     m_hasRegion = rect.isValid() || (screenRect.isValid() && screenRect.width() >= 10 && screenRect.height() >= 10);
     m_currentRegion = rect;
@@ -566,7 +583,8 @@ void MainWindow::clearRegion()
 
 MainWindow::DisplayMode MainWindow::displayMode() const
 {
-    if (m_cardOverlay && m_cardOverlay->isSelected()) {
+    if (m_cardOverlay && m_cardOverlay->isSelected())
+    {
         return DisplayMode::ScreenOverlay;
     }
     return DisplayMode::FloatingWindow;
@@ -574,7 +592,8 @@ MainWindow::DisplayMode MainWindow::displayMode() const
 
 void MainWindow::onSelectRegionClicked()
 {
-    if (selectedWindowHandle() == 0) {
+    if (selectedWindowHandle() == 0)
+    {
         showSelectWindowWarning();
         return;
     }
@@ -583,12 +602,14 @@ void MainWindow::onSelectRegionClicked()
 
 void MainWindow::onStartButtonClicked()
 {
-    if (m_isTranslating) {
+    if (m_isTranslating)
+    {
         emit requestStopTranslation();
         return;
     }
 
-    if (selectedWindowHandle() == 0) {
+    if (selectedWindowHandle() == 0)
+    {
         showSelectWindowWarning();
         return;
     }
@@ -601,7 +622,8 @@ void MainWindow::onTranslationStarted()
     m_isTranslating = true;
     m_statusIndicator->setState("Đang dịch...", QColor(StyleTheme::ColorSuccess));
 
-    if (m_startBtn) {
+    if (m_startBtn)
+    {
         m_startBtn->setText("  Đang dịch (F8 để dừng)");
         m_startBtn->setIcon(QIcon(IconFactory::makeStopIcon(16, Qt::white)));
         m_startBtn->setStyleSheet(R"(
@@ -629,7 +651,8 @@ void MainWindow::onTranslationStopped()
     m_isTranslating = false;
     m_statusIndicator->setState("Sẵn sàng", QColor(StyleTheme::ColorSuccess));
 
-    if (m_startBtn) {
+    if (m_startBtn)
+    {
         m_startBtn->setText("  Bắt đầu dịch (F8)");
         m_startBtn->setIcon(QIcon(IconFactory::makePlayIcon(18, Qt::white)));
         m_startBtn->setStyleSheet(R"(
@@ -664,7 +687,7 @@ void MainWindow::showRegionSelectedSuccess()
     m_statusIndicator->setState("Đã chọn vùng dịch!", QColor(StyleTheme::ColorSuccess));
 }
 
-void MainWindow::setStatus(const QString& text, const QColor& color)
+void MainWindow::setStatus(const QString &text, const QColor &color)
 {
     QColor c = color.isValid() ? color : QColor(StyleTheme::ColorTextSecondary);
     m_statusIndicator->setState(text, c);
@@ -672,7 +695,8 @@ void MainWindow::setStatus(const QString& text, const QColor& color)
 
 void MainWindow::setShowRegionActive(bool active)
 {
-    if (active) {
+    if (active)
+    {
         m_showRegionBtn->setText("  Ẩn vùng");
         m_showRegionBtn->setStyleSheet(R"(
             QPushButton {
@@ -689,7 +713,9 @@ void MainWindow::setShowRegionActive(bool active)
                 border-color: #f87171;
             }
         )");
-    } else {
+    }
+    else
+    {
         m_showRegionBtn->setText("  Xem vùng");
         m_showRegionBtn->setStyleSheet(R"(
             QPushButton {
@@ -712,4 +738,3 @@ void MainWindow::setShowRegionActive(bool active)
         )");
     }
 }
-
