@@ -83,6 +83,15 @@ private:
     void initTranslationUi();
     void resetTranslationSession();
 
+    void applyTranslationResult(const QString &target);
+
+    QList<EZTranslator::OcrTextBox> m_overlayLayout;
+    QList<EZTranslator::OcrTextBox> m_overlayOutput;
+
+    QSize m_overlayFrameSize;
+    QString m_lastTranslatedText;
+    bool m_overlayFresh{false};
+
     OfflineTranslator *m_translator{nullptr};
     QDialog *m_translationWindow{nullptr};
 

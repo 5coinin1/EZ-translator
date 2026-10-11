@@ -305,13 +305,6 @@ void AppController::onStartTranslation()
         return;
     }
 
-    if (m_mainWindow->displayMode() != MainWindow::DisplayMode::FloatingWindow)
-    {
-        m_mainWindow->setStatus("Hãy chọn Cửa sổ nổi cho bước này.",
-                                QColor("#f59e0b"));
-        return;
-    }
-
     m_settings.sourceLanguage = "en";
     m_settings.translationEngine = "offline";
 
@@ -320,7 +313,6 @@ void AppController::onStartTranslation()
 
     resetTranslationSession();
 
-    // EZ_DEFAULT_MODELS_DIR được CMake đặt theo vị trí dự án.
     QDir root(QStringLiteral(EZ_DEFAULT_MODELS_DIR));
     root.cdUp();
 
@@ -347,8 +339,15 @@ void AppController::onStartTranslation()
 
     m_translatedText->setPlaceholderText("Đang chờ văn bản OCR...");
 
-    m_translationWindow->show();
-    m_translationWindow->raise();
+    if (m_mainWindow->displayMode() == MainWindow::DisplayMode::FloatingWindow)
+    {
+        m_translationWindow->show();
+        m_translationWindow->raise();
+    }
+    else
+    {
+        m_translationWindow->hide();
+    }
 
     m_mainWindow->setStatus(m_translator->isReady()
                                 ? "Offline Anh → Việt đã sẵn sàng."
@@ -755,52 +754,116 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame &frame)
         return;
     }
 
+    // Phát hiện thay đổi trước khi giới hạn nhịp OCR.
+    for (const auto &region : regions)
+    {
+        if (region.isValid() &&
+            (!m_ocrImages.contains(region.regionId) ||
+             m_ocrImages.value(region.regionId) != region.image))
+        {
+            m_overlayFresh = false;
+            m_textOverlay->hide();
+            break;
+        }
+    }
+
     if (now < m_nextOcrAt)
         return;
 
     m_nextOcrAt = now + 400;
 
-    QStringList paragraphs;
+    QList<EZTranslator::OcrTextBox> layout;
+    QStringList sources;
 
     for (const auto &region : regions)
     {
         if (!region.isValid())
             continue;
 
-        // Nhận ra cả thay đổi nhỏ trong nội dung chữ.
         if (!m_ocrImages.contains(region.regionId) ||
             m_ocrImages.value(region.regionId) != region.image)
         {
             const auto boxes = m_ocrEngine.recognize(region.image);
 
-            const QString text = EZTranslator::OcrTextAssembler::assemble(boxes);
+            const auto lines = EZTranslator::OcrTextAssembler::assembleLines(boxes);
+
+            QList<EZTranslator::OcrTextBox> mapped;
+
+            for (const auto &line : lines)
+            {
+                EZTranslator::OcrTextBox box;
+
+                box.text = line.text.simplified();
+
+                box.rect = line.rect.intersected(region.image.rect())
+                               .translated(region.pixelRect.topLeft());
+
+                if (!box.text.isEmpty() && !box.rect.isEmpty())
+                {
+                    mapped.append(box);
+                }
+            }
+
+            m_regionTextBoxes.insert(region.regionId, mapped);
 
             m_ocrImages.insert(region.regionId, region.image);
-            m_ocrTexts.insert(region.regionId, text);
-
-            qDebug().noquote() << "[OCR text]" << text;
         }
 
-        const QString text = m_ocrTexts.value(region.regionId).trimmed();
-
-        if (!text.isEmpty())
-            paragraphs.append(text);
+        for (const auto &box : m_regionTextBoxes.value(region.regionId))
+        {
+            layout.append(box);
+            sources.append(box.text);
+        }
     }
 
-    const QString text = paragraphs.join("\n\n").trimmed();
+    m_overlayLayout = layout;
+    m_overlayFrameSize = frame.image.size();
+    m_overlayFresh = true;
+
+    const QString text = sources.join('\n');
 
     if (text == m_lastSubmittedText)
+    {
+        if (!m_lastTranslatedText.isEmpty())
+        {
+            // Chữ không đổi nhưng vị trí có thể đã thay đổi.
+            applyTranslationResult(m_lastTranslatedText);
+        }
+        else
+        {
+            m_overlayOutput = m_overlayLayout;
+
+            for (auto &box : m_overlayOutput)
+                box.text.clear();
+
+            updateOverlay(m_overlayFrameSize);
+        }
+
         return;
+    }
 
     m_lastSubmittedText = text;
+    m_lastTranslatedText.clear();
 
     m_sourceText->setPlainText(text);
     m_translatedText->clear();
 
+    qDebug().noquote() << "[OCR text]" << text;
+
+    // Che các dòng chữ trong lúc chờ dịch.
+    m_overlayOutput = m_overlayLayout;
+
+    for (auto &box : m_overlayOutput)
+        box.text.clear();
+
+    updateOverlay(m_overlayFrameSize);
+
     if (text.isEmpty())
     {
         m_translator->cancel();
+
         m_translatedText->setPlaceholderText("Chưa nhận dạng được chữ.");
+
         return;
     }
 
@@ -813,22 +876,58 @@ void AppController::updateOverlay(const QSize &frameSize)
     if (!m_textOverlay)
         return;
 
-    QList<EZTranslator::OcrTextBox> all;
-    for (auto it = m_regionTextBoxes.constBegin();
-         it != m_regionTextBoxes.constEnd(); ++it)
-        all.append(it.value());
-
-    const QRect client = targetClientRect();
-    if (all.isEmpty() || frameSize.isEmpty() || !client.isValid() ||
-        client.isEmpty())
+    if (m_state != EZTranslator::TranslationState::Running ||
+        m_mainWindow->displayMode() != MainWindow::DisplayMode::ScreenOverlay ||
+        !m_overlayFresh || m_overlayOutput.isEmpty() || frameSize.isEmpty())
     {
-        if (m_textOverlay->isShowing())
-            m_textOverlay->hideOverlay();
+        m_textOverlay->hide();
         return;
     }
 
-    m_textOverlay->showOverTarget(client);
-    m_textOverlay->setTextBoxes(all, frameSize);
+#ifdef _WIN32
+    const HWND target =
+        reinterpret_cast<HWND>(m_mainWindow->selectedWindowHandle());
+
+    if (!IsWindow(target) || IsIconic(target))
+    {
+        m_textOverlay->hide();
+        return;
+    }
+
+    RECT client{};
+
+    if (!GetClientRect(target, &client) ||
+        QSize(client.right - client.left, client.bottom - client.top) !=
+            frameSize)
+    {
+        m_textOverlay->hide();
+        return;
+    }
+
+    const HWND foreground = GetForegroundWindow();
+
+    DWORD foregroundPid = 0;
+    GetWindowThreadProcessId(foreground, &foregroundPid);
+
+    if (GetAncestor(foreground, GA_ROOT) != GetAncestor(target, GA_ROOT) &&
+        foregroundPid != GetCurrentProcessId())
+    {
+        m_textOverlay->hide();
+        return;
+    }
+#endif
+
+    const QRect clientRect = targetClientRect();
+
+    if (!clientRect.isValid() || clientRect.isEmpty())
+    {
+        m_textOverlay->hide();
+        return;
+    }
+
+    m_textOverlay->setTextBoxes(m_overlayOutput, frameSize);
+
+    m_textOverlay->showOverTarget(clientRect);
 }
 
 void AppController::onCaptureError(EZTranslator::CaptureError error,
@@ -911,7 +1010,7 @@ void AppController::initTranslationUi()
                     return;
                 }
 
-                m_translatedText->setPlainText(target);
+                applyTranslationResult(target);
                 qDebug().noquote() << "[Translation]" << target;
             });
 
@@ -928,22 +1027,36 @@ void AppController::initTranslationUi()
     connect(m_mainWindow, &MainWindow::displayModeChanged, this,
             [this](MainWindow::DisplayMode mode)
             {
-                if (mode != MainWindow::DisplayMode::FloatingWindow &&
-                    m_state == EZTranslator::TranslationState::Running)
+                if (mode == MainWindow::DisplayMode::ScreenOverlay)
                 {
-                    onStopTranslation();
+                    m_translationWindow->hide();
+                    updateOverlay(m_overlayFrameSize);
+                }
+                else
+                {
+                    m_textOverlay->hideOverlay();
 
-                    m_mainWindow->setStatus("Bước này hỗ trợ Cửa sổ nổi; "
-                                            "hãy chọn lại để tiếp tục.",
-                                            QColor("#f59e0b"));
+                    if (m_state == EZTranslator::TranslationState::Running)
+                    {
+                        m_translationWindow->show();
+                        m_translationWindow->raise();
+                    }
                 }
             });
+    auto *overlayTimer = new QTimer(this);
+    overlayTimer->setInterval(100);
+
+    connect(overlayTimer, &QTimer::timeout, this,
+            [this]()
+            { updateOverlay(m_overlayFrameSize); });
+
+    overlayTimer->start();
 }
 
 void AppController::resetTranslationSession()
 {
-    // Bỏ các frame cũ đang chờ trong hàng đợi.
     m_acceptFramesAfter = QDateTime::currentMSecsSinceEpoch() + 1;
+
     m_nextOcrAt = 0;
 
     m_changeDetector.reset();
@@ -952,6 +1065,12 @@ void AppController::resetTranslationSession()
     m_ocrImages.clear();
     m_ocrTexts.clear();
     m_lastSubmittedText.clear();
+
+    m_overlayLayout.clear();
+    m_overlayOutput.clear();
+    m_overlayFrameSize = {};
+    m_lastTranslatedText.clear();
+    m_overlayFresh = false;
 
     if (m_translator)
         m_translator->cancel();
@@ -964,4 +1083,33 @@ void AppController::resetTranslationSession()
 
     if (m_textOverlay)
         m_textOverlay->hideOverlay();
+}
+
+void AppController::applyTranslationResult(const QString &target)
+{
+    m_lastTranslatedText = target;
+
+    if (m_translatedText->toPlainText() != target)
+        m_translatedText->setPlainText(target);
+
+    const QStringList lines = target.split('\n', Qt::KeepEmptyParts);
+
+    if (lines.size() != m_overlayLayout.size())
+    {
+        m_overlayOutput.clear();
+        updateOverlay(m_overlayFrameSize);
+
+        m_mainWindow->setStatus("Số dòng dịch không khớp. "
+                                "Chọn Cửa sổ nổi để xem kết quả.",
+                                QColor("#f59e0b"));
+
+        return;
+    }
+
+    m_overlayOutput = m_overlayLayout;
+
+    for (int i = 0; i < lines.size(); ++i)
+        m_overlayOutput[i].text = lines[i];
+
+    updateOverlay(m_overlayFrameSize);
 }
