@@ -1,5 +1,7 @@
 #include "overlay/TextOverlay.h"
 
+#include <QBrush>
+#include <QLinearGradient>
 #include <QDebug>
 #include <QPainter>
 #include <QTextLayout>
@@ -104,6 +106,13 @@ namespace EZTranslator
 
     void TextOverlay::paintEvent(QPaintEvent *)
     {
+        // Nền xám than chuyển sắc nhẹ, vẫn che kín chữ gốc.
+        QLinearGradient overlayBackground(0.0, 0.0, 0.0, 1.0);
+        overlayBackground.setCoordinateMode(QGradient::ObjectBoundingMode);
+
+        overlayBackground.setColorAt(0.00, QColor(78, 82, 90, 255));
+        overlayBackground.setColorAt(0.45, QColor(58, 62, 70, 255));
+        overlayBackground.setColorAt(1.00, QColor(44, 48, 56, 255));
         if (m_target.isEmpty() || m_frameSize.isEmpty())
             return;
 
@@ -123,7 +132,7 @@ namespace EZTranslator
 
         // Vẽ nền trước. Box chưa có bản dịch vẫn che chữ gốc.
         for (const auto &box : m_boxes)
-            painter.fillRect(mapped(box), QColor(12, 12, 12));
+            painter.fillRect(mapped(box), QBrush(overlayBackground));
 
         painter.setPen(QColor(248, 250, 252));
 
