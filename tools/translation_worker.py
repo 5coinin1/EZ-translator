@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import sys
 
@@ -46,6 +47,127 @@ class OfflineTranslator:
             ),
         )
 
+    @staticmethod
+    def _word_boundary(tokens, limit):
+        limit = min(limit, len(tokens))
+
+        if limit == len(tokens):
+            return limit
+
+        for position in range(limit, max(0, limit // 2), -1):
+            if tokens[position].startswith("▁"):
+                return position
+
+        return limit
+
+    def _prepare_line(self, line):
+        sentences = re.split(r"(?<=[.!?])\s+", line.strip())
+        chunks = []
+
+        for sentence in sentences:
+            sentence = sentence.strip()
+
+            if not sentence:
+                continue
+
+            tokens = self.tokenizer.encode(
+                sentence,
+                out_type=str,
+            )
+
+            # Chỉ chia nhỏ thêm nếu một câu quá dài.
+            while len(tokens) > 96:
+                cut = self._word_boundary(tokens, 96)
+                chunks.append(tokens[:cut])
+                tokens = tokens[cut:]
+
+            if tokens:
+                chunks.append(tokens)
+
+        return chunks
+
+    def _translate_chunks(self, chunks, depth=0):
+        if not chunks:
+            return []
+
+        results = self.engine.translate_batch(
+            chunks,
+            beam_size=2,
+            max_batch_size=8,
+            max_input_length=0,
+            max_decoding_length=512,
+            repetition_penalty=1.05,
+            no_repeat_ngram_size=6,
+            return_end_token=True,
+            replace_unknowns=True,
+        )
+
+        if len(results) != len(chunks):
+            raise RuntimeError("So ket qua dich khong khop.")
+
+        outputs = []
+
+        for tokens, result in zip(chunks, results):
+            pieces = (
+                result.hypotheses[0]
+                if result.hypotheses
+                else []
+            )
+
+            output = ""
+
+            if pieces and pieces[-1] == "</s>":
+                output = self.tokenizer.decode(pieces[:-1])
+
+                # Không để xuống dòng phát sinh làm lệch khung overlay.
+                output = " ".join(
+                    output.replace("▁", " ").split()
+                )
+
+            if output:
+                outputs.append(output)
+                continue
+
+            # Bản dịch chưa kết thúc hoặc rỗng:
+            # chia đôi phần đang lỗi rồi thử lại, tối đa 3 cấp.
+            if depth < 3 and len(tokens) > 1:
+                cut = self._word_boundary(
+                    tokens,
+                    len(tokens) // 2,
+                )
+
+                print(
+                    f"[translation] Retry: {len(tokens)} tokens, "
+                    f"depth={depth + 1}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+                parts = self._translate_chunks(
+                    [tokens[:cut], tokens[cut:]],
+                    depth + 1,
+                )
+
+                outputs.append(" ".join(parts))
+                continue
+
+            # Nếu vẫn lỗi, giữ phần tiếng Anh và đánh dấu rõ.
+            # Không bỏ mất nội dung hoặc trả bản dịch bị cắt dở.
+            source = self.tokenizer.decode(tokens)
+            source = " ".join(
+                source.replace("▁", " ").split()
+            )
+
+            outputs.append(f"[Chưa dịch: {source}]")
+
+            print(
+                "[translation] Untranslated fragment after retries.",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        return outputs
+
     def translate(self, texts):
         if not isinstance(texts, list) or not 1 <= len(texts) <= 128:
             raise ValueError(
@@ -67,65 +189,20 @@ class OfflineTranslator:
             lines = []
 
             for line in text.split("\n"):
-                tokens = self.tokenizer.encode(
-                    line.strip(),
-                    out_type=str,
-                )
-
                 indices = []
 
-                while tokens:
-                    end = min(192, len(tokens))
-
-                    if end < len(tokens):
-                        # Ưu tiên cắt tại đầu từ.
-                        for boundary in range(end, end // 2, -1):
-                            if tokens[boundary].startswith("▁"):
-                                end = boundary
-                                break
-
+                for chunk in self._prepare_line(line):
                     indices.append(len(inputs))
-                    inputs.append(tokens[:end])
-                    tokens = tokens[end:]
+                    inputs.append(chunk)
 
                 lines.append(indices)
 
             layouts.append(lines)
 
-        translated = []
+        translated = self._translate_chunks(inputs)
 
-        if inputs:
-            results = self.engine.translate_batch(
-                inputs,
-                beam_size=2,
-                max_batch_size=8,
-                max_input_length=0,
-                max_decoding_length=512,
-                return_end_token=True,
-                replace_unknowns=True,
-            )
-
-            for result in results:
-                pieces = result.hypotheses[0]
-
-                if not pieces or pieces[-1] != "</s>":
-                    raise RuntimeError(
-                        "Ban dich vuot gioi han; "
-                        "hay chia doan ngan hon."
-                    )
-
-                output = self.tokenizer.decode(pieces[:-1])
-
-                # Loại dấu phân cách còn lại trong đầu ra mô hình.
-                output = output.replace("▁", " ").strip()
-
-                if not output:
-                    raise RuntimeError(
-                        "Mo hinh tra ve ban dich rong."
-                    )
-
-                translated.append(output)
-
+        # Ghép các phần về đúng dòng/khối ban đầu.
+        # C++ vẫn nhận đúng số khối tương ứng với overlay.
         return [
             "\n".join(
                 " ".join(translated[i] for i in indices)

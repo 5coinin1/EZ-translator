@@ -1,8 +1,8 @@
 #include "overlay/TextOverlay.h"
 
 #include <QBrush>
-#include <QLinearGradient>
 #include <QDebug>
+#include <QLinearGradient>
 #include <QPainter>
 #include <QTextLayout>
 #include <QTextOption>
@@ -130,9 +130,14 @@ namespace EZTranslator
                 .intersected(QRectF(rect()));
         };
 
-        // Vẽ nền trước. Box chưa có bản dịch vẫn che chữ gốc.
+        // Chỉ che chữ gốc khi khung đã có nội dung để hiển thị.
         for (const auto &box : m_boxes)
+        {
+            if (box.text.trimmed().isEmpty())
+                continue;
+
             painter.fillRect(mapped(box), QBrush(overlayBackground));
+        }
 
         painter.setPen(QColor(248, 250, 252));
 

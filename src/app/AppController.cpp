@@ -19,6 +19,7 @@
 #include <QDir>
 #include <QLabel>
 #include <QPlainTextEdit>
+#include <QRegularExpression>
 #include <QStringList>
 #include <QVBoxLayout>
 
@@ -198,7 +199,138 @@ namespace
             return QString::fromLocal8Bit(override);
         return QStringLiteral(EZ_DEFAULT_MODELS_DIR);
     }
+    QList<EZTranslator::OcrTextBox>
+    buildTranslationBlocks(const QList<EZTranslator::OcrTextBox> &boxes)
+    {
+        const auto document = EZTranslator::OcrTextAssembler::assembleDocument(boxes);
 
+        const QStringList rows = document.text.split('\n', Qt::KeepEmptyParts);
+
+        int nonEmptyRows = 0;
+
+        for (const auto &row : rows)
+        {
+            if (!row.trimmed().isEmpty())
+                ++nonEmptyRows;
+        }
+
+        QList<EZTranslator::OcrTextBox> result;
+
+        // Nếu văn bản và tọa độ không khớp, giữ từng dòng riêng
+        // để tránh đặt bản dịch vào sai vị trí.
+        if (nonEmptyRows != document.lines.size())
+        {
+            for (const auto &line : document.lines)
+            {
+                EZTranslator::OcrTextBox box;
+                box.text = line.text.simplified();
+                box.rect = line.rect;
+
+                if (!box.text.isEmpty() && !box.rect.isEmpty())
+                    result.append(box);
+            }
+
+            return result;
+        }
+
+        // Nhận biết đầu mục: 1. / 2) / - / * / •
+        static const QRegularExpression itemStart(
+            QStringLiteral(R"(^(?:[0-9]{1,3}[.)]|[-*•])\s+)"));
+
+        static const QRegularExpression sentenceEnd(
+            QStringLiteral(R"([.!?…]["'”’)]*$)"));
+
+        EZTranslator::OcrTextBox block;
+        EZTranslator::OcrTextBox previous;
+
+        int count = 0;
+        int index = 0;
+
+        const auto flush = [&]()
+        {
+            if (!block.text.isEmpty())
+                result.append(block);
+
+            block = EZTranslator::OcrTextBox{};
+            previous = EZTranslator::OcrTextBox{};
+            count = 0;
+        };
+
+        for (const auto &row : rows)
+        {
+            // Dòng trống do bộ ghép OCR tạo ra là dấu ngắt đoạn.
+            if (row.trimmed().isEmpty())
+            {
+                flush();
+                continue;
+            }
+
+            const auto &line = document.lines.at(index++);
+
+            EZTranslator::OcrTextBox current;
+            current.text = line.text.simplified();
+            current.rect = line.rect;
+
+            if (current.text.isEmpty() || current.rect.isEmpty())
+            {
+                flush();
+                continue;
+            }
+
+            if (count > 0)
+            {
+                const bool differentSize =
+                    current.rect.height() > previous.rect.height() * 1.4 ||
+                    previous.rect.height() > current.rect.height() * 1.4;
+
+                const bool separateColumn = current.rect.left() > block.rect.right() ||
+                                            current.rect.right() < block.rect.left();
+
+                const bool previousEndsSentence =
+                    sentenceEnd.match(previous.text).hasMatch();
+
+                // Dòng ngắn đứng riêng trước dòng dài có thể là tiêu đề.
+                const bool shortHeading =
+                    count == 1 && previous.text.size() <= 100 && !previousEndsSentence &&
+                    previous.rect.width() < current.rect.width() * 0.65;
+
+                // Dòng cuối ngắn và có dấu kết câu:
+                // ưu tiên tách đoạn tiếp theo.
+                const bool paragraphEnded =
+                    previousEndsSentence &&
+                    previous.rect.width() < block.rect.width() * 0.72;
+
+                const bool newItem = itemStart.match(current.text).hasMatch();
+
+                // Giới hạn kích thước mỗi khối; phần còn lại
+                // sẽ được chuyển sang khối tiếp theo.
+                const bool tooLong = block.text.size() + 1 + current.text.size() > 900;
+
+                if (differentSize || separateColumn || shortHeading || paragraphEnded ||
+                    newItem || tooLong)
+                {
+                    flush();
+                }
+            }
+
+            if (count == 0)
+            {
+                block = current;
+            }
+            else
+            {
+                block.text += QLatin1Char(' ');
+                block.text += current.text;
+                block.rect = block.rect.united(current.rect);
+            }
+
+            previous = current;
+            ++count;
+        }
+
+        flush();
+        return result;
+    }
 } // namespace
 
 bool AppController::ensureOcrLoaded()
@@ -784,29 +916,26 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame &frame)
             m_ocrImages.value(region.regionId) != region.image)
         {
             const auto boxes = m_ocrEngine.recognize(region.image);
-
-            const auto lines = EZTranslator::OcrTextAssembler::assembleLines(boxes);
+            const auto blocks = buildTranslationBlocks(boxes);
 
             QList<EZTranslator::OcrTextBox> mapped;
 
-            for (const auto &line : lines)
+            for (const auto &block : blocks)
             {
-                EZTranslator::OcrTextBox box;
+                EZTranslator::OcrTextBox box = block;
 
-                box.text = line.text.simplified();
-
-                box.rect = line.rect.intersected(region.image.rect())
+                box.rect = block.rect.intersected(region.image.rect())
                                .translated(region.pixelRect.topLeft());
 
                 if (!box.text.isEmpty() && !box.rect.isEmpty())
-                {
                     mapped.append(box);
-                }
             }
 
             m_regionTextBoxes.insert(region.regionId, mapped);
-
             m_ocrImages.insert(region.regionId, region.image);
+
+            qDebug() << "[OCR blocks]"
+                     << "region =" << region.regionId << "blocks =" << mapped.size();
         }
 
         for (const auto &box : m_regionTextBoxes.value(region.regionId))
@@ -845,7 +974,7 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame &frame)
     m_lastSubmittedText = text;
     m_lastTranslatedText.clear();
 
-    m_sourceText->setPlainText(text);
+    m_sourceText->setPlainText(sources.join(QStringLiteral("\n\n")));
     m_translatedText->clear();
 
     qDebug().noquote() << "[OCR text]" << text;
@@ -1087,19 +1216,24 @@ void AppController::resetTranslationSession()
 
 void AppController::applyTranslationResult(const QString &target)
 {
+    // Giữ dữ liệu gốc để tái sử dụng khi chỉ thay đổi vị trí.
     m_lastTranslatedText = target;
 
-    if (m_translatedText->toPlainText() != target)
-        m_translatedText->setPlainText(target);
+    const QStringList blocks = target.split('\n', Qt::KeepEmptyParts);
 
-    const QStringList lines = target.split('\n', Qt::KeepEmptyParts);
+    // Cửa sổ nổi: cách các đoạn bằng một dòng trống.
+    const QString displayText = blocks.join(QStringLiteral("\n\n"));
 
-    if (lines.size() != m_overlayLayout.size())
+    if (m_translatedText->toPlainText() != displayText)
+        m_translatedText->setPlainText(displayText);
+
+    // Mỗi khối dịch phải có đúng một khung tương ứng.
+    if (blocks.size() != m_overlayLayout.size())
     {
         m_overlayOutput.clear();
         updateOverlay(m_overlayFrameSize);
 
-        m_mainWindow->setStatus("Số dòng dịch không khớp. "
+        m_mainWindow->setStatus("Số khối dịch không khớp. "
                                 "Chọn Cửa sổ nổi để xem kết quả.",
                                 QColor("#f59e0b"));
 
@@ -1108,8 +1242,8 @@ void AppController::applyTranslationResult(const QString &target)
 
     m_overlayOutput = m_overlayLayout;
 
-    for (int i = 0; i < lines.size(); ++i)
-        m_overlayOutput[i].text = lines[i];
+    for (int i = 0; i < blocks.size(); ++i)
+        m_overlayOutput[i].text = blocks[i];
 
     updateOverlay(m_overlayFrameSize);
 }
