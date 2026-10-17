@@ -135,6 +135,8 @@ add_library(ez_ocr STATIC
     src/ocr/OcrTextAssembler.cpp
     src/ocr/OcrEngine.h
     src/ocr/OcrEngine.cpp
+    src/ocr/OcrWorker.h
+    src/ocr/OcrWorker.cpp
 )
 target_include_directories(ez_ocr PUBLIC src PRIVATE "${ORT_DIR}/include")
 target_link_libraries(ez_ocr PUBLIC Qt6::Gui PRIVATE "${ORT_DIR}/lib/onnxruntime.lib")

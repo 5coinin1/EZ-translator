@@ -64,6 +64,14 @@ AppController::AppController(QObject *parent) : QObject(parent)
     qDebug() << "Setting mock regions...";
 
     initTranslationUi();
+
+    m_ocrWorker = new EZTranslator::OcrWorker(this);
+
+    connect(m_ocrWorker, &EZTranslator::OcrWorker::completed, this,
+            &AppController::onOcrCompleted, Qt::QueuedConnection);
+
+    m_ocrWorker->start();
+
     initConnections();
 }
 
@@ -71,6 +79,10 @@ AppController::~AppController()
 {
     if (m_capture)
         m_capture->stop();
+
+    delete m_ocrWorker;
+    m_ocrWorker = nullptr;
+
     delete m_translator;
     m_translator = nullptr;
 
@@ -333,56 +345,6 @@ namespace
     }
 } // namespace
 
-bool AppController::ensureOcrLoaded()
-{
-    if (m_ocrEngine.isLoaded())
-        return true;
-    if (m_ocrLoadAttempted)
-        return false;
-    m_ocrLoadAttempted = true;
-
-    const QString dir = ocrModelsDir();
-    const bool english = m_settings.sourceLanguage.startsWith(
-        QStringLiteral("en"), Qt::CaseInsensitive);
-
-    EZTranslator::OcrOptions options;
-    options.detModelPath = dir + QStringLiteral("/ch_PP-OCRv4_det_infer.onnx");
-    if (english)
-    {
-        options.recModelPath = dir + QStringLiteral("/en_PP-OCRv4_rec_mobile.onnx");
-        options.dictionaryPath = dir + QStringLiteral("/en_dict.txt");
-    }
-    else
-    {
-        options.recModelPath = dir + QStringLiteral("/ch_PP-OCRv4_rec_infer.onnx");
-        options.dictionaryPath = dir + QStringLiteral("/ppocr_keys_v1.txt");
-    }
-    options.useGpu = m_settings.ocrUseGpu;
-
-    QString error;
-    if (!m_ocrEngine.load(options, &error))
-    {
-        qWarning() << "[OCR] Load failed:" << error;
-        m_mainWindow->setStatus(QStringLiteral("Không nạp được OCR: ") + error,
-                                QColor("#ef4444"));
-        return false;
-    }
-
-    const QString provider = m_ocrEngine.providerName();
-    qInfo() << "[OCR] Loaded. Provider =" << provider
-            << "det =" << options.detModelPath << "rec =" << options.recModelPath;
-
-    // Cho người dùng biết đang chạy GPU hay CPU (máy không có GPU rời sẽ là CPU).
-    if (provider == QLatin1String("CPU"))
-        m_mainWindow->setStatus(
-            QStringLiteral("OCR: CPU (không có GPU DX12/DirectML)"),
-            QColor("#f59e0b"));
-    else
-        m_mainWindow->setStatus(QStringLiteral("OCR: ") + provider,
-                                QColor("#22c55e"));
-    return true;
-}
-
 QRect AppController::targetClientRect() const
 {
     QRect rect;
@@ -439,9 +401,6 @@ void AppController::onStartTranslation()
 
     m_settings.sourceLanguage = "en";
     m_settings.translationEngine = "offline";
-
-    if (!ensureOcrLoaded())
-        return;
 
     resetTranslationSession();
 
@@ -802,7 +761,14 @@ void AppController::onOpenSettings()
 
 void AppController::onSettingsSaved(const EZTranslator::AppSettings &settings)
 {
+    const bool ocrChanged = m_settings.ocrUseGpu != settings.ocrUseGpu;
+
     m_settings = settings;
+
+    if (ocrChanged && m_state == EZTranslator::TranslationState::Running)
+    {
+        resetTranslationSession();
+    }
 }
 
 void AppController::onShowMainWindow()
@@ -862,7 +828,6 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame &frame)
     if (m_regionManager.isEmpty())
     {
         EZTranslator::RegionFrame full;
-
         full.regionId = "__full_window__";
         full.regionName = "Toàn cửa sổ";
         full.regionOrder = 1;
@@ -875,129 +840,154 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame &frame)
     }
     else
     {
-        regions = m_regionManager.extractRegions(frame);
+        const auto extracted = m_regionManager.extractRegions(frame);
+
+        for (const auto &region : extracted)
+        {
+            if (region.isValid())
+                regions.append(region);
+        }
     }
 
     if (preview)
         m_roiPreviewDialog->updateFrames(regions);
 
-    if (!running || !m_ocrEngine.isLoaded() || !m_translator->isReady())
-    {
+    if (!running || !m_translator->isReady())
         return;
-    }
 
-    // Phát hiện thay đổi trước khi giới hạn nhịp OCR.
+    bool changed = frame.image.size() != m_observedFrameSize ||
+                   regions.size() != m_ocrImages.size();
+
     for (const auto &region : regions)
     {
-        if (region.isValid() &&
-            (!m_ocrImages.contains(region.regionId) ||
-             m_ocrImages.value(region.regionId) != region.image))
+        if (!m_ocrImages.contains(region.regionId) ||
+            m_ocrImages.value(region.regionId) != region.image ||
+            m_observedRects.value(region.regionId) != region.pixelRect)
         {
-            m_overlayFresh = false;
-            m_textOverlay->hide();
+            changed = true;
             break;
         }
     }
 
-    if (now < m_nextOcrAt)
+    if (!changed)
         return;
 
-    m_nextOcrAt = now + 400;
+    // Mỗi ảnh mới có một mã riêng.
+    // Kết quả của ảnh cũ mất hiệu lực ngay tại đây.
+    ++m_ocrRevision;
+
+    m_ocrImages.clear();
+    m_observedRects.clear();
+    m_observedFrameSize = frame.image.size();
+
+    for (const auto &region : regions)
+    {
+        m_ocrImages.insert(region.regionId, region.image);
+        m_observedRects.insert(region.regionId, region.pixelRect);
+    }
+
+    m_overlayFresh = false;
+    m_overlayLayout.clear();
+    m_overlayOutput.clear();
+    m_lastSubmittedText.clear();
+    m_lastTranslatedText.clear();
+
+    m_textOverlay->hideOverlay();
+    m_translator->cancel();
+
+    m_sourceText->clear();
+    m_translatedText->clear();
+    m_translatedText->setPlaceholderText("Đang nhận diện chữ...");
+
+    if (regions.isEmpty())
+    {
+        m_ocrWorker->cancel(m_ocrRevision);
+        return;
+    }
+
+    EZTranslator::OcrJob job;
+    job.revision = m_ocrRevision;
+    job.modelsDir = ocrModelsDir();
+    job.useGpu = m_settings.ocrUseGpu;
+    job.frameSize = frame.image.size();
+    job.regions = regions;
+
+    m_ocrWorker->submit(job);
+}
+
+void AppController::onOcrCompleted(const EZTranslator::OcrResult &result)
+{
+    // Bỏ kết quả nếu đã dừng hoặc ảnh/vùng chọn đã thay đổi.
+    if (m_state != EZTranslator::TranslationState::Running ||
+        result.revision != m_ocrRevision)
+    {
+        return;
+    }
+
+    if (!result.error.isEmpty())
+    {
+        onStopTranslation();
+
+        m_mainWindow->setStatus("Lỗi OCR: " + result.error, QColor("#ef4444"));
+
+        return;
+    }
 
     QList<EZTranslator::OcrTextBox> layout;
     QStringList sources;
 
-    for (const auto &region : regions)
+    for (const auto &region : result.regions)
     {
-        if (!region.isValid())
-            continue;
+        const auto blocks = buildTranslationBlocks(region.boxes);
 
-        if (!m_ocrImages.contains(region.regionId) ||
-            m_ocrImages.value(region.regionId) != region.image)
+        for (const auto &block : blocks)
         {
-            const auto boxes = m_ocrEngine.recognize(region.image);
-            const auto blocks = buildTranslationBlocks(boxes);
+            EZTranslator::OcrTextBox box = block;
 
-            QList<EZTranslator::OcrTextBox> mapped;
+            box.rect = block.rect.intersected(QRect(QPoint(0, 0), region.imageSize))
+                           .translated(region.pixelRect.topLeft());
 
-            for (const auto &block : blocks)
+            if (!box.text.isEmpty() && !box.rect.isEmpty())
             {
-                EZTranslator::OcrTextBox box = block;
-
-                box.rect = block.rect.intersected(region.image.rect())
-                               .translated(region.pixelRect.topLeft());
-
-                if (!box.text.isEmpty() && !box.rect.isEmpty())
-                    mapped.append(box);
+                layout.append(box);
+                sources.append(box.text);
             }
-
-            m_regionTextBoxes.insert(region.regionId, mapped);
-            m_ocrImages.insert(region.regionId, region.image);
-
-            qDebug() << "[OCR blocks]"
-                     << "region =" << region.regionId << "blocks =" << mapped.size();
-        }
-
-        for (const auto &box : m_regionTextBoxes.value(region.regionId))
-        {
-            layout.append(box);
-            sources.append(box.text);
         }
     }
 
     m_overlayLayout = layout;
-    m_overlayFrameSize = frame.image.size();
+    m_overlayOutput.clear();
+    m_overlayFrameSize = result.frameSize;
     m_overlayFresh = true;
 
-    const QString text = sources.join('\n');
-
-    if (text == m_lastSubmittedText)
-    {
-        if (!m_lastTranslatedText.isEmpty())
-        {
-            // Chữ không đổi nhưng vị trí có thể đã thay đổi.
-            applyTranslationResult(m_lastTranslatedText);
-        }
-        else
-        {
-            m_overlayOutput = m_overlayLayout;
-
-            for (auto &box : m_overlayOutput)
-                box.text.clear();
-
-            updateOverlay(m_overlayFrameSize);
-        }
-
-        return;
-    }
-
-    m_lastSubmittedText = text;
+    m_lastSubmittedText = sources.join('\n');
     m_lastTranslatedText.clear();
 
     m_sourceText->setPlainText(sources.join(QStringLiteral("\n\n")));
+
     m_translatedText->clear();
 
-    qDebug().noquote() << "[OCR text]" << text;
+    qInfo() << "[OCR async]"
+            << "revision =" << result.revision << "ms =" << result.elapsedMs
+            << "blocks =" << layout.size() << "provider =" << result.provider;
 
-    // Che các dòng chữ trong lúc chờ dịch.
-    m_overlayOutput = m_overlayLayout;
+    qDebug().noquote() << "[OCR text]" << m_lastSubmittedText;
 
-    for (auto &box : m_overlayOutput)
-        box.text.clear();
+    m_mainWindow->setStatus("OCR: " + result.provider + " | Offline Anh → Việt",
+                            QColor("#22c55e"));
 
-    updateOverlay(m_overlayFrameSize);
-
-    if (text.isEmpty())
+    if (m_lastSubmittedText.isEmpty())
     {
         m_translator->cancel();
 
         m_translatedText->setPlaceholderText("Chưa nhận dạng được chữ.");
 
+        updateOverlay(result.frameSize);
         return;
     }
 
     m_translatedText->setPlaceholderText("Đang dịch...");
-    m_translator->submit(text);
+    m_translator->submit(m_lastSubmittedText);
 }
 
 void AppController::updateOverlay(const QSize &frameSize)
@@ -1184,15 +1174,16 @@ void AppController::initTranslationUi()
 
 void AppController::resetTranslationSession()
 {
+    ++m_ocrRevision;
+
+    if (m_ocrWorker)
+        m_ocrWorker->cancel(m_ocrRevision);
+
     m_acceptFramesAfter = QDateTime::currentMSecsSinceEpoch() + 1;
 
-    m_nextOcrAt = 0;
-
-    m_changeDetector.reset();
-    m_regionTextBoxes.clear();
-
     m_ocrImages.clear();
-    m_ocrTexts.clear();
+    m_observedRects.clear();
+    m_observedFrameSize = {};
     m_lastSubmittedText.clear();
 
     m_overlayLayout.clear();

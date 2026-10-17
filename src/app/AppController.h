@@ -2,12 +2,11 @@
 
 #include "capture/IWindowCapture.h"
 #include "core/Types.h"
-#include "detection/ChangeDetector.h"
-#include "ocr/OcrEngine.h"
+#include "ocr/OcrWorker.h"
 #include "region/RegionManager.h"
+
 #include <QHash>
 #include <QObject>
-#include <QPointer>
 
 class MainWindow;
 class OfflineTranslator;
@@ -28,20 +27,14 @@ namespace EZTranslator
     class TextOverlay;
 } // namespace EZTranslator
 
-/**
- * AppController – Điều phối luồng và trạng thái giữa các màn hình UI.
- *
- * Đảm bảo các Window không gọi trực tiếp lẫn nhau. Mọi tương tác chuyển màn
- * hình, chuyển trạng thái đều đi qua AppController bằng Qt Signals & Slots.
- */
 class AppController : public QObject
 {
     Q_OBJECT
+
 public:
     explicit AppController(QObject *parent = nullptr);
     ~AppController() override;
 
-    /** Khởi động ứng dụng, hiển thị MainWindow và khay hệ thống */
     void start();
 
 public slots:
@@ -50,12 +43,15 @@ public slots:
     void onToggleTranslation();
 
     void onOpenRegionEditor();
+
     void
     onRegionEditorSaved(const QList<EZTranslator::TranslationRegion> &regions);
+
     void onRegionEditorCancelled();
 
     void onRegionSnapped(const EZTranslator::NormalizedRect &rect,
                          const QRect &screenRect);
+
     void onRegionSnapCancelled();
     void onShowRegion();
     void onPreviewRoiRequested();
@@ -67,23 +63,32 @@ public slots:
     void onShowMainWindow();
     void onQuit();
 
-    /** Goi khi user chon cua so moi tu dropdown */
     void onTargetWindowSelected(quintptr handle, const QString &title,
                                 const QString &processName);
 
-    /** Nhan frame tu capture va chuyen len MainWindow preview */
     void onCaptureFrame(const EZTranslator::CapturedFrame &frame);
 
-    /** Nhan loi tu capture va hien thi warning */
     void onCaptureError(EZTranslator::CaptureError error, const QString &detail);
 
 private:
     void initConnections();
-
     void initTranslationUi();
     void resetTranslationSession();
 
+    void onOcrCompleted(const EZTranslator::OcrResult &result);
+
     void applyTranslationResult(const QString &target);
+
+    bool startCapture(quintptr windowHandle);
+    [[nodiscard]] QRect targetClientRect() const;
+    void updateOverlay(const QSize &frameSize);
+
+    EZTranslator::OcrWorker *m_ocrWorker{nullptr};
+    quint64 m_ocrRevision{0};
+
+    QHash<QString, QImage> m_ocrImages;
+    QHash<QString, QRect> m_observedRects;
+    QSize m_observedFrameSize;
 
     QList<EZTranslator::OcrTextBox> m_overlayLayout;
     QList<EZTranslator::OcrTextBox> m_overlayOutput;
@@ -94,29 +99,11 @@ private:
 
     OfflineTranslator *m_translator{nullptr};
     QDialog *m_translationWindow{nullptr};
-
     QPlainTextEdit *m_sourceText{nullptr};
     QPlainTextEdit *m_translatedText{nullptr};
 
-    QHash<QString, QImage> m_ocrImages;
-    QHash<QString, QString> m_ocrTexts;
-
     QString m_lastSubmittedText;
-
     qint64 m_acceptFramesAfter{0};
-    qint64 m_nextOcrAt{0};
-
-    /** Chọn backend capture: ưu tiên WGC, fallback GDI. */
-    bool startCapture(quintptr windowHandle);
-
-    /** Nạp model OCR một lần (lazy). Trả false nếu không nạp được. */
-    bool ensureOcrLoaded();
-
-    /** Vùng client của cửa sổ đích trên màn hình (toạ độ logical của Qt). */
-    [[nodiscard]] QRect targetClientRect() const;
-
-    /** Cập nhật overlay từ box OCR đã tích luỹ theo vùng. */
-    void updateOverlay(const QSize &frameSize);
 
     MainWindow *m_mainWindow{nullptr};
     RegionEditorWindow *m_regionEditor{nullptr};
@@ -125,20 +112,17 @@ private:
     SettingsDialog *m_settingsDialog{nullptr};
     MiniFloatBar *m_miniFloatBar{nullptr};
     TrayIconManager *m_trayManager{nullptr};
+
     EZTranslator::WgcWindowCapture *m_wgcCapture{nullptr};
     EZTranslator::GdiWindowCapture *m_gdiCapture{nullptr};
-    EZTranslator::IWindowCapture *m_capture{nullptr}; ///< backend đang hoạt động
+    EZTranslator::IWindowCapture *m_capture{nullptr};
+
     EZTranslator::RoiPreviewDialog *m_roiPreviewDialog{nullptr};
     EZTranslator::TextOverlay *m_textOverlay{nullptr};
     EZTranslator::RegionManager m_regionManager;
-    EZTranslator::ChangeDetector m_changeDetector;
-    EZTranslator::OcrEngine m_ocrEngine;
-    bool m_ocrLoadAttempted{false};
-    /// Box đã OCR theo từng vùng (toạ độ frame), giữ lại để overlay luôn đầy đủ
-    /// kể cả khi vùng đó không đổi ở frame hiện tại.
-    QHash<QString, QList<EZTranslator::OcrTextBox>> m_regionTextBoxes;
 
     EZTranslator::TranslationState m_state{EZTranslator::TranslationState::Idle};
+
     EZTranslator::AppSettings m_settings;
     QList<EZTranslator::TranslationRegion> m_regions;
     QRect m_currentScreenRect;

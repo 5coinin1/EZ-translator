@@ -2,8 +2,11 @@ import argparse
 import json
 import os
 import re
-from pathlib import Path
 import sys
+from collections import OrderedDict
+from pathlib import Path
+from time import perf_counter
+
 
 DEFAULT_MODEL = (
     Path(__file__).resolve().parents[1]
@@ -47,6 +50,10 @@ class OfflineTranslator:
             ),
         )
 
+        # Bộ nhớ đệm chỉ tồn tại trong phiên chạy worker.
+        self._translation_cache = OrderedDict()
+        self._cache_limit = 2000
+
     @staticmethod
     def _word_boundary(tokens, limit):
         limit = min(limit, len(tokens))
@@ -61,6 +68,7 @@ class OfflineTranslator:
         return limit
 
     def _prepare_line(self, line):
+        # Dịch từng câu rồi ghép lại đúng đoạn ban đầu.
         sentences = re.split(r"(?<=[.!?])\s+", line.strip())
         chunks = []
 
@@ -119,7 +127,7 @@ class OfflineTranslator:
             if pieces and pieces[-1] == "</s>":
                 output = self.tokenizer.decode(pieces[:-1])
 
-                # Không để xuống dòng phát sinh làm lệch khung overlay.
+                # Không để xuống dòng phát sinh làm lệch overlay.
                 output = " ".join(
                     output.replace("▁", " ").split()
                 )
@@ -128,8 +136,7 @@ class OfflineTranslator:
                 outputs.append(output)
                 continue
 
-            # Bản dịch chưa kết thúc hoặc rỗng:
-            # chia đôi phần đang lỗi rồi thử lại, tối đa 3 cấp.
+            # Chia nhỏ phần chưa dịch được rồi thử lại.
             if depth < 3 and len(tokens) > 1:
                 cut = self._word_boundary(
                     tokens,
@@ -151,8 +158,7 @@ class OfflineTranslator:
                 outputs.append(" ".join(parts))
                 continue
 
-            # Nếu vẫn lỗi, giữ phần tiếng Anh và đánh dấu rõ.
-            # Không bỏ mất nội dung hoặc trả bản dịch bị cắt dở.
+            # Giữ nội dung gốc và đánh dấu nếu vẫn không dịch được.
             source = self.tokenizer.decode(tokens)
             source = " ".join(
                 source.replace("▁", " ").split()
@@ -165,6 +171,68 @@ class OfflineTranslator:
                 file=sys.stderr,
                 flush=True,
             )
+
+        return outputs
+
+    def _translate_cached(self, chunks):
+        if not chunks:
+            return []
+
+        started = perf_counter()
+        outputs = [""] * len(chunks)
+        pending = {}
+        cache_hits = 0
+
+        for index, tokens in enumerate(chunks):
+            # Khóa là chính chuỗi token gửi cho mô hình.
+            key = tuple(tokens)
+
+            if key in self._translation_cache:
+                outputs[index] = self._translation_cache[key]
+                self._translation_cache.move_to_end(key)
+                cache_hits += 1
+            else:
+                # Câu trùng trong cùng yêu cầu chỉ dịch một lần.
+                pending.setdefault(key, []).append(index)
+
+        if pending:
+            keys = list(pending)
+
+            fresh = self._translate_chunks(
+                [list(key) for key in keys]
+            )
+
+            if len(fresh) != len(keys):
+                raise RuntimeError("So ket qua cache khong khop.")
+
+            for key, output in zip(keys, fresh):
+                for index in pending[key]:
+                    outputs[index] = output
+
+                # Không lưu phần dịch thất bại.
+                if output and "[Chưa dịch:" not in output:
+                    self._translation_cache[key] = output
+                    self._translation_cache.move_to_end(key)
+
+                    # Loại mục lâu không được sử dụng nhất khi đầy.
+                    while (
+                        len(self._translation_cache) > self._cache_limit
+                    ):
+                        self._translation_cache.popitem(last=False)
+
+        duplicates = len(chunks) - cache_hits - len(pending)
+        elapsed_ms = (perf_counter() - started) * 1000
+
+        # Log ở stderr, không lẫn vào JSON gửi cho C++.
+        print(
+            f"[cache] hits={cache_hits} "
+            f"new={len(pending)} "
+            f"duplicates={duplicates} "
+            f"stored={len(self._translation_cache)} "
+            f"elapsed_ms={elapsed_ms:.1f}",
+            file=sys.stderr,
+            flush=True,
+        )
 
         return outputs
 
@@ -199,10 +267,9 @@ class OfflineTranslator:
 
             layouts.append(lines)
 
-        translated = self._translate_chunks(inputs)
+        translated = self._translate_cached(inputs)
 
-        # Ghép các phần về đúng dòng/khối ban đầu.
-        # C++ vẫn nhận đúng số khối tương ứng với overlay.
+        # Giữ nguyên số dòng/khối để khớp tọa độ overlay.
         return [
             "\n".join(
                 " ".join(translated[i] for i in indices)
@@ -224,15 +291,18 @@ def main():
         stream.reconfigure(encoding="utf-8")
 
     parser = argparse.ArgumentParser()
+
     parser.add_argument(
         "--model",
         type=Path,
         default=DEFAULT_MODEL,
     )
+
     parser.add_argument(
         "--self-test",
         action="store_true",
     )
+
     args = parser.parse_args()
 
     try:
