@@ -143,6 +143,10 @@ add_library(ez_translate STATIC
     src/translation/ITranslator.h
     src/translation/TranslationCache.h
     src/translation/TranslationCache.cpp
+    src/translation/TranslationPost.h
+    src/translation/TranslationPost.cpp
+    src/translation/LanguageDetect.h
+    src/translation/LanguageDetect.cpp
     src/translation/DocumentTranslator.h
     src/translation/DocumentTranslator.cpp
     src/translation/GoogleTranslator.h
@@ -273,6 +277,10 @@ if(Qt6Test_FOUND)
         src/translation/ITranslator.h
         src/translation/TranslationCache.h
         src/translation/TranslationCache.cpp
+        src/translation/TranslationPost.h
+        src/translation/TranslationPost.cpp
+        src/translation/LanguageDetect.h
+        src/translation/LanguageDetect.cpp
         src/translation/DocumentTranslator.h
         src/translation/DocumentTranslator.cpp
     )

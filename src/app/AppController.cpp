@@ -12,6 +12,7 @@
 #include "ocr/OcrTextAssembler.h"
 #include "overlay/TextOverlay.h"
 #include "translation/TranslationWorker.h"
+#include "translation/LanguageDetect.h"
 #include "translation/DocumentTranslator.h"
 #include "ui/RoiPreviewDialog.h"
 
@@ -693,6 +694,21 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
         }
         if (!regionBoxes.isEmpty())
             m_regionBoxes.insert(regionFrame.regionId, regionBoxes);
+
+        // Tự nhận diện ngôn ngữ nguồn (khi settings để "auto").
+        if (EZTranslator::LanguageDetect::isAuto(m_settings.sourceLanguage)) {
+            const QString detected = EZTranslator::LanguageDetect::detect(assembled.text);
+            if (!detected.isEmpty() && detected != m_detectedSource) {
+                m_detectedSource = detected;
+                if (m_translateWorker) {
+                    QMetaObject::invokeMethod(m_translateWorker, "configure",
+                                              Qt::QueuedConnection, Q_ARG(QString, detected),
+                                              Q_ARG(QString, QStringLiteral("vi")));
+                }
+                m_mainWindow->setStatus(QStringLiteral("Ngôn ngữ nguồn: ") + detected,
+                                        QColor("#38bdf8"));
+            }
+        }
 
         // Yêu cầu dịch BẤT ĐỒNG BỘ; kết quả thay vào overlay khi worker xong (không chặn UI).
         if (ensureTranslator()) {

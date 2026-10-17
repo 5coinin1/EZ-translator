@@ -1,6 +1,7 @@
 #include "translation/DocumentTranslator.h"
 
 #include "translation/TranslationCache.h"
+#include "translation/TranslationPost.h"
 
 #include <algorithm>
 
@@ -51,12 +52,17 @@ TranslatedDocument DocumentTranslator::translate(const QString& assembledText, c
     if (!missing.isEmpty() && fn) {
         const QStringList produced = fn(missing);
         for (int k = 0; k < produced.size() && k < missingIndex.size(); ++k) {
-            const QString& value = produced.at(k);
-            if (value.isEmpty())
-                continue;
+            const QString sourceUnit = units.at(missingIndex.at(k));
+
+            // Hậu xử lý: gộp lặp, khôi phục dấu câu nguồn, lọc output rác.
+            QString value = TranslationPost::collapseRepeats(produced.at(k));
+            value = TranslationPost::applyPunctuation(sourceUnit, value);
+            if (value.isEmpty() || !TranslationPost::isUsableTranslation(sourceUnit, value))
+                continue; // rác → để trống, lần sau thử lại
+
             translations[missingIndex.at(k)] = value;
             if (m_cache)
-                m_cache->put(units.at(missingIndex.at(k)), source, target, value);
+                m_cache->put(sourceUnit, source, target, value);
             ++document.newTranslations;
         }
     }

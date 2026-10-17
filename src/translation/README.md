@@ -24,6 +24,17 @@ Key = (nguồn, đích, text). Cuộn qua lại không phải dịch lại. Gi�
   đoạn (để tầng trên đặt overlay).
 - Đoạn đã có trong cache → dùng lại; chỉ đoạn **mới** mới gọi engine (một lần cho cả lô).
 - Trả `TranslatedDocument{sourceParagraphs, paragraphs, lineCounts, complete, newTranslations}`.
+- Sau khi dịch, chạy **hậu xử lý** (xem dưới) trước khi lưu cache.
+
+### `TranslationPost` — hậu xử lý bản dịch
+- `collapseRepeats`: gộp từ/cụm bị model sinh lặp ("đau đau đau đau đớn"); giữ láy thật.
+- `applyPunctuation`: khôi phục dấu câu/đánh dấu hội thoại của bản gốc ("- Hello!").
+- `isUsableTranslation`: lọc output rác (echo, ký tự lặp, quá ngắn/quá dài) — rác bị coi
+  như chưa dịch, để lần sau thử lại và tạm hiện bản gốc.
+
+### `LanguageDetect` — nhận diện ngôn ngữ nguồn
+Đoán theo **hệ chữ Unicode** (en/zh/ja/ko/ru/ar/he/th), rẻ và tất định. Dùng khi
+`sourceLanguage = "auto"`: detect từ text OCR rồi cấu hình lại worker dịch.
 
 ## Tích hợp
 

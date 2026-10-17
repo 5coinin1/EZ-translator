@@ -123,6 +123,7 @@ private:
     QHash<QString, quint64> m_regionToken; ///< token yêu cầu dịch mới nhất mỗi vùng
     quint64 m_tokenCounter{0};
     QSize m_lastFrameSize;
+    QString m_detectedSource; ///< ngôn ngữ nguồn tự nhận diện (khi settings = "auto")
     /// Box hiển thị theo từng vùng (toạ độ frame), giữ lại để overlay luôn đầy đủ
     /// kể cả khi vùng đó không đổi / bản dịch còn đang chờ ở frame hiện tại.
     QHash<QString, QList<EZTranslator::OverlayBox>> m_regionBoxes;
