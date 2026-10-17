@@ -39,6 +39,7 @@
 
 AppController::AppController(QObject *parent) : QObject(parent)
 {
+    m_settings = SettingsDialog::loadSettings();
     qDebug() << "Creating MainWindow...";
     m_mainWindow = new MainWindow();
     qDebug() << "Creating RegionSnipperOverlay...";
@@ -61,6 +62,7 @@ AppController::AppController(QObject *parent) : QObject(parent)
         m_wgcCapture; // mặc định ưu tiên WGC, fallback trong startCapture()
     qDebug() << "Creating TextOverlay...";
     m_textOverlay = new EZTranslator::TextOverlay();
+    m_textOverlay->setAppearance(m_settings);
     qDebug() << "Setting mock regions...";
 
     initTranslationUi();
@@ -754,6 +756,10 @@ void AppController::onRegionEditorCancelled()
 
 void AppController::onOpenSettings()
 {
+    // Không ghi đè lựa chọn đang chỉnh nếu hộp cài đặt đã mở.
+    if (!m_settingsDialog->isVisible())
+        m_settingsDialog->setSettings(m_settings);
+
     m_settingsDialog->show();
     m_settingsDialog->raise();
     m_settingsDialog->activateWindow();
@@ -764,6 +770,9 @@ void AppController::onSettingsSaved(const EZTranslator::AppSettings &settings)
     const bool ocrChanged = m_settings.ocrUseGpu != settings.ocrUseGpu;
 
     m_settings = settings;
+
+    if (m_textOverlay)
+        m_textOverlay->setAppearance(m_settings);
 
     if (ocrChanged && m_state == EZTranslator::TranslationState::Running)
     {
