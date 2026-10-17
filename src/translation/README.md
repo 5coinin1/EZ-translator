@@ -27,14 +27,17 @@ Key = (nguồn, đích, text). Cuộn qua lại không phải dịch lại. Gi�
 
 ## Tích hợp
 
-`AppController::onCaptureFrame` (chỉ khi vùng đã settle, tức OCR vừa chạy):
-1. `OcrTextAssembler::assembleDocument` → text + rect từng dòng.
-2. `DocumentTranslator::translate` → bản dịch từng đoạn (cache lo phần đã có).
-3. Đặt mỗi đoạn lên **span các dòng nguồn** của nó → `OverlayBox` cho `TextOverlay`.
-4. Đoạn chưa dịch xong → tạm hiện **text nguồn** (không bao giờ để trống).
+`AppController` chạy dịch trên **worker thread** (`TranslationWorker`, `QThread`) để
+không chặn UI:
 
-Dịch chạy trên main thread và **đồng bộ** cho unit mới → có thể chặn UI một nhịp khi
-xuất hiện đoạn mới. Hướng cải tiến: đẩy sang worker thread + dịch bất đồng bộ.
+1. Khi OCR vừa chạy (vùng đã settle): assemble → hiện NGAY **text nguồn** (overlay
+   không trống) → gửi yêu cầu dịch `(regionId, text, token)` bằng QueuedConnection.
+2. Worker dịch (cache + engine) rồi phát `translated(regionId, token, doc)`.
+3. Main thread nhận kết quả (bỏ qua nếu `token` cũ) → đặt mỗi đoạn lên **span các
+   dòng nguồn** → cập nhật overlay.
+
+`token` tăng dần mỗi yêu cầu nên kết quả của vùng đã đổi nội dung sẽ bị bỏ qua.
+Engine online (Google → MyMemory) sống trong worker thread.
 
 ## Kiểm tra nhanh
 

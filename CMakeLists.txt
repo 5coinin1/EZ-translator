@@ -149,6 +149,8 @@ add_library(ez_translate STATIC
     src/translation/GoogleTranslator.cpp
     src/translation/MyMemoryTranslator.h
     src/translation/MyMemoryTranslator.cpp
+    src/translation/TranslationWorker.h
+    src/translation/TranslationWorker.cpp
 )
 target_include_directories(ez_translate PUBLIC src)
 target_link_libraries(ez_translate PUBLIC Qt6::Core Qt6::Network)
@@ -214,7 +216,7 @@ endif()
 
 # --- OCR smoke test (console) — chạy det+rec trên ảnh tổng hợp ---
 add_executable(ocr_smoke tools/ocr_smoke.cpp)
-target_link_libraries(ocr_smoke PRIVATE ez_ocr Qt6::Gui)
+target_link_libraries(ocr_smoke PRIVATE ez_ocr ez_translate Qt6::Gui)
 set_target_properties(ocr_smoke PROPERTIES WIN32_EXECUTABLE OFF)
 if(WIN32)
     add_custom_command(TARGET ocr_smoke POST_BUILD

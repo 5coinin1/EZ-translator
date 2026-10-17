@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QList>
+#include <QMetaType>
 #include <QString>
 #include <QStringList>
 
@@ -42,3 +43,5 @@ private:
 };
 
 } // namespace EZTranslator
+
+Q_DECLARE_METATYPE(EZTranslator::TranslatedDocument)

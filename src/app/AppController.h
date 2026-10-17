@@ -9,13 +9,13 @@
 #include "ocr/OcrScheduler.h"
 #include "ocr/OcrEngine.h"
 #include "overlay/TextOverlay.h"
-#include "translation/ITranslator.h"
-#include "translation/TranslationCache.h"
+#include "translation/DocumentTranslator.h"
 
 #include <QElapsedTimer>
 
 #include <memory>
 
+class QThread;
 class MainWindow;
 class RegionEditorWindow;
 class RegionSnipperOverlay;
@@ -28,6 +28,7 @@ namespace EZTranslator {
     class GdiWindowCapture;
     class WgcWindowCapture;
     class RoiPreviewDialog;
+    class TranslationWorker;
 }
 
 /**
@@ -76,6 +77,10 @@ public slots:
     /** Nhan loi tu capture va hien thi warning */
     void onCaptureError(EZTranslator::CaptureError error, const QString& detail);
 
+    /** Nhan ket qua dich bat dong bo tu worker thread */
+    void onTranslationReady(const QString& regionId, quint64 token,
+                            const EZTranslator::TranslatedDocument& document);
+
 private:
     void initConnections();
 
@@ -111,9 +116,13 @@ private:
     EZTranslator::OcrEngine          m_ocrEngine;
     QElapsedTimer                    m_clock; ///< đồng hồ đơn điệu cho scheduler
     bool                             m_ocrLoadAttempted{false};
-    EZTranslator::TranslationCache   m_translationCache;
-    std::unique_ptr<EZTranslator::ITranslator> m_translator;
-    std::unique_ptr<EZTranslator::ITranslator> m_translatorFallback;
+    QThread* m_translateThread{nullptr};
+    EZTranslator::TranslationWorker* m_translateWorker{nullptr};
+    /// Dòng nguồn (toạ độ frame) theo vùng, để đặt bản dịch khi worker trả kết quả.
+    QHash<QString, QList<QRect>> m_regionLines;
+    QHash<QString, quint64> m_regionToken; ///< token yêu cầu dịch mới nhất mỗi vùng
+    quint64 m_tokenCounter{0};
+    QSize m_lastFrameSize;
     /// Box hiển thị theo từng vùng (toạ độ frame), giữ lại để overlay luôn đầy đủ
     /// kể cả khi vùng đó không đổi / bản dịch còn đang chờ ở frame hiện tại.
     QHash<QString, QList<EZTranslator::OverlayBox>> m_regionBoxes;

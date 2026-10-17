@@ -8,10 +8,15 @@
 #include <QImage>
 #include <QPainter>
 #include <QString>
+#include <QStringList>
 #include <QDebug>
 
 #include "ocr/OcrEngine.h"
 #include "ocr/OcrTextAssembler.h"
+#include "translation/DocumentTranslator.h"
+#include "translation/GoogleTranslator.h"
+#include "translation/MyMemoryTranslator.h"
+#include "translation/TranslationCache.h"
 
 using namespace EZTranslator;
 
@@ -57,6 +62,38 @@ int main(int argc, char** argv)
     qInfo("det %.1f ms, rec %.1f ms, boxes %d", timings.detMs, timings.recMs, timings.boxes);
     for (const OcrTextBox& box : boxes)
         qInfo().noquote() << "  box" << box.rect << "conf" << box.confidence << "text:" << box.text;
-    qInfo().noquote() << "assemble:\n" << OcrTextAssembler::assemble(boxes);
+
+    const OcrTextAssembler::Assembled assembled = OcrTextAssembler::assembleDocument(boxes);
+    qInfo().noquote() << "assemble:\n" << assembled.text;
+
+    // Dịch end-to-end y hệt AppController để xác nhận tầng dịch.
+    TranslationCache cache;
+    GoogleTranslator google;
+    MyMemoryTranslator mymemory;
+    DocumentTranslator document(&cache);
+    const auto translateFn = [&](const QStringList& units) {
+        QStringList out = google.translate(units, "en", "vi");
+        QStringList missing;
+        QList<int> missingIndex;
+        for (int i = 0; i < out.size() && i < units.size(); ++i) {
+            if (out.at(i).isEmpty() && !units.at(i).trimmed().isEmpty()) {
+                missing.append(units.at(i));
+                missingIndex.append(i);
+            }
+        }
+        if (!missing.isEmpty()) {
+            const QStringList alt = mymemory.translate(missing, "en", "vi");
+            for (int k = 0; k < alt.size() && k < missingIndex.size(); ++k)
+                if (!alt.at(k).isEmpty())
+                    out[missingIndex.at(k)] = alt.at(k);
+        }
+        return out;
+    };
+    const TranslatedDocument doc = document.translate(assembled.text, "en", "vi", translateFn);
+    qInfo() << "translated complete =" << doc.complete << "new =" << doc.newTranslations;
+    for (int i = 0; i < doc.sourceParagraphs.size(); ++i)
+        qInfo().noquote() << "  [" << doc.sourceParagraphs.at(i) << "] -> ["
+                          << doc.paragraphs.value(i) << "]";
+
     return boxes.isEmpty() ? 2 : 0;
 }
