@@ -9,7 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if(NOT CMAKE_PREFIX_PATH)
     set(CMAKE_PREFIX_PATH "$ENV{QTDIR}" CACHE PATH "Qt install prefix")
 endif()
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network)
 qt_standard_project_setup()
 set(CMAKE_AUTOUIC OFF)
 
@@ -38,6 +38,7 @@ set(SOURCES
     src/region/RegionManager.cpp
 
     # Detection – change detection + text region detection
+    src/detection/ImageHash.h
     src/detection/TextBox.h
     src/detection/ITextDetector.h
     src/detection/HeuristicTextDetector.h
@@ -121,6 +122,8 @@ endif()
 # --- Module OCR (static lib) — Detection (PP-OCR DB) + Recognition (PP-OCR CTC) ---
 add_library(ez_ocr STATIC
     src/ocr/OcrTypes.h
+    src/ocr/OcrScheduler.h
+    src/ocr/OcrScheduler.cpp
     src/ocr/OcrRuntime.h
     src/ocr/OcrRuntime.cpp
     src/ocr/OcrDetector.h
@@ -135,6 +138,21 @@ add_library(ez_ocr STATIC
 target_include_directories(ez_ocr PUBLIC src PRIVATE "${ORT_DIR}/include")
 target_link_libraries(ez_ocr PUBLIC Qt6::Gui PRIVATE "${ORT_DIR}/lib/onnxruntime.lib")
 
+# --- Module Translation (static lib) — cache + engine online + ghép đoạn ---
+add_library(ez_translate STATIC
+    src/translation/ITranslator.h
+    src/translation/TranslationCache.h
+    src/translation/TranslationCache.cpp
+    src/translation/DocumentTranslator.h
+    src/translation/DocumentTranslator.cpp
+    src/translation/GoogleTranslator.h
+    src/translation/GoogleTranslator.cpp
+    src/translation/MyMemoryTranslator.h
+    src/translation/MyMemoryTranslator.cpp
+)
+target_include_directories(ez_translate PUBLIC src)
+target_link_libraries(ez_translate PUBLIC Qt6::Core Qt6::Network)
+
 # Model mặc định: cho phép override bằng biến môi trường EZ_MODELS_DIR lúc chạy.
 target_compile_definitions(ez_ocr PUBLIC
     EZ_DEFAULT_MODELS_DIR="${CMAKE_SOURCE_DIR}/models")
@@ -146,7 +164,9 @@ target_link_libraries(EZTranslator
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
+    Qt6::Network
     ez_ocr
+    ez_translate
 )
 
 # DLL của ONNX Runtime + DirectML phải nằm cạnh exe lúc chạy.
@@ -202,6 +222,11 @@ if(WIN32)
             "$<TARGET_FILE_DIR:ocr_smoke>")
 endif()
 
+# --- Translation smoke test (console) — dịch vài câu qua engine online ---
+add_executable(translate_smoke tools/translate_smoke.cpp)
+target_link_libraries(translate_smoke PRIVATE ez_translate)
+set_target_properties(translate_smoke PROPERTIES WIN32_EXECUTABLE OFF)
+
 # --- Unit Tests ---
 find_package(Qt6 COMPONENTS Test QUIET)
 if(Qt6Test_FOUND)
@@ -222,6 +247,7 @@ if(Qt6Test_FOUND)
 
     add_executable(test_detection
         tests/test_detection.cpp
+        src/detection/ImageHash.h
         src/detection/TextBox.h
         src/detection/ITextDetector.h
         src/detection/HeuristicTextDetector.h
@@ -230,11 +256,28 @@ if(Qt6Test_FOUND)
         src/detection/RecursiveXYCut.cpp
         src/detection/ChangeDetector.h
         src/detection/ChangeDetector.cpp
+        src/ocr/OcrScheduler.h
+        src/ocr/OcrScheduler.cpp
     )
     target_include_directories(test_detection PRIVATE src)
     target_link_libraries(test_detection PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
     set_target_properties(test_detection PROPERTIES WIN32_EXECUTABLE FALSE)
     if(MINGW OR GCC)
         target_compile_options(test_detection PRIVATE -finput-charset=UTF-8 -fexec-charset=UTF-8)
+    endif()
+
+    add_executable(test_translation
+        tests/test_translation.cpp
+        src/translation/ITranslator.h
+        src/translation/TranslationCache.h
+        src/translation/TranslationCache.cpp
+        src/translation/DocumentTranslator.h
+        src/translation/DocumentTranslator.cpp
+    )
+    target_include_directories(test_translation PRIVATE src)
+    target_link_libraries(test_translation PRIVATE Qt6::Core Qt6::Test)
+    set_target_properties(test_translation PROPERTIES WIN32_EXECUTABLE FALSE)
+    if(MINGW OR GCC)
+        target_compile_options(test_translation PRIVATE -finput-charset=UTF-8 -fexec-charset=UTF-8)
     endif()
 endif()

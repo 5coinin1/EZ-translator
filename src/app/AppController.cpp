@@ -11,6 +11,9 @@
 #include "region/RegionManager.h"
 #include "ocr/OcrTextAssembler.h"
 #include "overlay/TextOverlay.h"
+#include "translation/GoogleTranslator.h"
+#include "translation/MyMemoryTranslator.h"
+#include "translation/DocumentTranslator.h"
 #include "ui/RoiPreviewDialog.h"
 
 #ifdef _WIN32
@@ -27,9 +30,13 @@
 #include <QTimer>
 #include <QDebug>
 
+#include <algorithm>
+#include <memory>
+
 AppController::AppController(QObject* parent)
     : QObject(parent)
 {
+    m_clock.start();
     qDebug() << "Creating MainWindow...";
     m_mainWindow = new MainWindow();
     qDebug() << "Creating RegionSnipperOverlay...";
@@ -76,8 +83,8 @@ void AppController::initConnections()
     connect(m_mainWindow, &MainWindow::requestClearRegion,      this, [this]() {
         m_regions.clear();
         m_regionManager.clear();
-        m_changeDetector.reset();
-        m_regionTextBoxes.clear();
+        m_ocrScheduler.reset();
+        m_regionBoxes.clear();
         if (m_textOverlay)
             m_textOverlay->hideOverlay();
         if (m_highlightOverlay) {
@@ -205,6 +212,19 @@ bool AppController::ensureOcrLoaded()
     else
         m_mainWindow->setStatus(QStringLiteral("OCR: ") + provider, QColor("#22c55e"));
     return true;
+}
+
+bool AppController::ensureTranslator()
+{
+    if (m_translator)
+        return m_translator->isReady();
+
+    m_translator = std::make_unique<EZTranslator::GoogleTranslator>();
+    m_translatorFallback = std::make_unique<EZTranslator::MyMemoryTranslator>();
+    m_translationCache.setLimit(qMax(1, m_settings.cacheCapacityLines));
+    qInfo() << "[Translate] engine =" << m_translator->name()
+            << "from" << m_settings.sourceLanguage << "to vi";
+    return m_translator->isReady();
 }
 
 QRect AppController::targetClientRect() const
@@ -370,8 +390,8 @@ void AppController::onRegionSnapped(const EZTranslator::NormalizedRect& rect, co
     m_regions.clear();
     m_regions.append(reg);
     m_regionManager.setRegions(m_regions);
-    m_changeDetector.reset();
-    m_regionTextBoxes.clear();
+    m_ocrScheduler.reset();
+    m_regionBoxes.clear();
     m_currentScreenRect = screenRect;
 
     if (m_highlightOverlay && m_highlightOverlay->isVisible()) {
@@ -514,8 +534,8 @@ void AppController::onRegionEditorSaved(const QList<EZTranslator::TranslationReg
 {
     m_regions = regions;
     m_regionManager.setRegions(regions);
-    m_changeDetector.reset();
-    m_regionTextBoxes.clear();
+    m_ocrScheduler.reset();
+    m_regionBoxes.clear();
     m_regionEditor->hide();
     m_mainWindow->show();
     m_mainWindow->raise();
@@ -579,6 +599,9 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
         m_roiPreviewDialog->updateFrames(regionFrames);
     }
 
+    m_ocrScheduler.beginTick();
+    const qint64 now = m_clock.isValid() ? m_clock.elapsed() : 0;
+
     QSize frameSize;
     for (const EZTranslator::RegionFrame& regionFrame : regionFrames) {
         if (!regionFrame.isValid())
@@ -586,35 +609,88 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
 
         frameSize = regionFrame.sourceFrameSize;
 
-        // Nguyên tắc #2: bỏ qua vùng không đổi để tránh OCR/dịch lại
-        if (!m_changeDetector.hasChanged(regionFrame.regionId, regionFrame.image))
-            continue;
-
         if (!m_ocrEngine.isLoaded())
             continue;
 
-        // Detection (box) + Recognition (text) tách riêng, rồi ghép thành văn bản.
+        // Lên lịch: chỉ OCR khi vùng đã settle (tránh OCR giữa lúc nội dung còn đổi),
+        // qua cooldown, và tối đa vài lần mỗi tick.
+        const EZTranslator::OcrScheduleDecision decision =
+            m_ocrScheduler.process(regionFrame.regionId, regionFrame.image, now);
+        if (!decision.run)
+            continue; // deferred → giữ box cũ để overlay không nhấp nháy
+
+        // Detection (box) + Recognition (text) tách riêng.
         const QList<EZTranslator::OcrTextBox> boxes = m_ocrEngine.recognize(regionFrame.image);
-        const QString text = EZTranslator::OcrTextAssembler::assemble(boxes);
+        if (boxes.isEmpty())
+            continue; // không đọc được gì → giữ kết quả trước, không xóa overlay
 
         const EZTranslator::OcrTimings timings = m_ocrEngine.lastTimings();
         qDebug() << "[OCR]" << regionFrame.regionId << "->" << boxes.size() << "line(s),"
                  << "det" << timings.detMs << "ms, rec" << timings.recMs << "ms"
                  << "(cached" << timings.recCached << ")";
-        if (!text.isEmpty())
-            qDebug().noquote() << "[OCR text]" << text;
 
-        // Map box từ toạ độ ROI sang toạ độ frame để overlay đặt đúng vị trí.
-        QList<EZTranslator::OcrTextBox> frameBoxes;
-        frameBoxes.reserve(boxes.size());
-        for (const EZTranslator::OcrTextBox& box : boxes) {
-            EZTranslator::OcrTextBox mapped = box;
-            mapped.rect = box.rect.translated(regionFrame.pixelRect.topLeft());
-            frameBoxes.append(mapped);
+        // Ghép các dòng thành văn bản + rect từng dòng (toạ độ ROI).
+        const EZTranslator::OcrTextAssembler::Assembled assembled =
+            EZTranslator::OcrTextAssembler::assembleDocument(boxes);
+
+        // Dịch theo đoạn; chỉ gọi engine cho đoạn MỚI (cache lo phần còn lại).
+        EZTranslator::TranslatedDocument translated;
+        if (ensureTranslator()) {
+            const QString srcLang = m_settings.sourceLanguage;
+            const QString tgtLang = QStringLiteral("vi");
+            const auto translateFn = [this, &srcLang, &tgtLang](const QStringList& units) {
+                QStringList out = m_translator->translate(units, srcLang, tgtLang);
+                // Engine phụ cho unit mà engine chính bỏ trống (bị chặn/giới hạn).
+                QStringList missing;
+                QList<int> missingIndex;
+                for (int i = 0; i < out.size() && i < units.size(); ++i) {
+                    if (out.at(i).isEmpty() && !units.at(i).trimmed().isEmpty()) {
+                        missing.append(units.at(i));
+                        missingIndex.append(i);
+                    }
+                }
+                if (!missing.isEmpty() && m_translatorFallback) {
+                    const QStringList alt = m_translatorFallback->translate(missing, srcLang, tgtLang);
+                    for (int k = 0; k < alt.size() && k < missingIndex.size(); ++k) {
+                        if (!alt.at(k).isEmpty())
+                            out[missingIndex.at(k)] = alt.at(k);
+                    }
+                }
+                return out;
+            };
+            translated = EZTranslator::DocumentTranslator(&m_translationCache)
+                             .translate(assembled.text, srcLang, tgtLang, translateFn);
         }
-        m_regionTextBoxes.insert(regionFrame.regionId, frameBoxes);
 
-        // TODO (task translation/): đưa text vào ITranslator rồi thay text hiển thị
+        // Đặt mỗi đoạn lên span các dòng nguồn của nó (toạ độ frame).
+        const QPoint offset = regionFrame.pixelRect.topLeft();
+        QList<EZTranslator::OverlayBox> regionBoxes;
+        int line = 0;
+        for (int p = 0; p < translated.sourceParagraphs.size(); ++p) {
+            const int count = translated.lineCounts.value(p, 1);
+            QRect span;
+            for (int l = line; l < line + count && l < assembled.lines.size(); ++l) {
+                const QRect rect = assembled.lines.at(l).rect.translated(offset);
+                span = span.isNull() ? rect : span.united(rect);
+            }
+            line += count;
+
+            QString text = translated.paragraphs.value(p);
+            if (text.isEmpty())
+                text = translated.sourceParagraphs.value(p); // chưa dịch xong → hiện bản gốc
+            if (!span.isNull() && !text.isEmpty())
+                regionBoxes.append(EZTranslator::OverlayBox{span, text});
+        }
+        if (regionBoxes.isEmpty()) {
+            // Không có cấu trúc đoạn → hiện từng dòng OCR như trước.
+            for (const EZTranslator::OcrTextBox& box : boxes) {
+                if (!box.text.isEmpty())
+                    regionBoxes.append(
+                        EZTranslator::OverlayBox{box.rect.translated(offset), box.text});
+            }
+        }
+        if (!regionBoxes.isEmpty())
+            m_regionBoxes.insert(regionFrame.regionId, regionBoxes);
     }
 
     updateOverlay(frameSize);
@@ -625,8 +701,8 @@ void AppController::updateOverlay(const QSize& frameSize)
     if (!m_textOverlay)
         return;
 
-    QList<EZTranslator::OcrTextBox> all;
-    for (auto it = m_regionTextBoxes.constBegin(); it != m_regionTextBoxes.constEnd(); ++it)
+    QList<EZTranslator::OverlayBox> all;
+    for (auto it = m_regionBoxes.constBegin(); it != m_regionBoxes.constEnd(); ++it)
         all.append(it.value());
 
     const QRect client = targetClientRect();
@@ -637,7 +713,7 @@ void AppController::updateOverlay(const QSize& frameSize)
     }
 
     m_textOverlay->showOverTarget(client);
-    m_textOverlay->setTextBoxes(all, frameSize);
+    m_textOverlay->setBoxes(all, frameSize);
 }
 
 void AppController::onCaptureError(EZTranslator::CaptureError error, const QString& detail)

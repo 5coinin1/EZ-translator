@@ -6,8 +6,15 @@
 #include "core/Types.h"
 #include "capture/IWindowCapture.h"
 #include "region/RegionManager.h"
-#include "detection/ChangeDetector.h"
+#include "ocr/OcrScheduler.h"
 #include "ocr/OcrEngine.h"
+#include "overlay/TextOverlay.h"
+#include "translation/ITranslator.h"
+#include "translation/TranslationCache.h"
+
+#include <QElapsedTimer>
+
+#include <memory>
 
 class MainWindow;
 class RegionEditorWindow;
@@ -21,7 +28,6 @@ namespace EZTranslator {
     class GdiWindowCapture;
     class WgcWindowCapture;
     class RoiPreviewDialog;
-    class TextOverlay;
 }
 
 /**
@@ -79,10 +85,13 @@ private:
     /** Nạp model OCR một lần (lazy). Trả false nếu không nạp được. */
     bool ensureOcrLoaded();
 
+    /** Tạo engine dịch một lần (lazy). Trả false nếu không có engine. */
+    bool ensureTranslator();
+
     /** Vùng client của cửa sổ đích trên màn hình (toạ độ logical của Qt). */
     [[nodiscard]] QRect targetClientRect() const;
 
-    /** Cập nhật overlay từ box OCR đã tích luỹ theo vùng. */
+    /** Cập nhật overlay từ box đã tích luỹ theo vùng. */
     void updateOverlay(const QSize& frameSize);
 
     MainWindow*               m_mainWindow{nullptr};
@@ -98,12 +107,16 @@ private:
     EZTranslator::RoiPreviewDialog* m_roiPreviewDialog{nullptr};
     EZTranslator::TextOverlay*      m_textOverlay{nullptr};
     EZTranslator::RegionManager      m_regionManager;
-    EZTranslator::ChangeDetector     m_changeDetector;
+    EZTranslator::OcrScheduler       m_ocrScheduler;
     EZTranslator::OcrEngine          m_ocrEngine;
+    QElapsedTimer                    m_clock; ///< đồng hồ đơn điệu cho scheduler
     bool                             m_ocrLoadAttempted{false};
-    /// Box đã OCR theo từng vùng (toạ độ frame), giữ lại để overlay luôn đầy đủ
-    /// kể cả khi vùng đó không đổi ở frame hiện tại.
-    QHash<QString, QList<EZTranslator::OcrTextBox>> m_regionTextBoxes;
+    EZTranslator::TranslationCache   m_translationCache;
+    std::unique_ptr<EZTranslator::ITranslator> m_translator;
+    std::unique_ptr<EZTranslator::ITranslator> m_translatorFallback;
+    /// Box hiển thị theo từng vùng (toạ độ frame), giữ lại để overlay luôn đầy đủ
+    /// kể cả khi vùng đó không đổi / bản dịch còn đang chờ ở frame hiện tại.
+    QHash<QString, QList<EZTranslator::OverlayBox>> m_regionBoxes;
 
     EZTranslator::TranslationState m_state{EZTranslator::TranslationState::Idle};
     EZTranslator::AppSettings m_settings;

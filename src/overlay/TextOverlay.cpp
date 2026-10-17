@@ -51,7 +51,7 @@ void TextOverlay::hideOverlay()
     hide();
 }
 
-void TextOverlay::setTextBoxes(const QList<OcrTextBox>& boxes, const QSize& frameSize)
+void TextOverlay::setBoxes(const QList<OverlayBox>& boxes, const QSize& frameSize)
 {
     m_boxes = boxes;
     m_frameSize = frameSize;
@@ -76,7 +76,7 @@ void TextOverlay::paintEvent(QPaintEvent*)
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::TextAntialiasing, true);
 
-    for (const OcrTextBox& box : m_boxes) {
+    for (const OverlayBox& box : m_boxes) {
         if (box.text.isEmpty())
             continue;
 

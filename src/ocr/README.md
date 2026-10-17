@@ -35,6 +35,18 @@ theo khe) → phát hiện đoạn theo khe dòng / thụt đầu dòng → `ass
 `recognize(image)` = `OcrDetector.detect` → `OcrRecognizer.recognize`. Giữ ONNX
 Runtime kín trong `OcrRuntime` (Detector/Recognizer không phụ thuộc header ORT).
 
+### 5. Lên lịch — `OcrScheduler`
+Quyết định **khi nào** chạy OCR cho một vùng, thay cho "đổi là chạy ngay":
+
+- **settle** (`settleMs`, 130): vùng phải đứng yên đủ lâu mới chạy — tránh OCR giữa
+  lúc nội dung/hoạt ảnh còn đang đổi.
+- **cooldown** (`minRunIntervalMs`, 600): hai lần chạy cùng vùng cách nhau tối thiểu.
+- **cap** (`maxRunsPerTick`, 1): tối đa vài lần chạy mỗi tick khi có nhiều vùng.
+- Hash nội dung dùng `imageDifferenceHash` (dHash, chung với `detection/`).
+
+`AppController` gọi `beginTick()` rồi `process()` cho từng vùng mỗi frame; chỉ vùng
+`run=true` mới OCR. Vùng `deferred` **giữ box cũ** → overlay không nhấp nháy.
+
 ## Execution Provider (GPU → CPU fallback)
 
 `OcrRuntime` chọn provider lúc chạy: thử **DirectML/CUDA**, nếu build ORT không có

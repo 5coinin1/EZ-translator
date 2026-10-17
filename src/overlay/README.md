@@ -13,18 +13,19 @@ Lớp phủ trong suốt hiển thị chữ (OCR / bản dịch) đè lên cửa
 Cách hoạt động:
 1. `showOverTarget(clientLogicalRect)` — đặt overlay lên đúng vùng client của
    cửa sổ đích (toạ độ logical của Qt).
-2. `setTextBoxes(boxes, frameSize)` — box theo toạ độ frame capture.
+2. `setBoxes(boxes, frameSize)` — box (`OverlayBox{rect,text}`) theo toạ độ frame.
 3. `paintEvent` map tỉ lệ frame → widget, che chữ gốc bằng nền đặc rồi vẽ chữ lên.
 
-Đây là bản cơ bản: hiển thị **text OCR** (chưa dịch). Khi có tầng `translation/`
-chỉ cần thay text truyền vào — không cần đổi overlay.
+`OverlayBox` là kiểu chung (rect + text), nên overlay không phụ thuộc kiểu OCR: tầng
+trên truyền vào text OCR hoặc **bản dịch** tuỳ tình huống.
 
 ## Tích hợp
 
 `AppController::onCaptureFrame`:
-- OCR từng vùng đã đổi → map box từ toạ độ ROI sang toạ độ frame.
-- Lưu box theo `regionId` (`m_regionTextBoxes`) để overlay luôn đầy đủ kể cả khi
-  vùng không đổi ở frame hiện tại.
+- OCR vùng đã settle → assemble thành đoạn → dịch theo đoạn (cache) →
+  đặt mỗi đoạn lên span các dòng nguồn của nó.
+- Lưu box theo `regionId` (`m_regionBoxes`) để overlay luôn đầy đủ kể cả khi vùng
+  không đổi / bản dịch còn đang chờ ở frame hiện tại (không bao giờ để trống).
 - `updateOverlay()` gom mọi vùng rồi đặt lên cửa sổ đích.
 
 Overlay tự ẩn khi dừng dịch, khi xoá vùng, hoặc khi không còn box.
