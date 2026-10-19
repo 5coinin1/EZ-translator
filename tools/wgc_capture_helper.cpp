@@ -180,12 +180,18 @@ int main(int argc, char** argv)
         return frames > 0 ? 0 : 2;
     }
 
-    if (hwndValue == 0 || !controlName || !dataName)
+    if (hwndValue == 0 || !controlName || !dataName) {
+        std::fprintf(stderr, "helper: thieu tham so (hwnd=%llu control=%s data=%s)\n", hwndValue,
+                     controlName ? controlName : "(null)", dataName ? dataName : "(null)");
         return 1;
+    }
 
     HANDLE controlHandle = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, controlName);
-    if (!controlHandle)
+    if (!controlHandle) {
+        std::fprintf(stderr, "helper: khong mo duoc control '%s' (err=%lu)\n", controlName,
+                     GetLastError());
         return 2;
+    }
 
     auto* control = static_cast<wgc::ControlBlock*>(
         MapViewOfFile(controlHandle, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(wgc::ControlBlock)));
@@ -197,29 +203,25 @@ int main(int argc, char** argv)
     HWND hwnd = reinterpret_cast<HWND>(hwndValue);
     WgcCapture capture;
     if (!capture.start(uintptr_t(hwndValue))) {
+        std::fprintf(stderr, "helper: capture start failed (hwnd=0x%llx)\n", hwndValue);
         fail(control, wgc::HelperStatus::CaptureStartFailed);
         UnmapViewOfFile(control);
         CloseHandle(controlHandle);
         return 3;
     }
 
-    // Chờ frame đầu tiên để biết kích thước cửa sổ thật.
-    WgcCapture::Frame first;
-    for (int attempt = 0; attempt < 300 && first.isEmpty(); ++attempt) {
-        first = capture.grab(0, 0, 1 << 20, 1 << 20);
-        if (first.isEmpty())
-            Sleep(10);
-    }
-    if (first.isEmpty()) {
+    // Cỡ vùng đệm lấy từ CLIENT RECT (DPI-aware), KHÔNG chờ frame đầu tiên — để app
+    // chính bắt đầu ngay; frame sẽ được ghi khi cửa sổ vẽ lại.
+    RECT clientRc{};
+    if (!GetClientRect(hwnd, &clientRc)) {
         capture.stop();
         fail(control, wgc::HelperStatus::CaptureStartFailed);
         UnmapViewOfFile(control);
         CloseHandle(controlHandle);
         return 3;
     }
-
-    const int allocatedWidth = first.width;
-    const int allocatedHeight = first.height;
+    const int allocatedWidth = std::max(1, int(clientRc.right - clientRc.left));
+    const int allocatedHeight = std::max(1, int(clientRc.bottom - clientRc.top));
     const int slotBytes = wgc::slotBytesFor(allocatedWidth, allocatedHeight);
     const size_t dataBytes = sizeof(wgc::FrameHeader)
                              + size_t(wgc::kSlotCount) * size_t(slotBytes);
@@ -252,8 +254,10 @@ int main(int argc, char** argv)
     header->sequence = 0;
     auto* slots = reinterpret_cast<uint8_t*>(header) + sizeof(wgc::FrameHeader);
 
-    // Công bố frame đầu tiên rồi báo sẵn sàng.
-    writeFrame(header, slots, slotBytes, first, clientCrop(hwnd, first.width, first.height));
+    // Có frame ngay thì ghi luôn; chưa có thì để trống rồi báo sẵn sàng.
+    const WgcCapture::Frame first = capture.grab(0, 0, 1 << 20, 1 << 20);
+    if (!first.isEmpty())
+        writeFrame(header, slots, slotBytes, first, clientCrop(hwnd, first.width, first.height));
     control->status = static_cast<int32_t>(wgc::HelperStatus::Ok);
     InterlockedExchange(reinterpret_cast<volatile LONG*>(&control->ready), 1);
 

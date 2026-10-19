@@ -18,6 +18,8 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QColorDialog>
+#include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QPainter>
 #include <QScrollArea>
 #include <functional>
@@ -227,6 +229,7 @@ void SettingsDialog::buildUi()
 
     const QStringList sections = {
         "Chung",
+        "Dịch thuật",
         "Giao diện",
         "OCR",
         "Phím tắt"
@@ -236,6 +239,7 @@ void SettingsDialog::buildUi()
     // ── Detail stack ──────────────────────────────────────────────────────────
     m_stack = new QStackedWidget(body);
     m_stack->addWidget(buildGeneralPage());
+    m_stack->addWidget(buildTranslationPage());
     m_stack->addWidget(buildOverlayPage());
     m_stack->addWidget(buildOcrPage());
     m_stack->addWidget(buildHotkeysPage());
@@ -314,39 +318,7 @@ QWidget* SettingsDialog::buildGeneralPage()
         return l;
     };
 
-    // ── Row 1: [ Google ▼ ] Translator ────────────────────────────────────────
-    auto* transRow = new QHBoxLayout();
-    transRow->setSpacing(16);
-    auto* transCombo = new QComboBox(page);
-    transCombo->setFixedWidth(180);
-    transCombo->setFixedHeight(36);
-    transCombo->addItems({"Google", "Offline", "DeepL", "Yandex", "Bing"});
-    transCombo->setStyleSheet(R"(
-        QComboBox {
-            background-color: #0b1320;
-            border: 1px solid #334155;
-            border-radius: 6px;
-            color: #f8fafc;
-            padding: 4px 12px;
-            font-size: 10pt;
-        }
-        QComboBox:hover { border-color: #38bdf8; }
-        QComboBox::drop-down { border: none; width: 24px; }
-        QComboBox QAbstractItemView {
-            background-color: #0f172a;
-            color: #f8fafc;
-            selection-background-color: #1e3a8a;
-            border: 1px solid #334155;
-            border-radius: 6px;
-            padding: 4px;
-        }
-    )");
-    transRow->addWidget(transCombo);
-    transRow->addWidget(makeItemLabel("Translator"));
-    transRow->addStretch();
-    lay->addLayout(transRow);
-
-    // ── Row 2: [ None ▼ ] Text to speech system ───────────────────────────────
+    // ── Row 1: [ None ▼ ] Text to speech system ───────────────────────────────
     auto* ttsRow = new QHBoxLayout();
     ttsRow->setSpacing(16);
     auto* ttsCombo = new QComboBox(page);
@@ -399,6 +371,217 @@ QWidget* SettingsDialog::buildGeneralPage()
 
     lay->addStretch();
     return page;
+}
+
+QWidget* SettingsDialog::buildTranslationPage()
+{
+    auto* page = makePage();
+    auto* mainLay = new QVBoxLayout(page);
+    mainLay->setContentsMargins(28, 24, 28, 20);
+    mainLay->setSpacing(12);
+
+    mainLay->addWidget(makePageTitle("Dịch thuật"));
+    mainLay->addWidget(makeDivider());
+    mainLay->addSpacing(4);
+
+    auto* scroll = new QScrollArea(page);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setStyleSheet("QScrollArea { background: transparent; border: none; }");
+
+    auto* content = new QWidget();
+    content->setStyleSheet("background: transparent;");
+    auto* lay = new QVBoxLayout(content);
+    lay->setContentsMargins(0, 4, 10, 0);
+    lay->setSpacing(10);
+
+    auto makeItemLabel = [](const QString& text) {
+        auto* l = new QLabel(text);
+        l->setStyleSheet("color: #e2e8f0; font-size: 10.5pt; font-weight: 500;");
+        return l;
+    };
+
+    auto makeSectionLabel = [](const QString& text) {
+        auto* l = new QLabel(text);
+        l->setStyleSheet("color: #38bdf8; font-size: 10pt; font-weight: 700;");
+        return l;
+    };
+
+    auto makeHint = [](const QString& text) {
+        auto* l = new QLabel(text);
+        l->setWordWrap(true);
+        l->setStyleSheet("color: #94a3b8; font-size: 8.5pt; background: transparent;");
+        return l;
+    };
+
+    const QString comboStyle = R"(
+        QComboBox {
+            background-color: #0b1320;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            color: #f8fafc;
+            padding: 4px 12px;
+            font-size: 10pt;
+        }
+        QComboBox:hover { border-color: #38bdf8; }
+        QComboBox::drop-down { border: none; width: 24px; }
+        QComboBox QAbstractItemView {
+            background-color: #0f172a;
+            color: #f8fafc;
+            selection-background-color: #1e3a8a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 4px;
+        }
+    )";
+
+    const QString inputStyle = R"(
+        QLineEdit, QPlainTextEdit {
+            background-color: #0b1320;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            color: #f8fafc;
+            padding: 7px 10px;
+            font-size: 10pt;
+            selection-background-color: #1e3a8a;
+        }
+        QLineEdit:hover, QPlainTextEdit:hover { border-color: #38bdf8; }
+        QLineEdit:focus, QPlainTextEdit:focus { border-color: #38bdf8; }
+    )";
+
+    // ── Engine ────────────────────────────────────────────────────────────────
+    lay->addWidget(makeSectionLabel("Engine dịch"));
+    m_translationEngine = new QComboBox(content);
+    m_translationEngine->setFixedHeight(36);
+    m_translationEngine->setStyleSheet(comboStyle);
+    m_translationEngine->addItem("Tự động (Offline → Google)", "auto");
+    m_translationEngine->addItem("Google Translate", "google");
+    m_translationEngine->addItem("AI / LLM (OpenAI-compatible)", "ai");
+    m_translationEngine->addItem("Offline (trên máy)", "offline");
+    lay->addWidget(m_translationEngine);
+    lay->addWidget(makeHint(
+        "Tự động: dùng model offline nếu có, không thì Google. "
+        "Offline: chỉ dịch trên máy (không gửi dữ liệu ra mạng)."));
+
+    // ── Google ────────────────────────────────────────────────────────────────
+    lay->addSpacing(10);
+    lay->addWidget(makeSectionLabel("Google Translate"));
+    lay->addWidget(makeItemLabel("API key (tùy chọn)"));
+    m_googleApiKey = new QLineEdit(content);
+    m_googleApiKey->setFixedHeight(36);
+    m_googleApiKey->setStyleSheet(inputStyle);
+    m_googleApiKey->setPlaceholderText("Để trống để dùng endpoint miễn phí");
+    lay->addWidget(m_googleApiKey);
+    lay->addWidget(makeHint(
+        "Có key → dùng Cloud Translation API chính thức (cần bật billing). "
+        "Để trống → dùng translate.googleapis.com miễn phí, có thể bị giới hạn."));
+
+    // ── AI / LLM ──────────────────────────────────────────────────────────────
+    lay->addSpacing(10);
+    m_aiGroup = new QWidget(content);
+    auto* aiLay = new QVBoxLayout(m_aiGroup);
+    aiLay->setContentsMargins(0, 0, 0, 0);
+    aiLay->setSpacing(8);
+
+    aiLay->addWidget(makeSectionLabel("AI / LLM (OpenAI-compatible)"));
+    aiLay->addWidget(makeItemLabel("Endpoint"));
+    m_aiEndpoint = new QLineEdit(m_aiGroup);
+    m_aiEndpoint->setFixedHeight(36);
+    m_aiEndpoint->setStyleSheet(inputStyle);
+    m_aiEndpoint->setPlaceholderText("https://api.openai.com/v1/chat/completions");
+    aiLay->addWidget(m_aiEndpoint);
+    aiLay->addWidget(makeHint(
+        "Dùng được với OpenAI, OpenRouter, DeepSeek, Groq, Ollama, LM Studio… "
+        "Endpoint phải là URL đầy đủ tới /chat/completions."));
+
+    auto* keyModelRow = new QHBoxLayout();
+    keyModelRow->setSpacing(12);
+
+    auto* keyCol = new QVBoxLayout();
+    keyCol->setSpacing(6);
+    keyCol->addWidget(makeItemLabel("API key"));
+    m_aiApiKey = new QLineEdit(m_aiGroup);
+    m_aiApiKey->setFixedHeight(36);
+    m_aiApiKey->setStyleSheet(inputStyle);
+    m_aiApiKey->setEchoMode(QLineEdit::Password);
+    m_aiApiKey->setPlaceholderText("sk-... (để trống nếu endpoint local)");
+    keyCol->addWidget(m_aiApiKey);
+
+    auto* modelCol = new QVBoxLayout();
+    modelCol->setSpacing(6);
+    modelCol->addWidget(makeItemLabel("Model"));
+    m_aiModel = new QLineEdit(m_aiGroup);
+    m_aiModel->setFixedHeight(36);
+    m_aiModel->setStyleSheet(inputStyle);
+    m_aiModel->setPlaceholderText("gpt-4o-mini");
+    modelCol->addWidget(m_aiModel);
+
+    keyModelRow->addLayout(keyCol, 1);
+    keyModelRow->addLayout(modelCol, 1);
+    aiLay->addLayout(keyModelRow);
+
+    aiLay->addWidget(makeItemLabel("System prompt"));
+    m_aiPrompt = new QPlainTextEdit(m_aiGroup);
+    m_aiPrompt->setFixedHeight(130);
+    m_aiPrompt->setStyleSheet(inputStyle);
+    m_aiPrompt->setPlaceholderText(
+        "Mô tả ngữ cảnh và cách dịch (thể loại game/truyện, cách xưng hô, "
+        "giữ tên riêng…). Prompt này được gửi kèm mọi yêu cầu dịch.");
+    aiLay->addWidget(m_aiPrompt);
+    aiLay->addWidget(makeHint(
+        "Prompt hệ thống giúp AI hiểu ngữ cảnh. Quy tắc trả về JSON được app tự "
+        "thêm để ghép bản dịch đúng từng đoạn."));
+
+    lay->addWidget(m_aiGroup);
+    lay->addStretch();
+
+    scroll->setWidget(content);
+    mainLay->addWidget(scroll, 1);
+
+    // ── Wiring ────────────────────────────────────────────────────────────────
+    connect(m_translationEngine, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int index) {
+                if (!m_translationEngine || index < 0)
+                    return;
+                m_settings.translationEngine = m_translationEngine->itemData(index).toString();
+            });
+
+    connect(m_googleApiKey, &QLineEdit::textChanged, this,
+            [this](const QString& text) { m_settings.googleApiKey = text; });
+    connect(m_aiEndpoint, &QLineEdit::textChanged, this,
+            [this](const QString& text) { m_settings.aiEndpoint = text; });
+    connect(m_aiApiKey, &QLineEdit::textChanged, this,
+            [this](const QString& text) { m_settings.aiApiKey = text; });
+    connect(m_aiModel, &QLineEdit::textChanged, this,
+            [this](const QString& text) { m_settings.aiModel = text; });
+    connect(m_aiPrompt, &QPlainTextEdit::textChanged, this, [this]() {
+        if (m_aiPrompt)
+            m_settings.aiSystemPrompt = m_aiPrompt->toPlainText();
+    });
+
+    return page;
+}
+
+void SettingsDialog::setSettings(const EZTranslator::AppSettings& settings)
+{
+    m_settings = settings;
+
+    if (m_translationEngine) {
+        const int index = m_translationEngine->findData(m_settings.translationEngine);
+        m_translationEngine->setCurrentIndex(index >= 0 ? index : 0);
+        if (index < 0)
+            m_settings.translationEngine = QStringLiteral("auto");
+    }
+    if (m_googleApiKey)
+        m_googleApiKey->setText(m_settings.googleApiKey);
+    if (m_aiEndpoint)
+        m_aiEndpoint->setText(m_settings.aiEndpoint);
+    if (m_aiApiKey)
+        m_aiApiKey->setText(m_settings.aiApiKey);
+    if (m_aiModel)
+        m_aiModel->setText(m_settings.aiModel);
+    if (m_aiPrompt)
+        m_aiPrompt->setPlainText(m_settings.aiSystemPrompt);
 }
 
 QWidget* SettingsDialog::buildOcrPage()

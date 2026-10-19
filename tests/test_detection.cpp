@@ -186,7 +186,12 @@ private slots:
     // ── D10: đổi nội dung reset settle ───────────────────────────────────────
     void scheduler_changeResetsSettle()
     {
-        OcrScheduler scheduler; // settle mặc định
+        // Đặt settle TƯỜNG MINH (không phụ thuộc giá trị mặc định — mặc định đã đổi nhiều lần để
+        // tối ưu độ trễ).
+        OcrScheduler::Options options;
+        options.settleMs = 130;
+        options.minRunIntervalMs = 600;
+        OcrScheduler scheduler(options);
         const QImage a = makeImageWithSquare(64, 64, QRect(4, 4, 16, 16));
         const QImage b = makeImageWithSquare(64, 64, QRect(40, 40, 16, 16));
 
@@ -246,6 +251,33 @@ private slots:
         scheduler.reset();
         scheduler.beginTick();
         QVERIFY(!scheduler.process("r", a, 200).run); // như mới gặp lại
+    }
+
+    // ── D13: phục vụ từ cache box cũng đặt cooldown (không thúc OCR lại) ─────
+    void scheduler_cacheServedUpdatesCooldown()
+    {
+        OcrScheduler::Options options;
+        options.settleMs = 0;
+        options.minRunIntervalMs = 600;
+        OcrScheduler scheduler(options);
+        const QImage a = makeImageWithSquare(64, 64, QRect(4, 4, 16, 16));
+
+        scheduler.beginTick();
+        scheduler.process("r", a, 0); // gặp lần đầu
+        scheduler.beginTick();
+        QVERIFY(scheduler.process("r", a, 100).run); // settle xong → chạy
+
+        scheduler.beginTick();
+        QVERIFY(!scheduler.process("r", a, 200).run); // cooldown chặn
+
+        // Vùng vừa được phục vụ từ cache box: cooldown được đặt lại ⇒ tick kế vẫn không chạy OCR.
+        scheduler.noteServedFromCache("r", 300);
+        scheduler.beginTick();
+        QVERIFY(!scheduler.process("r", a, 400).run);
+
+        // Qua cooldown mới cho chạy lại.
+        scheduler.beginTick();
+        QVERIFY(scheduler.process("r", a, 300 + 700).run);
     }
 };
 

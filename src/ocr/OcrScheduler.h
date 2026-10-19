@@ -32,8 +32,9 @@ public:
     struct Options
     {
         int    maxDistance{4};        ///< khoảng cách Hamming tối đa vẫn coi là "không đổi"
-        qint64 settleMs{130};         ///< vùng đứng yên bao lâu mới chạy OCR
-        qint64 minRunIntervalMs{600}; ///< khoảng cách tối thiểu giữa 2 lần chạy OCR
+        qint64 settleMs{15};           ///< vùng đứng yên bao lâu mới chạy OCR (hạ 130→60→30→15; cửa
+                                      ///< sổ chuyển động 80ms mới là thứ chặn OCR giữa lúc cuộn)
+        qint64 minRunIntervalMs{60};  ///< khoảng cách tối thiểu giữa 2 lần chạy OCR (hạ từ 600)
         int    maxRunsPerTick{1};     ///< cap số lần chạy mỗi tick
     };
 
@@ -43,9 +44,23 @@ public:
     /** Bắt đầu một tick mới (reset bộ đếm cap). */
     void beginTick() noexcept { m_runsThisTick = 0; }
 
+    /** Ngưỡng Hamming vẫn coi là "cùng nội dung" — cache box dùng chung ngưỡng này để nhiễu
+     *  capture 1-4 bit không làm cache trượt mỗi khung (log: OCR full ~17 lần/giây đứng yên). */
+    [[nodiscard]] int maxDistance() const noexcept { return m_options.maxDistance; }
+
     /** Gọi cho từng vùng một lần mỗi tick. */
     [[nodiscard]] OcrScheduleDecision process(const QString& regionId, const QImage& image,
                                               qint64 nowMs);
+
+    /**
+     * Đánh dấu vùng vừa được phục vụ từ CACHE BOX (nội dung đã từng OCR, không chạy lại OCR).
+     * Cập nhật cooldown để các tick sau không thúc OCR lại cùng nội dung đó.
+     */
+    void noteServedFromCache(const QString& regionId, qint64 nowMs)
+    {
+        Region& region = m_regions[regionId];
+        region.lastRunMs = nowMs;
+    }
 
     /** Quên trạng thái một vùng (khi xóa vùng dịch). */
     void forget(const QString& regionId) { m_regions.remove(regionId); }

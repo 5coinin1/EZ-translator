@@ -83,7 +83,8 @@ void TrayIconManager::buildMenu()
     connect(showAction, &QAction::triggered, this, &TrayIconManager::requestShowMainWindow);
 
     // Bắt đầu / Tạm dừng dịch
-    m_toggleAction = m_menu->addAction(QString::fromUtf8("▶ Bắt đầu dịch (F9)"));
+    m_toggleAction = m_menu->addAction(
+        QString::fromUtf8("▶ Bắt đầu dịch (%1)").arg(m_hotkeyText));
     connect(m_toggleAction, &QAction::triggered, this, &TrayIconManager::requestToggleTranslation);
 
     // Cài đặt
@@ -99,16 +100,22 @@ void TrayIconManager::buildMenu()
     m_trayIcon->setContextMenu(m_menu);
 }
 
+void TrayIconManager::setHotkeyText(const QString& keyText)
+{
+    m_hotkeyText = keyText.isEmpty() ? QStringLiteral("(chưa gán)") : keyText;
+    updateState(m_running);
+}
+
 void TrayIconManager::updateState(bool isRunning)
 {
     m_running = isRunning;
     if (m_running) {
         m_statusAction->setText(QString::fromUtf8("● Trạng thái: Đang dịch"));
-        m_toggleAction->setText(QString::fromUtf8("⏹ Dừng dịch (F9)"));
+        m_toggleAction->setText(QString::fromUtf8("⏹ Dừng dịch (%1)").arg(m_hotkeyText));
         m_trayIcon->setToolTip(QString::fromUtf8("EZ-Translator – Đang dịch"));
     } else {
         m_statusAction->setText(QString::fromUtf8("● Trạng thái: Dừng"));
-        m_toggleAction->setText(QString::fromUtf8("▶ Bắt đầu dịch (F9)"));
+        m_toggleAction->setText(QString::fromUtf8("▶ Bắt đầu dịch (%1)").arg(m_hotkeyText));
         m_trayIcon->setToolTip(QString::fromUtf8("EZ-Translator – Sẵn sàng"));
     }
 }

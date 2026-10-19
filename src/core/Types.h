@@ -107,11 +107,21 @@ struct AppSettings {
     QString interfaceLanguage{"vi"};
 
     // Nhóm Dịch thuật & OCR (Options cho UI phase)
-    QString translationEngine{"offline"}; // "offline", "google"
-    QString ocrEngine{"windows_ocr"};     // "windows_ocr", "tesseract"
-    QString sourceLanguage{"en"};         // ngôn ngữ nguồn cho OCR ("en", "zh", ...)
+    QString translationEngine{"auto"}; // "auto", "offline", "google", "ai"
+    QString googleApiKey;              // rỗng → dùng endpoint miễn phí; có key → Cloud Translation API
+    QString aiEndpoint{"https://api.openai.com/v1/chat/completions"};
+    QString aiApiKey;                  // để trống nếu endpoint local không cần key
+    QString aiModel{"gpt-4o-mini"};
+    QString aiSystemPrompt{
+        QStringLiteral("Bạn là một dịch giả chuyên nghiệp, am hiểu game, truyện và hội thoại. "
+                       "Dịch sát nghĩa nhưng tự nhiên, giữ đúng sắc thái, cảm xúc, cách xưng hô "
+                       "và tên riêng. Không thêm bình luận hay giải thích.")};
+    QString ocrEngine{"paddleocr"};       // engine OCR đang dùng thật ("paddleocr"; các engine khác chưa hỗ trợ)
+    QString sourceLanguage{"en"};         // ngôn ngữ nguồn cho OCR/translate ("auto", "en", "zh", ...)
+    QString targetLanguage{"vi"};         // ngôn ngữ đích của bản dịch
     bool ocrUseGpu{true};                 // true = thử GPU (DirectML), tự fallback CPU
-    int cacheCapacityLines{5000};
+    bool ocrBinarize{false};              // thử nghiệm: nhị phân hoá ảnh vùng trước khi OCR
+    int cacheCapacityLines{5000};         // số dòng tối đa giữ trong cache bản dịch
 
     // Nhóm Hiển thị & Hiệu suất
     int captureFps{30};
@@ -124,15 +134,18 @@ struct AppSettings {
     QColor fontColor{QColor(255, 255, 255)};       // Font color
     int fontSize{15};                              // Font size (pt)
     bool isBold{true};                             // In đậm
-    int lineSpacing{14};                           // Khoảng cách dòng
-    bool keepSourceFormatting{false};              // Giữ định dạng gốc
+    int lineSpacing{14};                           // Khoảng cách dòng (pt, 0 = theo cỡ chữ)
+    bool keepSourceFormatting{true};               // true = cỡ chữ bám theo dòng gốc (auto-fit)
     int textAlignment{0};                          // 0: Left, 1: Center, 2: Right
-    bool autoClearWindow{false};                   // Tự động xóa cửa sổ
+    bool autoClearWindow{false};                   // Tự động xóa cửa sổ (khi dừng dịch)
     bool excludeFromCapture{true};                 // Ẩn khỏi chụp/quay màn hình
-    int windowOpacity{85};                         // Độ mờ đục (0 - 100)
+    int windowOpacity{100};                         // Độ mờ nội dung overlay (0 - 100)
 
-    // Nhóm Phím tắt
+    // Nhóm Phím tắt (đăng ký toàn cục qua Win32 RegisterHotKey)
     QString toggleTranslationHotkey{"F8"};
+    QString selectRegionHotkey{"F6"};
+    QString showRegionHotkey{"F7"};
+    QString openSettingsHotkey{"Ctrl+,"};
 };
 
 /**

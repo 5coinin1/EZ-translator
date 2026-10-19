@@ -67,9 +67,9 @@ void MiniFloatBar::buildUi()
     dot->setState("Đang dịch...", QColor(StyleTheme::ColorSuccess));
     dot->setFixedWidth(110);
 
-    auto* stopBtn = new PrimaryButton("⏹  Dừng (F8)", card);
-    stopBtn->setMinimumHeight(32);
-    stopBtn->setStyleSheet(QString(R"(
+    m_stopBtn = new PrimaryButton(QStringLiteral("⏹  Dừng (%1)").arg(m_stopHotkey), card);
+    m_stopBtn->setMinimumHeight(32);
+    m_stopBtn->setStyleSheet(QString(R"(
         QPushButton {
             background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
                         stop:0 #c0392b, stop:1 #e74c3c);
@@ -78,11 +78,18 @@ void MiniFloatBar::buildUi()
         }
         QPushButton:hover { background: #a93226; }
     )"));
-    connect(stopBtn, &QPushButton::clicked, this, &MiniFloatBar::requestStopTranslation);
+    connect(m_stopBtn, &QPushButton::clicked, this, &MiniFloatBar::requestStopTranslation);
 
     statusLay->addWidget(dot, 1);
-    statusLay->addWidget(stopBtn);
+    statusLay->addWidget(m_stopBtn);
     lay->addWidget(m_statusRow);
+}
+
+void MiniFloatBar::setStopHotkeyText(const QString& keyText)
+{
+    m_stopHotkey = keyText.isEmpty() ? QStringLiteral("(chưa gán)") : keyText;
+    if (m_stopBtn)
+        m_stopBtn->setText(QStringLiteral("⏹  Dừng (%1)").arg(m_stopHotkey));
 }
 
 void MiniFloatBar::setRunning(bool running)

@@ -29,10 +29,15 @@ ui_*.h
 # Log files & Debug traces
 *.log
 ez_debug.log
+translate_smoke.out.txt
 
 # Binary deps tải bằng scripts/fetch_deps.ps1 (ONNX Runtime + model OCR)
 models/
 third_party/onnxruntime/
+
+# Gói model dịch CT2 để attach vào GitHub Release (không commit vào git)
+*.zip
+models-ct2.zip
 
 # IDE & Editor specific files
 .vscode/

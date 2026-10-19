@@ -14,7 +14,7 @@ namespace EZTranslator {
 
 namespace {
 
-constexpr int kTimeoutMs = 5000;
+constexpr int kTimeoutMs = 4000; ///< chặn 'kẹt luồng' khi mạng treo
 
 QString parseMyMemory(const QByteArray& data)
 {

@@ -153,6 +153,110 @@ private slots:
                  QString());
         QCOMPARE(LanguageDetect::detect(QStringLiteral("123 !!!")), QString());
     }
+
+    // ── T5 ──────────────────────────────────────────────────────────────────
+    void document_capsLongUnits()
+    {
+        // Đoạn dài phải được cắt thành nhiều đơn vị ≤ ~140 ký tự trước khi gửi engine (thời gian
+        // decode tỉ lệ với đơn vị DÀI NHẤT trong lô), rồi ghép lại theo đoạn.
+        TranslationCache cache;
+        DocumentTranslator translator(&cache);
+        const QString longParagraph =
+            QStringLiteral("The first sentence is quite long and keeps going for a while, ")
+            + QStringLiteral("then a second sentence continues the story with even more words, ")
+            + QStringLiteral("and a third one closes the paragraph for good.");
+
+        QStringList received;
+        const TranslatedDocument doc =
+            translator.translate(longParagraph, "en", "vi", [&](const QStringList& units) {
+                received = units;
+                QStringList out;
+                for (const QString& unit : units)
+                    out.append(QStringLiteral("VI:") + unit);
+                return out;
+            });
+
+        QVERIFY2(received.size() >= 2, "đoạn dài phải bị cắt thành nhiều đơn vị");
+        for (const QString& unit : received)
+            QVERIFY2(unit.size() <= 150, "đơn vị gửi engine phải ≤ ~140 ký tự");
+        QCOMPARE(doc.paragraphs.size(), 1);
+        QVERIFY(doc.paragraphs.at(0).contains(QStringLiteral("VI:")));
+        QVERIFY(doc.complete);
+    }
+
+    // ── T6 ──────────────────────────────────────────────────────────────────
+    void document_splitsParagraphsAtSentenceEnds()
+    {
+        // KHÔNG có dòng trống, nhưng các dòng KẾT THÚC bằng dấu câu → mỗi cụm là một đoạn riêng
+        // (luật của bản translator: dấu "." cuối dòng thì ngắt, giữa dòng thì không). Trước đây
+        // chỉ tách theo dòng trống nên cả trang dính thành một đoạn, bản dịch ra một khối liền.
+        TranslationCache cache;
+        DocumentTranslator translator(&cache);
+        const QString text = QStringLiteral("First sentence ends here.\n"
+                                            "Second sentence ends here too.\n"
+                                            "Third one is still going and does not end\n"
+                                            "until this line finishes it.");
+        const TranslatedDocument doc = translator.translate(
+            text, "en", "vi", [](const QStringList& units) {
+                QStringList out;
+                for (const QString& unit : units)
+                    out.append(QStringLiteral("VI:") + unit);
+                return out;
+            });
+
+        QCOMPARE(doc.sourceParagraphs.size(), 3);
+        QCOMPARE(doc.lineCounts.at(0), 1);
+        QCOMPARE(doc.lineCounts.at(1), 1);
+        QCOMPARE(doc.lineCounts.at(2), 2);
+        QCOMPARE(doc.paragraphs.size(), 3);
+    }
+
+    // ── T7: CUỘN 1 DÒNG → gần hết đơn vị phải TRÚNG CACHE ─────────────────────
+    void document_scrollKeepsCacheHits()
+    {
+        // Đúng lỗi người dùng báo ("cuộn 1 dòng mà dịch như trang mới", log thật new= 12/12,
+        // "dịch" ~1000ms/lần): đơn vị dịch từng bị CẮT theo vị trí (khúc 140 ký tự) nên chỉ cần
+        // nội dung trôi một dòng là vị trí cắt trôi theo ⇒ MỌI đơn vị đổi text ⇒ trượt cache.
+        // Đơn vị phải là CÂU: cuộn 1 dòng chỉ đổi 1-2 câu, phần còn lại trúng cache.
+        TranslationCache cache;
+        DocumentTranslator translator(&cache);
+
+        // Một ĐOẠN dài 12 câu, ngắt dòng GIỮA câu (không dòng nào kết thúc bằng dấu chấm — trang
+        // game/visual novel thường vậy, nên cả trang thành MỘT đoạn).
+        const auto makePage = [](int first) {
+            QStringList sentences;
+            for (int i = first; i < first + 12; ++i)
+                sentences.append(
+                    QStringLiteral("Sentence number %1 talks about something interesting").arg(i));
+            const QString text = sentences.join(QStringLiteral(". ")) + QLatin1Char('.');
+            QStringList wrapped;
+            for (int i = 0; i < text.size(); i += 40)
+                wrapped.append(text.mid(i, 40));
+            return wrapped.join(QLatin1Char('\n'));
+        };
+
+        int engineCalls = 0;
+        const auto fn = [&engineCalls](const QStringList& units) {
+            ++engineCalls;
+            QStringList out;
+            for (const QString& unit : units)
+                out.append(QStringLiteral("VI:") + unit);
+            return out;
+        };
+
+        const QString pageA = makePage(1);
+        const TranslatedDocument first = translator.translate(pageA, "en", "vi", fn);
+        QCOMPARE(first.newTranslations, 12);
+
+        // Cuộn 1 dòng: dòng đầu rời đi, một câu mới vào cuối ⇒ chỉ 1-2 đơn vị mới.
+        const QString pageB =
+            pageA.mid(41) + QLatin1Char('\n') + QStringLiteral("Sentence number 13 is brand new.");
+        const TranslatedDocument second = translator.translate(pageB, "en", "vi", fn);
+        QVERIFY2(second.newTranslations <= 2,
+                 qPrintable(QStringLiteral("cuộn 1 dòng chỉ được dịch mới ≤2 câu, thực tế %1")
+                                .arg(second.newTranslations)));
+        QVERIFY(second.complete);
+    }
 };
 
 QTEST_MAIN(TestTranslation)

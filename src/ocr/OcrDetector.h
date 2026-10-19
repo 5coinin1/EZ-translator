@@ -38,7 +38,15 @@ public:
     [[nodiscard]] bool isLoaded() const;
 
     /** Phát hiện box trong ảnh (toạ độ pixel của chính ảnh đó). */
-    [[nodiscard]] QList<OcrTextBox> detect(const QImage& image);
+    /**
+     * @brief Tìm vị trí các hộp chữ.
+     * @param limitSideOverride > 0 → dùng giới hạn cạnh dài này thay cho detLimitSide.
+     *
+     * Cần cho dải dò RỘNG (đọc trọn một câu dài): det resize ảnh sao cho cạnh dài ≤ giới
+     * hạn, nên dải càng rộng thì chữ càng nhỏ trong input và det càng dễ hụt. Nâng giới
+     * hạn theo bề rộng dải giữ nguyên độ phân giải hiệu dụng.
+     */
+    [[nodiscard]] QList<OcrTextBox> detect(const QImage& image, int limitSideOverride = 0);
 
     /** Thời gian (ms) của lần detect() gần nhất. */
     [[nodiscard]] double lastMs() const;

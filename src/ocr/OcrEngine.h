@@ -46,6 +46,9 @@ public:
     [[nodiscard]] OcrRecognizer& recognizer();
 
 private:
+    /** Nạp model chữ của HỆ CHỮ CÒN LẠI (en ↔ zh) theo nhu cầu — xem recognize(). */
+    bool ensureAltRecognizer();
+
     struct Impl;
     std::unique_ptr<Impl> m_impl;
 };

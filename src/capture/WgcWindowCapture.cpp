@@ -96,19 +96,23 @@ public slots:
         connect(m_process, &QProcess::errorOccurred, this, &WgcCaptureWorker::onProcessError);
 
         const QStringList args{
-            QStringLiteral("--hwnd"), QString::number(handle, 16),
+            // "0x" + hex: helper parse bằng strtoull(..., 0) — KHÔNG có tiền tố thì chuỗi hex bị
+            // hiểu là số THẬP PHÂN ⇒ HWND sai ⇒ helper thoát ngay ⇒ WGC chưa từng chạy, app lặng
+            // lẽ rơi xuống GDI/PrintWindow — mà GDI không chụp được cửa sổ render bằng GPU.
+            QStringLiteral("--hwnd"), QStringLiteral("0x") + QString::number(handle, 16),
             QStringLiteral("--control"), control,
             QStringLiteral("--data"), data,
         };
         m_process->start(helperPath(), args);
-        if (!m_process->waitForStarted(3000)) {
+        if (!m_process->waitForStarted(1500)) {
+            qWarning() << "[WGC] khong chay duoc helper:" << helperPath();
             cleanup();
             return false;
         }
 
-        // Chờ helper tạo xong vùng dữ liệu và báo ready.
+        // Chờ helper tạo xong vùng dữ liệu và báo ready (giờ gần như tức thì).
         bool ready = false;
-        for (int attempt = 0; attempt < 500; ++attempt) {
+        for (int attempt = 0; attempt < 200; ++attempt) {
             if (InterlockedCompareExchange(
                     reinterpret_cast<volatile LONG*>(&m_control->ready), 0, 0) == 1) {
                 ready = true;
@@ -119,6 +123,16 @@ public slots:
             QThread::msleep(10);
         }
         if (!ready) {
+            // CHẨN ĐOÁN: helper là console app — đọc stdout/stderr của nó để biết vì sao không báo
+            // ready. Trước đây lỗi bị nuốt, app lặng lẽ rơi xuống GDI — mà GDI/PrintWindow KHÔNG
+            // chụp được cửa sổ render bằng GPU (WeGame/Chromium) ⇒ khung trắng-đen ⇒ OCR không
+            // thấy gì ⇒ "không phản ứng gì" (cả overlay lẫn hover).
+            const QString helperOut =
+                QString::fromLocal8Bit(m_process->readAllStandardOutput()).trimmed();
+            const QString helperErr =
+                QString::fromLocal8Bit(m_process->readAllStandardError()).trimmed();
+            qWarning() << "[WGC] helper khong bao ready | exit=" << m_process->exitCode()
+                       << "| out=" << helperOut.left(300) << "| err=" << helperErr.left(300);
             cleanup();
             return false;
         }
