@@ -54,6 +54,15 @@ public:
     [[nodiscard]] virtual int fps() const = 0;
     virtual void setFps(int fps) = 0;
 
+    /**
+     * @brief UI da xu ly xong frame vua phat.
+     *
+     * Capture worker chi duoc phep phat frame tiep theo khi frame truoc da
+     * duoc consume. Neu khong co backpressure nay, full-screen 30fps se xep
+     * hang hang tram MB QImage trong event loop khi UI dang OCR/dich.
+     */
+    virtual void notifyFrameConsumed() = 0;
+
 signals:
     void frameReady(const EZTranslator::CapturedFrame& frame);
     void captureError(EZTranslator::CaptureError error, const QString& detail);

@@ -3,6 +3,7 @@
 #include <QFont>
 #include <QGuiApplication>
 #include <QLabel>
+#include <QPainter>
 #include <QRect>
 #include <QScreen>
 #include <QVBoxLayout>
@@ -27,27 +28,17 @@ TranslationPopup::TranslationPopup(QWidget* parent)
     setAttribute(Qt::WA_ShowWithoutActivating);
     setAttribute(Qt::WA_TransparentForMouseEvents);
     setAttribute(Qt::WA_StyledBackground, true);
+    // Cần nền trong suốt để 4 góc bo tròn không bị lộ hình chữ nhật đen.
+    setAttribute(Qt::WA_TranslucentBackground, true);
     setFocusPolicy(Qt::NoFocus);
 
     m_source = new QLabel(this);
     m_source->setWordWrap(true);
     m_source->setTextInteractionFlags(Qt::NoTextInteraction);
-    {
-        QFont font = m_source->font();
-        font.setPixelSize(13);
-        m_source->setFont(font);
-    }
-    m_source->setStyleSheet(QStringLiteral("color:#9aa4b2;"));
 
     m_body = new QLabel(this);
     m_body->setWordWrap(true);
     m_body->setTextInteractionFlags(Qt::NoTextInteraction);
-    {
-        QFont font = m_body->font();
-        font.setPixelSize(19);
-        m_body->setFont(font);
-    }
-    m_body->setStyleSheet(QStringLiteral("color:#f4f6fa;"));
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(14, 11, 14, 13);
@@ -55,11 +46,86 @@ TranslationPopup::TranslationPopup(QWidget* parent)
     layout->addWidget(m_source);
     layout->addWidget(m_body);
 
-    setStyleSheet(QStringLiteral("TranslationPopup {"
-                                 "  background-color: rgba(16,18,24,238);"
-                                 "  border: 1px solid rgba(130,150,180,170);"
-                                 "  border-radius: 9px;"
-                                 "}"));
+    applyAppearance();
+}
+
+void TranslationPopup::setAppearance(const EZTranslator::AppSettings& settings)
+{
+    m_appearance = settings;
+    applyAppearance();
+    if (isVisible()) {
+        adjustSize();
+    }
+}
+
+void TranslationPopup::applyAppearance()
+{
+    if (!m_source || !m_body)
+        return;
+
+    const int bodyPt = qBound(8, m_appearance.fontSize, 48);
+    QFont bodyFont(m_appearance.fontFamily, bodyPt);
+    bodyFont.setBold(m_appearance.isBold);
+    m_body->setFont(bodyFont);
+
+    QFont sourceFont(m_appearance.fontFamily, qMax(8, bodyPt - 4));
+    m_source->setFont(sourceFont);
+
+    const int style = qBound(0, m_appearance.textWindowStyle, 3);
+    QColor textColor = m_appearance.fontColor.isValid() ? m_appearance.fontColor
+                                                        : QColor(244, 246, 250);
+    if (style == 3)
+        textColor = QColor(26, 26, 26);
+    QColor sourceColor = textColor;
+    sourceColor.setAlpha(170);
+    m_body->setStyleSheet(
+        QStringLiteral("color: rgba(%1,%2,%3,%4); background: transparent;")
+            .arg(textColor.red())
+            .arg(textColor.green())
+            .arg(textColor.blue())
+            .arg(textColor.alpha()));
+    m_source->setStyleSheet(
+        QStringLiteral("color: rgba(%1,%2,%3,%4); background: transparent;")
+            .arg(sourceColor.red())
+            .arg(sourceColor.green())
+            .arg(sourceColor.blue())
+            .arg(sourceColor.alpha()));
+
+    QColor background = m_appearance.windowColor.isValid()
+                            ? m_appearance.windowColor
+                            : QColor(16, 18, 24);
+    if (style == 2) {
+        background.setAlpha(235);
+    } else if (style == 3) {
+        background = QColor(248, 246, 240);
+        background.setAlpha(255);
+    } else if (style == 1) {
+        const int opacity = qBound(10, m_appearance.windowOpacity, 100);
+        background.setAlpha(qBound(70, qRound(255.0 * opacity / 100.0 * 0.72), 220));
+    } else {
+        background.setAlpha(255);
+    }
+
+    const bool outline = style == 2;
+    const bool glass = style == 1;
+    m_popupBackground = background;
+    m_popupBorder = QColor(130, 150, 180, outline ? 220 : 170);
+    m_cornerRadius = 9;
+    m_drawBorder = outline || glass;
+    update();
+}
+
+void TranslationPopup::paintEvent(QPaintEvent*)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    const QRectF area = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    painter.setBrush(m_popupBackground);
+    if (m_drawBorder)
+        painter.setPen(QPen(m_popupBorder, 1.0));
+    else
+        painter.setPen(Qt::NoPen);
+    painter.drawRoundedRect(area, m_cornerRadius, m_cornerRadius);
 }
 
 void TranslationPopup::showTranslation(const QString& source, const QString& translation,
@@ -82,7 +148,8 @@ void TranslationPopup::showTranslation(const QString& source, const QString& tra
 
     // Chỉ hiện dòng gốc khi nó thật sự khác bản dịch (tránh lặp hai lần cùng chữ).
     const QString trimmedSource = source.trimmed();
-    const bool showSource = !trimmedSource.isEmpty() && trimmedSource != body;
+    const bool showSource = m_appearance.textWindowShowSource && !trimmedSource.isEmpty()
+                            && trimmedSource != body;
     m_source->setMaximumWidth(maxWidth);
     m_source->setText(trimmedSource);
     m_source->setVisible(showSource);

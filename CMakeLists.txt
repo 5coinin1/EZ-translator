@@ -29,6 +29,8 @@ set(SOURCES
     src/platform/PlatformUtils.cpp
     src/platform/GlobalHotkeys.h
     src/platform/GlobalHotkeys.cpp
+    src/platform/FramelessWindowHelper.h
+    src/platform/FramelessWindowHelper.cpp
 
     # Capture – GDI window capture pipeline
     src/capture/IWindowCapture.h
@@ -125,6 +127,8 @@ set(SOURCES
     src/ui/RoiPreviewDialog.cpp
     src/ui/MiniFloatBar.h
     src/ui/MiniFloatBar.cpp
+    src/ui/FloatingTranslationWindow.h
+    src/ui/FloatingTranslationWindow.cpp
     src/ui/TrayIconManager.h
     src/ui/TrayIconManager.cpp
 
@@ -337,6 +341,8 @@ add_executable(settings_preview
     src/ui/components/SecondaryButton.cpp
     src/ui/components/ToggleSwitch.h
     src/ui/components/ToggleSwitch.cpp
+    src/platform/FramelessWindowHelper.h
+    src/platform/FramelessWindowHelper.cpp
     src/core/Types.h
     src/core/SettingsStore.h
     src/core/SettingsStore.cpp

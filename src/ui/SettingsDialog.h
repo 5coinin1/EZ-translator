@@ -33,6 +33,9 @@ public:
 signals:
     void settingsSaved(const EZTranslator::AppSettings& settings);
 
+protected:
+    bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
+
 private:
     void buildUi();
     QWidget* buildGeneralPage();
@@ -42,6 +45,7 @@ private:
     QWidget* buildHotkeysPage();
 
     void updatePreview();
+    void updateOcrInfo();
 
     /** Chạy THẬT engine đang chọn trên câu mẫu (luồng nền) và báo kết quả trong dialog. */
     void probeTranslationEngine();
@@ -66,7 +70,7 @@ private:
     ToggleSwitch*    m_minimizeToTray{nullptr};
 
     // OCR page widgets
-    QComboBox*       m_ocrEngine{nullptr};
+    QLabel*          m_ocrModelLabel{nullptr};
     ToggleSwitch*    m_ocrGpu{nullptr};
     ToggleSwitch*    m_ocrBinarize{nullptr};
 
@@ -77,6 +81,10 @@ private:
     QKeySequenceEdit* m_hotkeySettings{nullptr};
 
     // Appearance preview widgets
+    ToggleSwitch*    m_novelModeSwitch{nullptr};
+    QComboBox*       m_fontFamilyCombo{nullptr};
+    QComboBox*       m_textWindowStyleCombo{nullptr};
+    ToggleSwitch*    m_showSourceSwitch{nullptr};
     class QFrame* m_previewFrame{nullptr};
     class QLabel* m_previewTextLabel{nullptr};
 };

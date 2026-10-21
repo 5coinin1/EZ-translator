@@ -9,6 +9,9 @@
 #include <QFileInfo>
 #include <QImage>
 
+#include <algorithm>
+#include <cmath>
+
 namespace EZTranslator {
 
 namespace {
@@ -149,6 +152,91 @@ QList<OcrTextBox> OcrEngine::recognize(const QImage& image)
         return {};
 
     const QImage input = m_impl->binarize ? binarizeImage(image) : image;
+
+    // Anh lon (full window/game UI): det model resize ve ~960px lam mat chu
+    // nho. Chia 2x2 co overlap de bao phu cac label/tab ma luot full bo sot.
+    const qint64 area = qint64(input.width()) * qint64(input.height());
+    const bool tile = qEnvironmentVariable("EZ_OCR_TILE", QStringLiteral("1")).trimmed()
+                          != QStringLiteral("0")
+                      && input.width() >= 1600 && input.height() >= 900
+                      && area >= 1500000;
+    if (!tile)
+        return recognizeProcessed(input);
+
+    const int cols = 2;
+    const int rows = 2;
+    const int overlapX = std::max(24, input.width() / 14);
+    const int overlapY = std::max(18, input.height() / 14);
+    QList<OcrTextBox> merged;
+
+    for (int row = 0; row < rows; ++row) {
+        const int y0 = std::max(0, row * input.height() / rows - (row > 0 ? overlapY : 0));
+        const int y1 = std::min(input.height(), (row + 1) * input.height() / rows
+                                                    + (row + 1 < rows ? overlapY : 0));
+        for (int col = 0; col < cols; ++col) {
+            const int x0 = std::max(0, col * input.width() / cols - (col > 0 ? overlapX : 0));
+            const int x1 = std::min(input.width(), (col + 1) * input.width() / cols
+                                                      + (col + 1 < cols ? overlapX : 0));
+            const QRect tileRect(x0, y0, x1 - x0, y1 - y0);
+            if (tileRect.width() < 8 || tileRect.height() < 8)
+                continue;
+            const QList<OcrTextBox> boxes =
+                recognizeProcessed(input.copy(tileRect), false);
+            for (OcrTextBox box : boxes) {
+                box.rect.translate(tileRect.topLeft());
+                merged.append(box);
+            }
+        }
+    }
+
+    // Dedupe boxes across tile borders. Hai tile co the doc cung mot vung
+    // thanh 2 text hoi khac nhau; uu tien box dai hon/conf cao hon.
+    std::sort(merged.begin(), merged.end(), [](const OcrTextBox& a, const OcrTextBox& b) {
+        const int dy = a.rect.center().y() - b.rect.center().y();
+        if (std::abs(dy) > 6)
+            return dy < 0;
+        return a.rect.left() < b.rect.left();
+    });
+    QList<OcrTextBox> result;
+    for (const OcrTextBox& box : merged) {
+        bool duplicate = false;
+        for (OcrTextBox& existing : result) {
+            const QRect intersection = box.rect.intersected(existing.rect);
+            const QRect united = box.rect.united(existing.rect);
+            const double unionArea = double(united.width()) * double(united.height());
+            const double iou = unionArea > 0.0
+                                   ? double(intersection.width()) * double(intersection.height())
+                                         / unionArea
+                                   : 0.0;
+            const QPoint delta = box.rect.center() - existing.rect.center();
+            if (iou > 0.20 || (std::abs(delta.y()) < 8 && std::abs(delta.x()) < 34)) {
+                // Tiling can split one long source line into two overlapping
+                // detections (left tile + right tile). Dropping one leaves the
+                // other half of the line uncovered, so the original glyphs
+                // remain visible. Union the rects and keep the longer text.
+                const bool longerText = box.text.size() > existing.text.size();
+                const QString mergedText = longerText ? box.text : existing.text;
+                const float mergedConfidence = std::max(existing.confidence, box.confidence);
+                existing.rect = existing.rect.united(box.rect);
+                existing.text = mergedText;
+                existing.confidence = mergedConfidence;
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate)
+            result.append(box);
+    }
+
+    m_impl->lastBoxes = result.size();
+    return result;
+}
+
+QList<OcrTextBox> OcrEngine::recognizeProcessed(const QImage& input, bool allowAlt)
+{
+    if (!isLoaded() || input.isNull())
+        return {};
+
     const QList<OcrTextBox> boxes = m_impl->detector.detect(input);
     m_impl->lastBoxes = boxes.size();
     if (boxes.isEmpty())
@@ -159,7 +247,7 @@ QList<OcrTextBox> OcrEngine::recognize(const QImage& image)
     // RÁC với độ tin cậy thấp ⇒ bản dịch bị lọc bỏ ⇒ "không phản ứng gì" (cả overlay lẫn hover).
     // Điểm tin cậy thấp thì thử model hệ chữ còn lại, chọn bên đọc tốt hơn — và NHỚ bên thắng để
     // các khung sau chỉ chạy MỘT model (nội dung không đổi ngôn ngữ giữa chừng).
-    if (m_impl->altLoaded && m_impl->preferAlt) {
+    if (allowAlt && m_impl->altLoaded && m_impl->preferAlt) {
         const QList<OcrTextBox> alt = m_impl->altRecognizer.recognize(input, boxes);
         if (meanConfidence(alt) >= kLowConfidence)
             return alt; // model dự phòng vẫn đọc tốt → dùng luôn
@@ -168,7 +256,7 @@ QList<OcrTextBox> OcrEngine::recognize(const QImage& image)
 
     const QList<OcrTextBox> primary = m_impl->recognizer.recognize(input, boxes);
     const double primaryConfidence = meanConfidence(primary);
-    if (primaryConfidence < kLowConfidence && ensureAltRecognizer()) {
+    if (allowAlt && primaryConfidence < kLowConfidence && ensureAltRecognizer()) {
         const QList<OcrTextBox> alt = m_impl->altRecognizer.recognize(input, boxes);
         const double altConfidence = meanConfidence(alt);
         qInfo() << "[OCR] điểm tin cậy thấp" << primaryConfidence << "| model dự phòng"

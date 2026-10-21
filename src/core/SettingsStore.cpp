@@ -114,11 +114,18 @@ void load(AppSettings& settings)
     settings.windowColor =
         colorFrom(store.value("windowColor").toString(), settings.windowColor);
     settings.fontColor = colorFrom(store.value("fontColor").toString(), settings.fontColor);
+    settings.fontFamily =
+        nonEmpty(store.value("fontFamily", settings.fontFamily).toString(), settings.fontFamily);
+    settings.textWindowStyle =
+        store.value("textWindowStyle", settings.textWindowStyle).toInt();
+    settings.textWindowShowSource =
+        store.value("textWindowShowSource", settings.textWindowShowSource).toBool();
     settings.fontSize = store.value("fontSize", settings.fontSize).toInt();
     settings.isBold = store.value("isBold", settings.isBold).toBool();
     settings.lineSpacing = store.value("lineSpacing", settings.lineSpacing).toInt();
     settings.keepSourceFormatting =
         store.value("keepSourceFormatting", settings.keepSourceFormatting).toBool();
+    settings.novelMode = store.value("novelMode", settings.novelMode).toBool();
     settings.textAlignment = store.value("textAlignment", settings.textAlignment).toInt();
     settings.autoClearWindow =
         store.value("autoClearWindow", settings.autoClearWindow).toBool();
@@ -175,10 +182,14 @@ void save(const AppSettings& settings)
     // ── Giao diện ───────────────────────────────────────────────────────────
     store.setValue("windowColor", colorTo(settings.windowColor));
     store.setValue("fontColor", colorTo(settings.fontColor));
+    store.setValue("fontFamily", settings.fontFamily);
+    store.setValue("textWindowStyle", settings.textWindowStyle);
+    store.setValue("textWindowShowSource", settings.textWindowShowSource);
     store.setValue("fontSize", settings.fontSize);
     store.setValue("isBold", settings.isBold);
     store.setValue("lineSpacing", settings.lineSpacing);
     store.setValue("keepSourceFormatting", settings.keepSourceFormatting);
+    store.setValue("novelMode", settings.novelMode);
     store.setValue("textAlignment", settings.textAlignment);
     store.setValue("autoClearWindow", settings.autoClearWindow);
     store.setValue("excludeFromCapture", settings.excludeFromCapture);

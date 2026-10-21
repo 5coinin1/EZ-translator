@@ -1,12 +1,17 @@
 #pragma once
 
 #include <QColor>
+#include <QFont>
 #include <QImage>
 #include <QList>
 #include <QRect>
 #include <QSize>
 #include <QString>
+#include <QVector>
 #include <QWidget>
+
+class QResizeEvent;
+class QPainter;
 
 namespace EZTranslator {
 
@@ -21,12 +26,21 @@ struct OverlayBox
     // bên dưới. Rỗng → quay về tô màu đặc (m_coverColor). `plateRect` theo toạ độ frame.
     QImage  plate;
     QRect   plateRect;
+    // Anh nen cua vung (da downscale) de ve glassmorphism: thay duoc hinh
+    // phia sau qua panel mo, khong can biet truoc UI game nao.
+    QImage  backdrop;
+    QRect   backdropRect;
     // Màu chữ cho box này. Invalid → dùng màu mặc định của overlay. Smart-plate giữ nền gốc
     // (trang sáng) nên chữ trắng cố định sẽ "trắng xóa"; app đặt màu tương phản theo nền.
     QColor  textColor;
     // Màu che TẠM khi chưa có plate (plate về sau sẽ thay). Invalid → m_coverColor mặc định
     // (navy đậm — trên trang sáng người dùng thấy "cover đen" nhấp nháy). App đặt màu nền vùng.
     QColor  coverColor;
+    bool    coverOnly{false};
+    // Novel/reading layout: fit to the whole paragraph slot instead of only
+    // the union of source glyph lines, so paragraph gaps can be used without
+    // pushing text into the next paragraph.
+    bool    fitToBox{false};
 };
 
 /**
@@ -70,15 +84,63 @@ public:
     /** Loại cửa sổ overlay khỏi ảnh chụp/quay màn hình (SetWindowDisplayAffinity). */
     void setExcludeFromCapture(bool enable);
 
+    /**
+     * @brief Bat/tat auto-fit chu vao dung box nguon.
+     *
+     * Mac dinh bat (EZ_OVERLAY_FIT=0 de tat). Khi tat, TextOverlay quay ve
+     * duong ve cu de phong truong hop auto-fit loi tren mot so font/UI.
+     */
+    void setAutoFit(bool enable);
+
+    /**
+     * @brief Enable/disable the glass panels.
+     *
+     * Novel mode uses opaque page-colored covers and must not draw the glass
+     * panel/focus gradient over the reading column.
+     */
+    void setGlassEnabled(bool enable);
+
     [[nodiscard]] bool isShowing() const { return isVisible(); }
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
 private:
+    struct FittedLine
+    {
+        QString text;
+        qreal   x{0};
+        qreal   baselineY{0};
+        qreal   width{0};
+    };
+
+    struct FittedBox
+    {
+        QFont               font;
+        QVector<FittedLine> lines;
+        QRectF              clipRect;
+        QColor              textColor;
+        bool                valid{false};
+    };
+
+    void rebuildFit();
+    [[nodiscard]] FittedBox fitBox(const OverlayBox& box, const QRectF& target,
+                                   double scaleX, double scaleY,
+                                   const QVector<QRectF>& obstacles) const;
+    void paintLegacy(QPainter& painter, const OverlayBox& box, const QRectF& target,
+                     double scaleY) const;
+    void paintGlass(QPainter& painter, const OverlayBox& box, const QRectF& textRect,
+                    const QColor& textColor) const;
+
     QRect             m_target;
     QSize             m_frameSize;
     QList<OverlayBox> m_boxes;
+    QVector<FittedBox> m_fitted;
+    bool              m_fitDirty{true};
+    bool              m_autoFit{true};
+    bool              m_glass{true};
+    int               m_fitBasePx{0};
     QColor            m_coverColor{17, 22, 34, 235};
     QColor            m_textColor{248, 250, 252};
     bool              m_bold{true};

@@ -5,7 +5,253 @@
 #include "overlay/ParagraphAnchor.h"
 #include "overlay/TextFlow.h"
 
+#include <QStringList>
+
+#include <limits>
+
 namespace EZTranslator::OverlayLayout {
+
+namespace {
+
+int medianInt(QList<int> values)
+{
+    if (values.isEmpty())
+        return 0;
+    std::sort(values.begin(), values.end());
+    return values.at(values.size() / 2);
+}
+
+bool isCjkChar(QChar c)
+{
+    const ushort u = c.unicode();
+    return (u >= 0x3400 && u <= 0x4DBF) || (u >= 0x4E00 && u <= 0x9FFF)
+           || (u >= 0xF900 && u <= 0xFAFF) || (u >= 0x3040 && u <= 0x30FF)
+           || (u >= 0xAC00 && u <= 0xD7AF);
+}
+
+bool endsSentence(const QString& text)
+{
+    QString trimmed = text.trimmed();
+    static const QString closers = QStringLiteral("\"')]}\u201d\u2019\u00bb\u300d\u300f>");
+    while (!trimmed.isEmpty() && closers.contains(trimmed.back()))
+        trimmed.chop(1);
+    if (trimmed.isEmpty())
+        return false;
+    const QChar last = trimmed.back();
+    return last == QLatin1Char('.') || last == QLatin1Char('!') || last == QLatin1Char('?')
+           || last == QChar(0x2026) || last == QChar(0x3002) || last == QChar(0xFF01)
+           || last == QChar(0xFF1F);
+}
+
+} // namespace
+
+bool looksLikeNovel(const QList<QRect>& lineRects, const QStringList& lineTexts,
+                    const QRect& regionBounds, bool forceNovel)
+{
+    const QString mode =
+        qEnvironmentVariable("EZ_OVERLAY_MODE", QStringLiteral("auto")).trimmed().toLower();
+    if (mode == QLatin1String("novel") || mode == QLatin1String("reading"))
+        return true;
+    if (mode == QLatin1String("ui") || mode == QLatin1String("box"))
+        return false;
+    if (forceNovel)
+        return true;
+    const QString boxMode =
+        qEnvironmentVariable("EZ_OVERLAY_BOX_LAYOUT", QStringLiteral("auto")).trimmed().toLower();
+    if (boxMode == QLatin1String("1") || boxMode == QLatin1String("on")
+        || boxMode == QLatin1String("box"))
+        return false;
+
+    if (lineRects.size() < 4 || lineRects.size() != lineTexts.size())
+        return false;
+
+    QList<int> widths;
+    QList<int> lengths;
+    int cjk = 0;
+    int chars = 0;
+    int wideLines = 0;
+    for (int i = 0; i < lineRects.size(); ++i) {
+        const QRect& rect = lineRects.at(i);
+        if (rect.isEmpty())
+            continue;
+        widths.append(rect.width());
+        const QString text = lineTexts.at(i).simplified();
+        lengths.append(text.size());
+        for (const QChar c : text) {
+            if (isCjkChar(c))
+                ++cjk;
+            if (!c.isSpace())
+                ++chars;
+        }
+        if (regionBounds.isValid() && regionBounds.width() > 0
+            && rect.width() * 100 >= regionBounds.width() * 30)
+            ++wideLines;
+    }
+    if (widths.isEmpty() || lengths.isEmpty())
+        return false;
+
+    const bool cjkText = chars > 0 && cjk * 4 >= chars;
+    const int minMedianLength = cjkText ? 12 : 28;
+    if (medianInt(lengths) < minMedianLength)
+        return false;
+
+    return wideLines * 100 >= int(widths.size()) * 45;
+}
+
+QList<NovelParagraph> groupNovelParagraphs(const QList<QRect>& lineRects,
+                                           const QStringList& lineTexts)
+{
+    QList<NovelParagraph> paragraphs;
+    if (lineRects.isEmpty())
+        return paragraphs;
+
+    // assembler already sorts lines, but be defensive: build an index order so
+    // paragraph detection never depends on caller ordering.
+    QList<int> order;
+    order.reserve(lineRects.size());
+    for (int i = 0; i < lineRects.size(); ++i) {
+        if (!lineRects.at(i).isEmpty())
+            order.append(i);
+    }
+    std::sort(order.begin(), order.end(), [&lineRects](int a, int b) {
+        if (lineRects.at(a).top() != lineRects.at(b).top())
+            return lineRects.at(a).top() < lineRects.at(b).top();
+        return lineRects.at(a).left() < lineRects.at(b).left();
+    });
+    if (order.isEmpty())
+        return paragraphs;
+
+    QList<int> heights;
+    for (int index : order)
+        heights.append(lineRects.at(index).height());
+    const int lineHeight = qMax(8, medianInt(heights));
+    // Normal line gap is usually < 0.3 line height; a blank paragraph gap is
+    // noticeably larger. Keep the threshold conservative so a line is never
+    // promoted to a new paragraph just because OCR shook its box by a few px.
+    const int gapThreshold = qMax(4, int(std::lround(lineHeight * 0.72)));
+
+    NovelParagraph current;
+    QRect previousRect;
+    QString previousText;
+    for (int index : order) {
+        const QRect rect = lineRects.at(index);
+        const QString text = lineTexts.value(index).simplified();
+
+        bool newParagraph = current.lineRects.isEmpty();
+        if (!newParagraph) {
+            const int gap = rect.top() - previousRect.bottom();
+            const int indent = rect.left() - previousRect.left();
+            const bool blankGap = gap > gapThreshold;
+            const bool indented =
+                gap > 2 && indent >= std::max(6, int(std::lround(lineHeight * 0.85)))
+                && endsSentence(previousText);
+            newParagraph = blankGap || indented;
+        }
+        if (newParagraph) {
+            if (!current.lineRects.isEmpty())
+                paragraphs.append(current);
+            current = NovelParagraph();
+            current.rect = rect;
+            current.lineHeight = lineHeight;
+            previousText.clear();
+        } else {
+            current.rect = current.rect.united(rect);
+        }
+
+        current.lineRects.append(rect);
+        if (!text.isEmpty()) {
+            if (!current.text.isEmpty()) {
+                const QChar previous = current.text.back();
+                const QChar next = text.front();
+                if (!isCjkChar(previous) && !isCjkChar(next))
+                    current.text += QLatin1Char(' ');
+            }
+            current.text += text;
+        }
+        previousRect = rect;
+        if (!text.isEmpty())
+            previousText = text;
+    }
+    if (!current.lineRects.isEmpty())
+        paragraphs.append(current);
+
+    for (NovelParagraph& paragraph : paragraphs) {
+        QList<int> memberHeights;
+        for (const QRect& rect : paragraph.lineRects)
+            memberHeights.append(rect.height());
+        paragraph.lineHeight = qMax(8, medianInt(memberHeights));
+    }
+    return paragraphs;
+}
+
+QList<OverlayBox> buildNovelBoxes(const TranslatedDocument& doc,
+                                  const QList<NovelParagraph>& paragraphs,
+                                  const QRect& regionBounds)
+{
+    QList<OverlayBox> boxes;
+    if (paragraphs.isEmpty())
+        return boxes;
+
+    // Column right edge: use the upper quartile of wide source lines, not the
+    // maximum. A stray icon/button far to the right (or a centered title) would
+    // otherwise stretch every paragraph across the whole page.
+    QList<int> rights;
+    const int minWide = regionBounds.isValid() ? qMax(24, regionBounds.width() / 5) : 24;
+    // A right-side icon/button can be grouped into a text line by OCR. Ignore
+    // boxes in the outer 10% when computing the reading-column edge.
+    const int maxSaneRight = regionBounds.isValid()
+                                 ? regionBounds.right() - qMax(24, regionBounds.width() / 10)
+                                 : std::numeric_limits<int>::max();
+    for (const NovelParagraph& paragraph : paragraphs) {
+        for (const QRect& line : paragraph.lineRects) {
+            if (line.width() < minWide)
+                continue;
+            const int right = line.right() + 1;
+            if (right <= maxSaneRight || rights.isEmpty())
+                rights.append(right);
+        }
+    }
+    int columnRight = 0;
+    if (!rights.isEmpty()) {
+        std::sort(rights.begin(), rights.end());
+        const int base = rights.at(qBound(0, int(rights.size() * 3 / 4), rights.size() - 1));
+        const int pad = regionBounds.isValid() ? qMax(12, regionBounds.width() / 50) : 12;
+        columnRight = base + pad;
+        if (regionBounds.isValid())
+            columnRight = qMin(columnRight, regionBounds.right() - 3);
+    }
+    if (columnRight <= 0 && regionBounds.isValid())
+        columnRight = regionBounds.right() - 3;
+
+    for (int p = 0; p < paragraphs.size(); ++p) {
+        const NovelParagraph& paragraph = paragraphs.at(p);
+        if (paragraph.rect.isEmpty())
+            continue;
+
+        const QString text = p < doc.paragraphs.size()
+                                 ? doc.paragraphs.at(p).trimmed()
+                                 : QString();
+
+        const int top = paragraph.rect.top();
+        int bottom = paragraph.rect.bottom() + 1;
+        if (p + 1 < paragraphs.size())
+            bottom = qMax(bottom, paragraphs.at(p + 1).rect.top());
+        else if (regionBounds.isValid())
+            bottom = qMax(bottom, regionBounds.bottom());
+
+        const int left = paragraph.rect.left();
+        const int right = qMax(left + 8, columnRight);
+        OverlayBox box;
+        box.rect = QRect(left, top, right - left, qMax(8, bottom - top));
+        box.coverRects = paragraph.lineRects;
+        box.text = text;
+        box.fontPixelSize = qMax(9, int(std::lround(paragraph.lineHeight * 0.72)));
+        box.fitToBox = true;
+        box.coverOnly = text.isEmpty();
+        boxes.append(box);
+    }
+    return boxes;
+}
 
 QList<OverlayBox> buildParagraphBoxes(const TranslatedDocument& doc, const QList<QRect>& lines,
                                       const QStringList& lineTexts, const QRect& regionBounds,
@@ -185,6 +431,29 @@ QColor regionCoverColor(const QImage& regionImage)
     std::sort(blues.begin(), blues.end());
     return QColor(reds.at(reds.size() / 2), greens.at(greens.size() / 2),
                   blues.at(blues.size() / 2));
+}
+
+QColor regionPaperColor(const QImage& regionImage)
+{
+    if (regionImage.isNull())
+        return {};
+    const QImage small =
+        regionImage.scaled(32, 32, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    if (small.isNull())
+        return {};
+
+    QList<QColor> pixels;
+    pixels.reserve(small.width() * small.height());
+    for (int y = 0; y < small.height(); ++y) {
+        for (int x = 0; x < small.width(); ++x)
+            pixels.append(small.pixelColor(x, y));
+    }
+    if (pixels.isEmpty())
+        return {};
+    std::sort(pixels.begin(), pixels.end(), [](const QColor& a, const QColor& b) {
+        return qGray(a.rgb()) < qGray(b.rgb());
+    });
+    return pixels.at(qBound(0, int(pixels.size() * 0.95), pixels.size() - 1));
 }
 
 } // namespace EZTranslator::OverlayLayout

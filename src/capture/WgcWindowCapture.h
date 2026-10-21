@@ -1,6 +1,8 @@
 #pragma once
 #include "capture/IWindowCapture.h"
 
+#include <atomic>
+
 class QThread;
 
 namespace EZTranslator {
@@ -30,12 +32,14 @@ public:
     [[nodiscard]] bool isRunning() const override;
     [[nodiscard]] int  fps() const override { return m_fps; }
     void setFps(int fps) override;
+    void notifyFrameConsumed() override;
 
 private:
     QThread*          m_thread{nullptr};
     WgcCaptureWorker* m_worker{nullptr};
     int               m_fps{60};
     bool              m_running{false};
+    std::atomic<bool> m_framePending{false};
 };
 
 } // namespace EZTranslator

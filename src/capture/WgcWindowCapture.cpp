@@ -10,6 +10,7 @@
 #include <windows.h>
 
 #include <cstring>
+#include <atomic>
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -53,7 +54,8 @@ class WgcCaptureWorker : public QObject
 {
     Q_OBJECT
 public:
-    explicit WgcCaptureWorker(QObject* parent = nullptr) : QObject(parent) {}
+    explicit WgcCaptureWorker(std::atomic<bool>* framePending, QObject* parent = nullptr)
+        : QObject(parent), m_framePending(framePending) {}
 
 public slots:
     void init(int fps)
@@ -205,6 +207,9 @@ private slots:
             return;
         }
 
+        if (m_framePending->load())
+            return;
+
         const uint8_t* source = m_dataBase + size_t(slot) * size_t(slotBytes);
         QImage image(width, height, QImage::Format_RGB32);
         if (image.isNull())
@@ -220,6 +225,7 @@ private slots:
         frame.image = std::move(image);
         frame.sourceSize = frame.image.size();
         frame.timestamp = QDateTime::currentMSecsSinceEpoch();
+        m_framePending->store(true);
         emit frameReady(frame);
     }
 
@@ -282,6 +288,7 @@ private:
     uint8_t*           m_dataBase{nullptr};
     qint64             m_lastSequence{0};
     bool               m_stopping{false};
+    std::atomic<bool>* m_framePending{nullptr};
 };
 
 // ============================================================================
@@ -290,7 +297,7 @@ private:
 WgcWindowCapture::WgcWindowCapture(QObject* parent)
     : IWindowCapture(parent)
     , m_thread(new QThread(this))
-    , m_worker(new WgcCaptureWorker())
+    , m_worker(new WgcCaptureWorker(&m_framePending))
 {
     m_worker->moveToThread(m_thread);
 
@@ -325,6 +332,7 @@ bool WgcWindowCapture::start(quintptr windowHandle)
     }
 
     bool ok = false;
+    m_framePending.store(false);
     QMetaObject::invokeMethod(m_worker, "startCapture", Qt::BlockingQueuedConnection,
                               Q_RETURN_ARG(bool, ok), Q_ARG(quintptr, windowHandle));
     m_running = ok;
@@ -334,7 +342,9 @@ bool WgcWindowCapture::start(quintptr windowHandle)
 void WgcWindowCapture::stop()
 {
     m_running = false;
+    m_framePending.store(false);
     QMetaObject::invokeMethod(m_worker, "stopCapture", Qt::BlockingQueuedConnection);
+    m_framePending.store(false);
 }
 
 bool WgcWindowCapture::isRunning() const
@@ -346,6 +356,11 @@ void WgcWindowCapture::setFps(int fps)
 {
     m_fps = qBound(1, fps, 240);
     QMetaObject::invokeMethod(m_worker, "updateFps", Qt::QueuedConnection, Q_ARG(int, m_fps));
+}
+
+void WgcWindowCapture::notifyFrameConsumed()
+{
+    m_framePending.store(false);
 }
 
 } // namespace EZTranslator

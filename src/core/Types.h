@@ -132,10 +132,14 @@ struct AppSettings {
     // Nhóm Giao diện (Appearance - phong cách Translumo)
     QColor windowColor{QColor(15, 23, 42, 230)};  // Window color
     QColor fontColor{QColor(255, 255, 255)};       // Font color
+    QString fontFamily{"Segoe UI"};                 // Font for hover/floating text
+    int textWindowStyle{1};                        // 0 Solid, 1 Glass, 2 Outline, 3 Paper
+    bool textWindowShowSource{true};               // Show source text in hover/floating
     int fontSize{15};                              // Font size (pt)
     bool isBold{true};                             // In đậm
     int lineSpacing{14};                           // Khoảng cách dòng (pt, 0 = theo cỡ chữ)
-    bool keepSourceFormatting{true};               // true = cỡ chữ bám theo dòng gốc (auto-fit)
+    bool keepSourceFormatting{true};     // true = cỡ chữ bám theo dòng gốc (auto-fit)
+    bool novelMode{false};               // true = luôn dùng layout đọc truyện (paper)
     int textAlignment{0};                          // 0: Left, 1: Center, 2: Right
     bool autoClearWindow{false};                   // Tự động xóa cửa sổ (khi dừng dịch)
     bool excludeFromCapture{true};                 // Ẩn khỏi chụp/quay màn hình

@@ -1,6 +1,7 @@
 #include "overlay/TextCover.h"
 
 #include <QHash>
+#include <QPainter>
 #include <QQueue>
 #include <QVector>
 
@@ -583,6 +584,7 @@ QImage TextCover::cleanPlate(const QImage &region, const QRect &area, const QLis
         return QImage();
 
     QImage erased = region.copy(clip).convertToFormat(QImage::Format_RGB32);
+    const QImage original = erased.copy();
     QList<QRect> local;
     local.reserve(boxes.size());
     for (const QRect &box : boxes) {
@@ -593,6 +595,57 @@ QImage TextCover::cleanPlate(const QImage &region, const QRect &area, const QLis
 
     for (const QRect &box : local)
         eraseBox(erased, box, &erased);
+
+    // Chu lon tren artwork (title/timer event): inpaint de trong nhu mot o mau
+    // trang/phang. Thay bang patch blur lay mau tu chinh anh goc, giu duoc
+    // gradient/hoa tiet cua nen.
+    for (const QRect &box : local) {
+        // Only large artwork lettering should use the blurred patch. Normal
+        // novel/UI text lines are wide but short (height ~50), and blurring
+        // them leaves a legible ghost of the source text on the plate.
+        if (box.height() < 60 || box.width() * box.height() < 20000)
+            continue;
+        const int margin = std::clamp(std::min(box.width(), box.height()) / 6, 4, 16);
+        const QRect patch = box.adjusted(-margin, -margin, margin, margin)
+                                .intersected(erased.rect());
+        if (patch.width() < 8 || patch.height() < 8)
+            continue;
+
+        QImage blurred = original.copy(patch);
+        const int smallW = std::max(1, patch.width() / 12);
+        const int smallH = std::max(1, patch.height() / 12);
+        blurred = blurred.scaled(smallW, smallH, Qt::IgnoreAspectRatio,
+                                 Qt::SmoothTransformation)
+                      .scaled(patch.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                      .convertToFormat(QImage::Format_ARGB32_Premultiplied);
+
+        // Feather mask de patch blur khong co vien vuong.
+        QImage mask(patch.size(), QImage::Format_ARGB32_Premultiplied);
+        mask.fill(Qt::transparent);
+        {
+            QPainter maskPainter(&mask);
+            maskPainter.setRenderHint(QPainter::Antialiasing, true);
+            maskPainter.setPen(Qt::NoPen);
+            maskPainter.setBrush(Qt::white);
+            maskPainter.drawRoundedRect(QRectF(2, 2, patch.width() - 4, patch.height() - 4), 10, 10);
+        }
+        QImage softMask = mask.scaled(std::max(1, patch.width() / 8),
+                                      std::max(1, patch.height() / 8),
+                                      Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                              .scaled(patch.size(), Qt::IgnoreAspectRatio,
+                                      Qt::SmoothTransformation);
+
+        {
+            QPainter platePainter(&blurred);
+            platePainter.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+            platePainter.drawImage(0, 0, softMask);
+        }
+        {
+            QPainter target(&erased);
+            target.setRenderHint(QPainter::SmoothPixmapTransform, true);
+            target.drawImage(patch.topLeft(), blurred);
+        }
+    }
 
     // Alpha, exactly like the old app's ToBitmapSource: opaque over the text boxes and over the
     // erased strokes in their margin, fading to transparent across the rest of the margin - so the

@@ -28,6 +28,49 @@ QList<OverlayBox> buildParagraphBoxes(const TranslatedDocument& doc, const QList
                                       bool skipUntranslated = false);
 
 /**
+ * @brief One reading paragraph detected from OCR lines, before translation.
+ *
+ * Novel mode works on paragraphs, not individual OCR boxes. A paragraph keeps
+ * all source line rects so the renderer can cover exactly those lines while
+ * using the paragraph slot for the translated text.
+ */
+struct NovelParagraph
+{
+    QRect        rect;       ///< union of source line rects
+    QList<QRect> lineRects;  ///< source lines to cover
+    QString      text;       ///< source text joined into one paragraph
+    int          lineHeight{0};
+};
+
+/**
+ * @brief Heuristic detector for single-column reading layouts (novels, articles).
+ *
+ * Requires several lines, long median text and line widths that fill a good part
+ * of the region. UI layouts normally fail this and keep the box layout.
+ */
+[[nodiscard]] bool looksLikeNovel(const QList<QRect>& lineRects,
+                                  const QStringList& lineTexts,
+                                  const QRect& regionBounds,
+                                  bool forceNovel = false);
+
+/**
+ * @brief Group OCR lines into paragraphs using vertical gaps / first-line indent.
+ */
+[[nodiscard]] QList<NovelParagraph> groupNovelParagraphs(const QList<QRect>& lineRects,
+                                                         const QStringList& lineTexts);
+
+/**
+ * @brief Build paper-mode overlay boxes: one paragraph slot, full source-line cover.
+ *
+ * The paragraph slot extends to the next paragraph so the translated text can use
+ * paragraph spacing without overlapping the next block. Only source line glyphs
+ * are covered; the page background between lines stays intact.
+ */
+QList<OverlayBox> buildNovelBoxes(const TranslatedDocument& doc,
+                                  const QList<NovelParagraph>& paragraphs,
+                                  const QRect& regionBounds = {});
+
+/**
  * @brief Màu chữ tương phản với NỀN của vùng: nền sáng → chữ gần đen, nền tối → chữ gần trắng.
  *
  * Overlay trước đây luôn vẽ chữ TRẮNG trên nền che tối. Khi cover đổi sang smart-plate (giữ
@@ -43,5 +86,14 @@ QColor contrastTextColor(const QImage& regionImage);
  * thật thì mắt gần như không thấy chuyển tiếp.
  */
 QColor regionCoverColor(const QImage& regionImage);
+
+/**
+ * @brief Background color for paper/reading mode.
+ *
+ * Uses a bright percentile instead of the median: a page with a lot of dark
+ * text and gray sidebars still has a white reading area, and covering a white
+ * paragraph with the median gray would leave visible gray slabs.
+ */
+QColor regionPaperColor(const QImage& regionImage);
 
 } // namespace EZTranslator::OverlayLayout

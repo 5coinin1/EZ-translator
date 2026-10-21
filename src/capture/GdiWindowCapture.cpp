@@ -18,6 +18,8 @@
 #include <QDateTime>
 #include <QDebug>
 
+#include <atomic>
+
 namespace EZTranslator {
 
 // ============================================================================
@@ -27,7 +29,8 @@ class CaptureWorker : public QObject
 {
     Q_OBJECT
 public:
-    explicit CaptureWorker(QObject* parent = nullptr) : QObject(parent) {}
+    explicit CaptureWorker(std::atomic<bool>* framePending, QObject* parent = nullptr)
+        : QObject(parent), m_framePending(framePending) {}
 
 public slots:
     void init(int fps)
@@ -63,6 +66,10 @@ private slots:
     void doCapture()
     {
         if (!m_hwnd) return;
+
+        // UI chua xu ly xong frame truoc -> bo tick nay, khong xep hang QImage.
+        if (m_framePending->load())
+            return;
 
         // Window no longer exists
         if (!IsWindow(m_hwnd)) {
@@ -165,12 +172,16 @@ private slots:
         frame.sourceSize = img.size();
         frame.image      = std::move(img);
         frame.timestamp  = QDateTime::currentMSecsSinceEpoch();
+        if (m_framePending->load())
+            return;
+        m_framePending->store(true);
         emit frameReady(frame);
     }
 
 private:
     QTimer* m_timer{nullptr};
     HWND    m_hwnd{nullptr};
+    std::atomic<bool>* m_framePending{nullptr};
 };
 
 // ============================================================================
@@ -179,7 +190,7 @@ private:
 GdiWindowCapture::GdiWindowCapture(QObject* parent)
     : IWindowCapture(parent)
     , m_thread(new QThread(this))
-    , m_worker(new CaptureWorker())
+    , m_worker(new CaptureWorker(&m_framePending))
 {
     m_worker->moveToThread(m_thread);
 
@@ -237,6 +248,7 @@ bool GdiWindowCapture::start(quintptr windowHandle)
     }
 
     m_running = true;
+    m_framePending.store(false);
     QMetaObject::invokeMethod(m_worker, "startCapture",
                               Qt::QueuedConnection,
                               Q_ARG(quintptr, windowHandle));
@@ -247,6 +259,7 @@ void GdiWindowCapture::stop()
 {
     if (!m_running) return;
     m_running = false;
+    m_framePending.store(false);
     QMetaObject::invokeMethod(m_worker, "stopCapture", Qt::QueuedConnection);
 }
 
@@ -261,6 +274,11 @@ void GdiWindowCapture::setFps(int fps)
     QMetaObject::invokeMethod(m_worker, "updateFps",
                               Qt::QueuedConnection,
                               Q_ARG(int, m_fps));
+}
+
+void GdiWindowCapture::notifyFrameConsumed()
+{
+    m_framePending.store(false);
 }
 
 } // namespace EZTranslator

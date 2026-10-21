@@ -9,6 +9,7 @@
 #include "ui/components/StatusIndicator.h"
 #include "ui/theme/IconFactory.h"
 #include "core/WindowEnumerator.h"
+#include "platform/FramelessWindowHelper.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -238,6 +239,9 @@ void MainWindow::buildUi()
     displaySegLay->setContentsMargins(3, 3, 3, 3);
     displaySegLay->setSpacing(4);
 
+    m_cardHover = new QPushButton(QStringLiteral("Dịch khi chỉ chuột"), displaySeg);
+    m_cardHover->setCheckable(true);
+    m_cardHover->setCursor(Qt::PointingHandCursor);
     m_cardFloat = new QPushButton(QStringLiteral("Cửa sổ nổi"), displaySeg);
     m_cardFloat->setCheckable(true);
     m_cardFloat->setCursor(Qt::PointingHandCursor);
@@ -245,18 +249,25 @@ void MainWindow::buildUi()
     m_cardOverlay->setCheckable(true);
     m_cardOverlay->setCursor(Qt::PointingHandCursor);
 
+    displaySegLay->addWidget(m_cardHover, 1);
     displaySegLay->addWidget(m_cardFloat, 1);
     displaySegLay->addWidget(m_cardOverlay, 1);
 
     auto* displayGroup = new QButtonGroup(this);
     displayGroup->setExclusive(true);
-    displayGroup->addButton(m_cardFloat, 0);
-    displayGroup->addButton(m_cardOverlay, 1);
-    m_cardFloat->setChecked(true);
+    displayGroup->addButton(m_cardHover, 0);
+    displayGroup->addButton(m_cardFloat, 1);
+    displayGroup->addButton(m_cardOverlay, 2);
+    m_cardHover->setChecked(true);
 
-    connect(displayGroup, &QButtonGroup::idClicked, this, [this](int id) {
-        const DisplayMode mode =
-            id == 1 ? DisplayMode::ScreenOverlay : DisplayMode::FloatingWindow;
+    connect(displayGroup, &QButtonGroup::idToggled, this, [this](int id, bool checked) {
+        // Dung idToggled (khong phai idClicked) de UI cung cap nhat khi trang thai
+        // duoc set bang code/automation, khong chi khi bam chuot.
+        if (!checked)
+            return;
+        const DisplayMode mode = id == 2   ? DisplayMode::ScreenOverlay
+                                 : id == 1 ? DisplayMode::FloatingWindow
+                                           : DisplayMode::HoverTranslate;
         applyDisplayModeUi(mode);
         emit displayModeChanged(mode);
     });
@@ -563,7 +574,9 @@ void MainWindow::applyDisplayModeUi(DisplayMode mode)
 
     // "Cửa sổ nổi" = bản dịch hiện trong popup cạnh con trỏ ⇒ không có khái niệm vùng dịch
     // để chọn. "Overlay trên màn hình" mới cần khoanh vùng để biết chỗ vẽ bản dịch.
-    m_regionSection->setVisible(mode == DisplayMode::ScreenOverlay);
+    // Hover không cần vùng dịch. Cửa sổ nổi và Overlay đều cho người dùng
+    // khoanh vùng/layout để biết chỗ nào cần OCR và dịch.
+    m_regionSection->setVisible(mode != DisplayMode::HoverTranslate);
 }
 
 void MainWindow::updateRegionDisplay()
@@ -623,7 +636,9 @@ MainWindow::DisplayMode MainWindow::displayMode() const
 {
     if (m_cardOverlay && m_cardOverlay->isChecked())
         return DisplayMode::ScreenOverlay;
-    return DisplayMode::FloatingWindow;
+    if (m_cardFloat && m_cardFloat->isChecked())
+        return DisplayMode::FloatingWindow;
+    return DisplayMode::HoverTranslate;
 }
 
 void MainWindow::setRegions(const QList<EZTranslator::TranslationRegion>& regions, int current)
@@ -842,6 +857,14 @@ void MainWindow::setHotkeyHints(const QString& startStopKey, const QString& sele
 void MainWindow::setCloseToTray(bool enabled)
 {
     m_closeToTray = enabled;
+}
+
+bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr* result)
+{
+    // Frameless window: bật resize bằng viền (kéo cửa sổ do TitleBar đảm nhiệm).
+    if (EZTranslator::FramelessWindow::handleNativeMessage(this, eventType, message, result))
+        return true;
+    return QWidget::nativeEvent(eventType, message, result);
 }
 
 void MainWindow::closeEvent(QCloseEvent* event)

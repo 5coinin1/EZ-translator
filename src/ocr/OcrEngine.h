@@ -47,6 +47,8 @@ public:
 
 private:
     /** Nạp model chữ của HỆ CHỮ CÒN LẠI (en ↔ zh) theo nhu cầu — xem recognize(). */
+    QList<OcrTextBox> recognizeProcessed(const QImage& image, bool allowAlt = true);
+
     bool ensureAltRecognizer();
 
     struct Impl;

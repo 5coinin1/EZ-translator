@@ -78,6 +78,7 @@ public:
     [[nodiscard]] QRect currentScreenRect() const { return m_currentScreenRect; }
 
     enum class DisplayMode {
+        HoverTranslate,
         FloatingWindow,
         ScreenOverlay
     };
@@ -115,6 +116,7 @@ public slots:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
 
 private slots:
     void onWindowIndexChanged(int index);
@@ -138,6 +140,7 @@ private:
     AppComboBox*     m_dstLangCombo{nullptr};
 
     // Section 3: Hiển thị bản dịch (segmented control 2 lựa chọn)
+    QPushButton* m_cardHover{nullptr};
     QPushButton* m_cardFloat{nullptr};
     QPushButton* m_cardOverlay{nullptr};
 

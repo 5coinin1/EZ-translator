@@ -1,8 +1,11 @@
 #pragma once
 
+#include <QColor>
 #include <QPoint>
 #include <QString>
 #include <QWidget>
+
+#include "core/Types.h"
 
 class QLabel;
 
@@ -30,11 +33,23 @@ public:
 
     void hidePopup();
 
+    /** Áp dụng font/màu/kiểu từ Cài đặt → Giao diện cho popup hover. */
+    void setAppearance(const EZTranslator::AppSettings& settings);
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
 private:
+    void applyAppearance();
     void placeNear(const QPoint& cursorScreenPos);
 
     QLabel* m_source{nullptr};
     QLabel* m_body{nullptr};
+    EZTranslator::AppSettings m_appearance;
+    QColor m_popupBackground{QColor(16, 18, 24, 238)};
+    QColor m_popupBorder{QColor(130, 150, 180, 170)};
+    int    m_cornerRadius{9};
+    bool   m_drawBorder{true};
 };
 
 } // namespace EZTranslator

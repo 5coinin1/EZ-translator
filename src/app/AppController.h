@@ -8,6 +8,7 @@
 #include "region/RegionManager.h"
 #include "ocr/OcrScheduler.h"
 #include "ocr/OcrTypes.h"
+#include "overlay/OverlayLayout.h"
 #include "overlay/TextOverlay.h"
 #include "scroll/ScrollEstimator.h"
 #include "translation/DocumentTranslator.h"
@@ -29,6 +30,7 @@ class RegionSnipperOverlay;
 class RegionHighlightOverlay;
 class SettingsDialog;
 class MiniFloatBar;
+class FloatingTranslationWindow;
 class TrayIconManager;
 class GlobalHotkeys;
 
@@ -190,6 +192,8 @@ private:
     void handleRegionBoxes(const QString& regionId,
                            const QList<EZTranslator::OcrTextBox>& boxesIn, bool buildPlate,
                            bool approximate = false);
+    /** Reconfigure the translation model when OCR reveals a different language family. */
+    void maybeUpdateDetectedSource(const QString& text);
     /** Gửi yêu cầu dịch cho vùng (tăng token + nhớ text nguồn của lượt này để neo theo nội dung). */
     void requestRegionTranslation(const QString& regionId, const QString& sourceText);
 
@@ -202,11 +206,17 @@ private:
     /** Cập nhật overlay từ box đã tích luỹ theo vùng. */
     void updateOverlay(const QSize& frameSize);
 
+    /** Cập nhật cửa sổ nổi từ source/translation của vùng đang chọn. */
+    void refreshFloatingWindow();
+
     /** Đẩy danh sách vùng hiện tại lên dropdown ở MainWindow (kèm vùng đang chọn). */
     void refreshRegionList();
 
     /** Xoá toàn bộ trạng thái OCR/dịch/overlay của MỘT vùng (khi sửa hoặc xoá vùng). */
     void forgetRegion(const QString& regionId);
+
+    /** Giai phong cache anh/box cua phien dich (plate full-vung rat ton RAM). */
+    void clearVisualCaches();
 
     MainWindow*               m_mainWindow{nullptr};
     RegionEditorWindow*       m_regionEditor{nullptr};
@@ -214,6 +224,7 @@ private:
     RegionHighlightOverlay*   m_highlightOverlay{nullptr};
     SettingsDialog*           m_settingsDialog{nullptr};
     MiniFloatBar*             m_miniFloatBar{nullptr};
+    FloatingTranslationWindow* m_floatingWindow{nullptr};
     TrayIconManager*          m_trayManager{nullptr};
     EZTranslator::WgcWindowCapture* m_wgcCapture{nullptr};
     EZTranslator::GdiWindowCapture* m_gdiCapture{nullptr};
@@ -249,6 +260,10 @@ private:
     EZTranslator::TranslationConfig m_translationConfig;
     /// Dòng nguồn (toạ độ frame) theo vùng, để đặt bản dịch khi worker trả kết quả.
     QHash<QString, QList<QRect>> m_regionLines;
+    /// Raw OCR boxes khi overlay chay o che do UI (moi label/value mot box).
+    QHash<QString, QList<EZTranslator::OcrTextBox>> m_regionUiBoxes;
+    /// Paragraph blocks cua che do Novel/reading. Co mat = vung dang o novel mode.
+    QHash<QString, QList<EZTranslator::OverlayLayout::NovelParagraph>> m_regionNovelParagraphs;
     QHash<QString, quint64> m_regionToken; ///< token yêu cầu dịch mới nhất mỗi vùng
     quint64 m_tokenCounter{0};
     QSize m_lastFrameSize;
@@ -268,6 +283,10 @@ private:
     bool     m_gotFirstFrame{false}; ///< đã nhận frame nào từ backend capture chưa
     QImage m_hoverFrame;             ///< frame capture mới nhất (để dò dòng dưới chuột)
     QSize  m_hoverFrameSize;
+    bool   m_hoverFrameReady{false};
+    int    m_hoverFrameSettle{0};
+    int    m_hoverEmptyStreak{0};
+    qint64 m_hoverLastValidMs{0};
     QRect  m_hoverClientPhysical;    ///< vùng client (pixel thật) để map con trỏ
     QPoint m_hoverLastCursor;        ///< để phát hiện con trỏ đứng yên
     qint64 m_hoverStillSince{0};
@@ -330,6 +349,11 @@ private:
     /// Văn bản nguồn OCR cuối của từng vùng; nếu không đổi thì giữ overlay dịch cũ
     /// trong lúc lượt dịch mới đang chạy (tránh nháy ngược về chữ OCR mỗi frame).
     QHash<QString, QString> m_regionSourceText;
+    /// Bản dịch đã ghép của từng vùng, dùng cho cửa sổ nổi.
+    QHash<QString, QString> m_regionTranslatedText;
+    /// Bộ nhớ dịch theo đoạn (chuẩn hoá nội dung): cuộn lên/xuống gặp lại
+    /// đoạn cũ thì dùng đúng bản dịch cũ, không gọi engine lại.
+    QHash<QString, QString> m_paragraphTranslations;
 
     /// Ảnh ROI mới nhất đã gửi OCR cho từng vùng (để dựng smart-cover plate khớp ĐÚNG nội dung
     /// mà các box được OCR ra — plate cũ dán lên nội dung mới là "chữ thật lẫn chữ dịch").
@@ -383,6 +407,8 @@ private:
     /// Chế độ hiển thị ở Section 3: false = cửa sổ nổi (popup hover), true = overlay đè lên game.
     /// Chỉ MỘT trong hai được hiển thị tại một thời điểm.
     bool m_overlayMode{false};
+    /// Cửa sổ nổi đang hiển thị (khác overlay và khác hover).
+    bool m_floatingMode{false};
     /// Toạ độ màn hình (pixel thật) của từng vùng — cần cho "Xem vùng" theo vùng đang chọn.
     QHash<QString, QRect> m_regionScreenRects;
     int  m_editRegionIndex{-1};    ///< >= 0: lần khoanh tới sẽ THAY vùng này; -1: thêm vùng mới

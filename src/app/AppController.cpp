@@ -24,6 +24,7 @@
 #include "core/SettingsStore.h"
 #include "platform/GlobalHotkeys.h"
 #include "platform/PlatformUtils.h"
+#include "ui/FloatingTranslationWindow.h"
 #include "ui/RoiPreviewDialog.h"
 
 #include <QFileInfo>
@@ -42,6 +43,7 @@ using namespace EZTranslator::OverlayLayout;
 #include <QPainter>
 #include <QScreen>
 #include <QMessageBox>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QShortcut>
 #include <QThread>
@@ -81,6 +83,18 @@ QString languageLabel(const QString& code)
     return code.toUpper();
 }
 
+/**
+ * Key ổn định cho bộ nhớ dịch đoạn: bỏ hoa/thường, khoảng trắng và dấu câu để
+ * OCR reflow nhẹ khi cuộn không làm mất cache.
+ */
+QString paragraphCacheKey(const QString& text)
+{
+    QString key = text.simplified().toCaseFolded();
+    static const QRegularExpression punctuation(QStringLiteral("[\\s\\p{P}]+"));
+    key.remove(punctuation);
+    return key;
+}
+
 } // namespace
 
 AppController::AppController(QObject* parent)
@@ -93,7 +107,9 @@ AppController::AppController(QObject* parent)
     m_mainWindow = new MainWindow();
     m_mainWindow->setLanguages(m_settings.sourceLanguage, m_settings.targetLanguage);
     // Chế độ hiển thị ban đầu do MainWindow quyết định (card "Cửa sổ nổi" được chọn sẵn).
-    m_overlayMode = m_mainWindow->displayMode() == MainWindow::DisplayMode::ScreenOverlay;
+    const MainWindow::DisplayMode initialMode = m_mainWindow->displayMode();
+    m_overlayMode = initialMode != MainWindow::DisplayMode::HoverTranslate;
+    m_floatingMode = initialMode == MainWindow::DisplayMode::FloatingWindow;
     qDebug() << "Creating RegionSnipperOverlay...";
     m_snipperOverlay = new RegionSnipperOverlay();
     qDebug() << "Creating RegionHighlightOverlay...";
@@ -105,6 +121,8 @@ AppController::AppController(QObject* parent)
     m_settingsDialog->setSettings(m_settings);
     qDebug() << "Creating MiniFloatBar...";
     m_miniFloatBar = new MiniFloatBar();
+    qDebug() << "Creating FloatingTranslationWindow...";
+    m_floatingWindow = new FloatingTranslationWindow();
     qDebug() << "Creating TrayIconManager...";
     m_trayManager = new TrayIconManager(this);
     qDebug() << "Creating WgcWindowCapture...";
@@ -183,6 +201,7 @@ AppController::~AppController()
     delete m_snipperOverlay;
     delete m_highlightOverlay;
     delete m_miniFloatBar;
+    delete m_floatingWindow;
     delete m_roiPreviewDialog;
     delete m_textOverlay;
     delete m_hoverPopup;
@@ -201,6 +220,8 @@ void AppController::initConnections()
         m_ocrScheduler.reset();
         m_regionBoxes.clear();
         m_regionSourceText.clear();
+        m_regionTranslatedText.clear();
+    m_paragraphTranslations.clear();
         m_regionLines.clear();
         m_regionStateAtMs.clear();
         m_regionServedHash.clear();
@@ -237,11 +258,13 @@ void AppController::initConnections()
     connect(m_mainWindow, &MainWindow::displayModeChanged, this,
             [this](MainWindow::DisplayMode mode) {
                 syncOverlayMode();
-                m_mainWindow->setStatus(
-                    mode == MainWindow::DisplayMode::ScreenOverlay
-                        ? QStringLiteral("Hiển thị: Overlay trên màn hình")
-                        : QStringLiteral("Hiển thị: Cửa sổ nổi (rê chuột lên chữ)"),
-                    QColor("#38bdf8"));
+                QString label = QStringLiteral("Dịch khi chỉ chuột");
+                if (mode == MainWindow::DisplayMode::FloatingWindow)
+                    label = QStringLiteral("Cửa sổ nổi");
+                else if (mode == MainWindow::DisplayMode::ScreenOverlay)
+                    label = QStringLiteral("Overlay trên màn hình");
+                m_mainWindow->setStatus(QStringLiteral("Hiển thị: ") + label,
+                                        QColor("#38bdf8"));
             });
     // Khi user chon window moi -> bat dau/chuyen capture
     connect(m_mainWindow, &MainWindow::targetWindowSelected,    this, &AppController::onTargetWindowSelected);
@@ -275,6 +298,11 @@ void AppController::initConnections()
     connect(m_miniFloatBar, &MiniFloatBar::requestStopTranslation, this, &AppController::onStopTranslation);
     connect(m_miniFloatBar, &MiniFloatBar::requestOpenSettings, this, &AppController::onOpenSettings);
 
+    if (m_floatingWindow) {
+        connect(m_floatingWindow, &FloatingTranslationWindow::closedByUser, this,
+                &AppController::onStopTranslation);
+    }
+
     // TrayIconManager signals
     connect(m_trayManager, &TrayIconManager::requestShowMainWindow, this, &AppController::onShowMainWindow);
     connect(m_trayManager, &TrayIconManager::requestToggleTranslation, this, &AppController::onToggleTranslation);
@@ -293,6 +321,20 @@ bool AppController::startCapture(quintptr windowHandle)
     m_captureHandle = windowHandle;
     m_gotFirstFrame = false;
 
+    // Xoa trang thai hover cua phien truoc: frame/geometry cu co the khong con
+    // dung voi cua so hoac backend moi, gay crop 0x0 o lan start dau.
+    m_hoverFrame = QImage();
+    m_hoverFrameSize = QSize();
+    m_hoverClientPhysical = QRect();
+    m_hoverFrameReady = false;
+    m_hoverFrameSettle = 0;
+    m_hoverEmptyStreak = 0;
+    m_hoverProbes.clear();
+    m_hoverLineValid = false;
+    m_hoverLastValidMs = m_clock.isValid() ? m_clock.elapsed() : 0;
+    if (m_hoverPopup)
+        m_hoverPopup->hidePopup();
+
     // Ưu tiên Windows.Graphics.Capture; nếu không start được (OS cũ, helper lỗi,
     // cửa sổ không hỗ trợ) thì fallback sang GDI PrintWindow.
     if (m_wgcCapture && m_wgcCapture->start(windowHandle)) {
@@ -305,6 +347,15 @@ bool AppController::startCapture(quintptr windowHandle)
             if (m_gotFirstFrame || m_state != EZTranslator::TranslationState::Running)
                 return;
             qWarning() << "[AppController] WGC gave no frame in 1.5s -> GDI fallback";
+            m_hoverFrame = QImage();
+            m_hoverFrameSize = QSize();
+            m_hoverClientPhysical = QRect();
+            m_hoverFrameReady = false;
+            m_hoverFrameSettle = 0;
+            m_hoverProbes.clear();
+            m_hoverLineValid = false;
+            if (m_hoverPopup)
+                m_hoverPopup->hidePopup();
             if (m_wgcCapture)
                 m_wgcCapture->stop();
             if (m_gdiCapture && m_gdiCapture->start(m_captureHandle)) {
@@ -328,6 +379,170 @@ bool AppController::startCapture(quintptr windowHandle)
 namespace {
 
 /** Thư mục model OCR: ưu tiên biến môi trường EZ_MODELS_DIR, mặc định trong repo. */
+/**
+ * Anh mau nho de tinh mau chu/nen cua vung. Khong giu full-resolution
+ * region image trong m_regionImages: voi nhieu vung/4K, moi anh vai chuc MB.
+ */
+QImage regionColorSample(const QImage& image)
+{
+    if (image.isNull())
+        return {};
+    if (qMax(image.width(), image.height()) <= 1024)
+        return image;
+    return image.scaled(1024, 1024, Qt::KeepAspectRatio, Qt::FastTransformation);
+}
+
+/**
+ * UI game/menu: nhieu box ngan (label + value) tren cung man hinh.
+ * Web/truyen: it box, moi box la ca dong dai -> giu layout paragraph.
+ *
+ * EZ_OVERLAY_BOX_LAYOUT=1/0 de force, mac dinh auto.
+ */
+/**
+ * Viet hoa UI: mot so term trong game/menu bi model dich sai nghia hoac qua dai
+ * so voi tab hep. Chi ap cho che do UI-box, khong dung cho truyen/web.
+ */
+/**
+ * OCR CJK hay chen space giua tung chu ("记 忆 序 列"), lam model dich sai/bo sot.
+ * Bo space khi ca hai ben la CJK; giu space that giua tu Latin.
+ */
+QString compactCjkSpaces(const QString& input)
+{
+    const auto isCjk = [](QChar c) {
+        const ushort u = c.unicode();
+        return (u >= 0x3400 && u <= 0x4DBF) || (u >= 0x4E00 && u <= 0x9FFF)
+               || (u >= 0xF900 && u <= 0xFAFF) || (u >= 0x3040 && u <= 0x30FF)
+               || (u >= 0xAC00 && u <= 0xD7AF);
+    };
+    QString out;
+    out.reserve(input.size());
+    for (int i = 0; i < input.size(); ++i) {
+        const QChar c = input.at(i);
+        if (c.isSpace() && i > 0 && i + 1 < input.size()
+            && isCjk(input.at(i - 1)) && isCjk(input.at(i + 1)))
+            continue;
+        out.append(c);
+    }
+    return out;
+}
+
+QString normalizeUiText(QString text)
+{
+    static const struct { const char* from; const char* to; } kReplacements[] = {
+        {"Thập Tự Chuẩn Tinh", "tâm ngắm chữ thập"},
+        {"Chuẩn Tinh", "tâm ngắm"},
+        {"chuẩn tinh", "tâm ngắm"},
+        {"记忆序列", "Chuỗi ký ức"},
+        {"弦海信标", "Tín hiệu biển khúc"},
+        {"活动凭录", "Chứng nhận sự kiện"},
+        {"经验加成卡", "Thẻ tăng EXP"},
+        {"3胜", "3 thắng"},
+        {"已签到", "Đã điểm danh"},
+        {"待签到", "Chờ điểm danh"},
+        {"活动说明", "Hướng dẫn sự kiện"},
+        {"活动中心", "Trung tâm sự kiện"},
+        {"赛季限时", "Mùa giải giới hạn"},
+        {"晶源感染", "Nhiễm nguồn tinh thể"},
+        {"新人专属", "Độc quyền tân thủ"},
+        {"聊天", "Trò chuyện"},
+        {"返回", "Quay lại"},
+        {"弦歌礼赠", "Quà tặng Khúc Ca"},
+        {"Hạn dùng bộ tâm ngắm hình chữ thập", "Áp dụng tâm ngắm chữ thập"},
+        {"Mở ra", "Bật"},
+        {"Vây ngoài", "Viền ngoài"},
+        {"Máy ngoài", "Viền ngoài"},
+        {"Mấy ngoài", "Viền ngoài"},
+        {"Linh Mẫn Độ", "Độ nhạy"},
+        {"Thiết bị điều khiển", "Điều khiển"},
+        {"Tài khoản hợp quy", "Tài khoản"},
+        {"trung tâm tâm ngắm", "giữa tâm ngắm"},
+        {"Hạn dùng bộ chuẩn tinh hình chữ thập", "Áp dụng tâm ngắm chữ thập"},
+        {"Đợi đến khi điểm danh", "Chờ điểm danh"},
+        {"Hoạt động giải thích", "Hướng dẫn"},
+        {"Thiết lập", "Cài đặt"},
+        {"Đối chiến", "Đấu"},
+        {"Cơ sở", "Cơ bản"},
+        {"Thao tác", "Tác vụ"},
+        {"Độ nhạy", "Nhạy"},
+        {"Hình ảnh", "Hình"},
+        {"Âm thanh", "Âm"},
+    };
+    for (const auto& replacement : kReplacements)
+        text.replace(QString::fromUtf8(replacement.from), QString::fromUtf8(replacement.to));
+    if (!text.isEmpty() && text.at(0).isLower())
+        text[0] = text.at(0).toUpper();
+    return text;
+}
+
+/** Tab bar rat hep: dung nhan ngan thay vi de ellipsis tren moi tab. */
+QString normalizeUiTabText(QString text)
+{
+    static const struct { const char* from; const char* to; } kReplacements[] = {
+        {"Thiết bị điều khiển", "Điều"},
+        {"Tài khoản hợp quy", "Tài khoản"},
+        {"Thiết lập", "Cài đặt"},
+        {"Đối chiến", "Đấu"},
+        {"Cơ bản", "Cơ"},
+        {"Cơ sở", "Cơ"},
+        {"Thao tác", "Tác"},
+        {"Tác vụ", "Tác"},
+        {"Độ nhạy", "Nhạy"},
+        {"Nhạy", "Nhạy"},
+        {"Tâm ngắm", "Ngắm"},
+        {"Chuẩn Tinh", "Ngắm"},
+        {"Hình ảnh", "Hình"},
+        {"Thanh âm", "Âm"},
+        {"Âm thanh", "Âm"},
+        {"Điều khiển", "Điều"},
+        {"Trung tâm hoạt động", "Sự kiện"},
+        {"Trung tâm sự kiện", "Sự kiện"},
+        {"Giới hạn thời gian của mùa giải", "Mùa giải"},
+        {"Mùa giải giới hạn", "Mùa giải"},
+        {"Mập béo", "Cá béo"},
+        {"Người mới độc quyền", "Tân thủ"},
+        {"Người mới", "Tân thủ"},
+        {"Độc quyền tân thủ", "Tân thủ"},
+        {"Tính nguyên nhiễm", "Nhiễm"},
+        {"Tinh nguyên nhiễm", "Nhiễm"},
+        {"Nhiễm nguồn tinh thể", "Nhiễm"},
+        {"Những", "Khác"},
+        {"Tài khoản", "Tài khoản"},
+    };
+    for (const auto& replacement : kReplacements)
+        text.replace(QString::fromUtf8(replacement.from), QString::fromUtf8(replacement.to));
+    text = text.trimmed();
+    if (text.endsWith(QStringLiteral("...")))
+        text.chop(3);
+    return text;
+}
+
+bool useUiBoxLayout(const QList<EZTranslator::OcrTextBox>& boxes)
+{
+    const QString mode = qEnvironmentVariable("EZ_OVERLAY_BOX_LAYOUT", QStringLiteral("auto"))
+                             .trimmed().toLower();
+    if (mode == QLatin1String("1") || mode == QLatin1String("on")
+        || mode == QLatin1String("box"))
+        return true;
+    if (mode == QLatin1String("0") || mode == QLatin1String("off")
+        || mode == QLatin1String("paragraph"))
+        return false;
+
+    if (boxes.size() < 6)
+        return false;
+
+    int shortCount = 0;
+    int total = 0;
+    for (const EZTranslator::OcrTextBox& box : boxes) {
+        const QString text = box.text.simplified();
+        if (text.isEmpty())
+            continue;
+        ++total;
+        if (text.size() <= 40)
+            ++shortCount;
+    }
+    return total > 0 && shortCount * 100 >= total * 70;
+}
+
 QString ocrModelsDir()
 {
     const QByteArray override = qgetenv("EZ_MODELS_DIR");
@@ -470,6 +685,8 @@ void AppController::reloadOcr()
     m_regionParagraphRatio.clear();
     m_regionBoxes.clear();
     m_regionSourceText.clear();
+    m_regionTranslatedText.clear();
+    m_paragraphTranslations.clear();
     m_regionLines.clear();
     m_regionStateAtMs.clear();
     m_regionServedHash.clear();
@@ -661,6 +878,13 @@ constexpr struct { int width; int height; } kBandStages[] = {
 };
 constexpr int kBandStageCount = int(sizeof(kBandStages) / sizeof(kBandStages[0]));
 
+/// Tong RAM toi da cho plate (anh nen da xoa chu) cua MOI vung. Plate la anh
+/// full-vung nen voi layout nhieu vung/4K co the rat lon.
+constexpr qint64 kPlateCacheBudgetBytes = 48LL * 1024 * 1024;
+
+/// Gioi han so dong hover giu lai de tra cuu (tranh tang mai khi luot web dai).
+constexpr int kHoverCacheLimit = 1000;
+
 } // namespace
 
 void AppController::startHover()
@@ -681,6 +905,8 @@ void AppController::startHover()
     m_hoverProbes.clear();
     m_hoverLastFinalToken = 0;
     m_hoverStillSince = m_clock.isValid() ? m_clock.elapsed() : 0;
+    m_hoverEmptyStreak = 0;
+    m_hoverLastValidMs = m_clock.isValid() ? m_clock.elapsed() : 0;
     m_hoverTimer->start();
     qInfo() << "[Hover] enabled";
 }
@@ -696,29 +922,52 @@ void AppController::stopHover()
     m_hoverTranslation.clear();
     m_hoverPrefetch = HoverPrefetch();
     m_hoverProbes.clear();
+    m_hoverFrame = QImage();
+    m_hoverFrameSize = QSize();
+    m_hoverClientPhysical = QRect();
+    m_hoverFrameReady = false;
+    m_hoverFrameSettle = 0;
+    m_hoverEmptyStreak = 0;
     ++m_hoverTranslationToken; // vô hiệu hoá kết quả dịch đang về
 }
 
 void AppController::syncOverlayMode()
 {
-    // NGUỒN SỰ THẬT là UI (MainWindow::displayMode). Đọc lại mỗi lần để hai chế độ KHÔNG BAO GIỜ
-    // chạy cùng lúc: trước đây chuyển sang Overlay mà cờ cũ còn false (signal lỡ/lệch lúc khởi
-    // động) ⇒ hover vẫn chạy ⇒ popup hiện đè lên overlay.
-    const bool overlay = m_mainWindow->displayMode() == MainWindow::DisplayMode::ScreenOverlay;
-    if (overlay == m_overlayMode)
+    const MainWindow::DisplayMode mode = m_mainWindow->displayMode();
+    const bool regionMode = mode != MainWindow::DisplayMode::HoverTranslate;
+    const bool floating = mode == MainWindow::DisplayMode::FloatingWindow;
+    if (regionMode == m_overlayMode && floating == m_floatingMode)
         return;
-    m_overlayMode = overlay;
+    m_overlayMode = regionMode;
+    m_floatingMode = floating;
 
-    if (m_overlayMode) {
-        // Sang overlay: tắt hẳn popup hover — hai nơi không hiện cùng lúc.
+    if (m_floatingMode) {
+        // Cua so noi: dung pipeline vung/OCR giong overlay nhung khong ve
+        // lop phu trong suot len cua so dich.
         stopHover();
         if (m_hoverPopup)
             m_hoverPopup->hidePopup();
-        updateOverlay(m_lastFrameSize);
-    } else {
-        // Sang cửa sổ nổi: tắt overlay đè lên game, bật lại hover.
         if (m_textOverlay)
             m_textOverlay->hideOverlay();
+        if (m_state == EZTranslator::TranslationState::Running && m_floatingWindow) {
+            m_floatingWindow->show();
+            m_floatingWindow->raise();
+            refreshFloatingWindow();
+        }
+    } else if (m_overlayMode) {
+        // Sang overlay: tat popup hover va cua so noi.
+        stopHover();
+        if (m_hoverPopup)
+            m_hoverPopup->hidePopup();
+        if (m_floatingWindow)
+            m_floatingWindow->hide();
+        updateOverlay(m_lastFrameSize);
+    } else {
+        // Sang dich khi chi chuot: tat overlay va cua so noi.
+        if (m_textOverlay)
+            m_textOverlay->hideOverlay();
+        if (m_floatingWindow)
+            m_floatingWindow->hide();
         if (m_state == EZTranslator::TranslationState::Running && m_ocrReady.load())
             startHover();
     }
@@ -731,7 +980,9 @@ void AppController::onHoverTick()
 
     // Đọc lại chế độ từ UI MỖI tick: đang Overlay thì hover PHẢI im (hai chế độ độc lập). Không
     // phụ thuộc cờ m_overlayMode cũ — nó có thể lệch nếu signal đổi chế độ bị lỡ.
-    m_overlayMode = m_mainWindow->displayMode() == MainWindow::DisplayMode::ScreenOverlay;
+    const MainWindow::DisplayMode hoverMode = m_mainWindow->displayMode();
+    m_overlayMode = hoverMode != MainWindow::DisplayMode::HoverTranslate;
+    m_floatingMode = hoverMode == MainWindow::DisplayMode::FloatingWindow;
 
     // Chẩn đoán: 2 giây/lần ghi LÝ DO tick không dò được gì. Không có log này thì "hover
     // không dịch" không phân biệt được là do cửa sổ/tiền cảnh/frame hay do OCR/dịch.
@@ -748,7 +999,8 @@ void AppController::onHoverTick()
     };
 
     const bool active = m_state == EZTranslator::TranslationState::Running
-                        && m_ocrReady.load() && !m_hoverFrame.isNull() && !m_overlayMode;
+                        && m_ocrReady.load() && m_hoverFrameReady
+                        && m_hoverFrameSize.isValid() && !m_overlayMode;
     if (!active) {
         note(QStringLiteral("chưa đủ điều kiện (chưa bật dịch / OCR chưa xong / chưa có frame)"));
         m_hoverPopup->hidePopup();
@@ -828,6 +1080,11 @@ void AppController::onHoverTick()
     }
 
     note(QStringLiteral("con trỏ đã dừng → gửi probe CHÍNH THỨC"));
+    // Gioi han tan suat probe ca khi khong tim thay dong: truoc day nhanh
+    // "khong co text" gui probe moi 20ms -> CPU va popup/cursor nhap nhay.
+    if (now - m_hoverLastSendMs < 120)
+        return;
+
     sendHoverProbe(screenPoint, /*prefetch=*/false);
 #endif
 }
@@ -837,6 +1094,9 @@ void AppController::sendHoverProbe(const QPoint& screenPoint, bool prefetch, int
     // Worker hover chỉ sinh khi vào chế độ "Cửa sổ nổi"; trong 1-2s đầu nó còn nạp model thì
     // bỏ probe (không gửi vào engine chưa nạp xong).
     if (!m_hoverOcrWorker || !m_hoverOcrReady)
+        return;
+    if (!m_hoverFrameReady || m_hoverFrameSize.isEmpty()
+        || m_hoverClientPhysical.isEmpty())
         return;
 #ifdef _WIN32
     const QRect client = m_hoverClientPhysical;
@@ -990,17 +1250,28 @@ void AppController::onHoverProbed(const QString& id, const QString& text, const 
     }
 
     // Dò trước: chỉ để dành, KHÔNG hiện popup (con trỏ còn đang di chuyển).
+    const qint64 nowMs = m_clock.isValid() ? m_clock.elapsed() : 0;
+
     if (geom.prefetch)
         return;
     if (token != m_hoverLastFinalToken)
         return; // đã có yêu cầu cuối mới hơn
 
     if (!hasLine) {
-        m_hoverPopup->hidePopup();
-        m_hoverLineValid = false;
-        m_hoverPending = false;
+        // Debounce: mot probe rong (frame dang chuyen, vung trong, OCR nham)
+        // khong du de an popup - neu an ngay thi popup nhap nhay theo con tro.
+        ++m_hoverEmptyStreak;
+        if (m_hoverEmptyStreak >= 3 || nowMs - m_hoverLastValidMs >= 400) {
+            m_hoverPopup->hidePopup();
+            m_hoverLineValid = false;
+            m_hoverPending = false;
+            m_hoverEmptyStreak = 0;
+        }
         return;
     }
+
+    m_hoverEmptyStreak = 0;
+    m_hoverLastValidMs = nowMs;
     if (text == m_hoverSource && m_hoverLineValid
         && (m_hoverPending || !m_hoverTranslation.isEmpty())) {
         return;
@@ -1042,17 +1313,50 @@ void AppController::onStartTranslation()
 
     // Đồng bộ chế độ hiển thị từ UI TRƯỚC khi bật bất kỳ đường nào — đảm bảo overlay và cửa sổ
     // nổi không chạy cùng lúc (cờ có thể lệch nếu UI đổi chế độ mà signal bị lỡ).
-    m_overlayMode = m_mainWindow->displayMode() == MainWindow::DisplayMode::ScreenOverlay;
+    const MainWindow::DisplayMode activeMode = m_mainWindow->displayMode();
+    m_overlayMode = activeMode != MainWindow::DisplayMode::HoverTranslate;
+    m_floatingMode = activeMode == MainWindow::DisplayMode::FloatingWindow;
 
     m_state = EZTranslator::TranslationState::Running;
     m_mainWindow->onTranslationStarted();
     m_trayManager->updateState(true);
+
+    if (m_floatingWindow) {
+            m_floatingWindow->setSourceText(QString());
+        m_floatingWindow->setTranslatedText(QString());
+        if (m_floatingMode) {
+            m_floatingWindow->show();
+            m_floatingWindow->raise();
+            m_floatingWindow->activateWindow();
+        } else {
+            m_floatingWindow->hide();
+        }
+    }
 
     // Capture chạy trước (nhẹ) để pipeline hoạt động sớm; nạp model OCR (nặng: DirectML
     // init + warm-up) ở BACKGROUND nên UI không đứng vài giây như trước.
     if (m_capture) {
         startCapture(m_mainWindow->selectedWindowHandle());
     }
+
+#ifdef _WIN32
+    // Hover chi chay khi cua so dich o tien canh. Khi nguoi dung bam Bat dau,
+    // chu dong dua cua so dich len truoc de WGC co frame ngay tu lan dau.
+    {
+        const quintptr handle = m_mainWindow->selectedWindowHandle();
+        QTimer::singleShot(150, this, [this, handle]() {
+            if (m_state != EZTranslator::TranslationState::Running)
+                return;
+            HWND hwnd = reinterpret_cast<HWND>(handle);
+            if (!hwnd || !IsWindow(hwnd))
+                return;
+            if (IsIconic(hwnd))
+                ShowWindow(hwnd, SW_RESTORE);
+            if (GetForegroundWindow() != hwnd)
+                SetForegroundWindow(hwnd);
+        });
+    }
+#endif
     if (m_visibilityTimer)
         m_visibilityTimer->start();
     if (m_catchUpTimer)
@@ -1080,6 +1384,12 @@ void AppController::onStopTranslation()
     m_mainWindow->onTranslationStopped();
     m_trayManager->updateState(false);
 
+    if (m_floatingWindow) {
+        m_floatingWindow->hide();
+            m_floatingWindow->setSourceText(QString());
+        m_floatingWindow->setTranslatedText(QString());
+    }
+
     if (m_textOverlay)
         m_textOverlay->hideOverlay();
 
@@ -1101,6 +1411,7 @@ void AppController::onStopTranslation()
         m_catchUpTimer->stop();
 
     stopHover();
+    clearVisualCaches();
 
     if (m_capture) {
         if (!m_roiPreviewDialog || !m_roiPreviewDialog->isVisible()) {
@@ -1314,6 +1625,8 @@ void AppController::onRegionSelected(int index)
     if (m_highlightOverlay && m_highlightOverlay->isVisible())
         m_highlightOverlay->hideOverlay();
     m_mainWindow->setShowRegionActive(false);
+    if (m_floatingMode)
+        refreshFloatingWindow();
 }
 
 void AppController::refreshRegionList()
@@ -1330,7 +1643,10 @@ void AppController::forgetRegion(const QString& regionId)
 {
     m_regionBoxes.remove(regionId);
     m_regionSourceText.remove(regionId);
+    m_regionTranslatedText.remove(regionId);
     m_regionLines.remove(regionId);
+    m_regionUiBoxes.remove(regionId);
+    m_regionNovelParagraphs.remove(regionId);
     m_regionStateAtMs.remove(regionId);
     m_regionServedHash.remove(regionId);
     m_regionServedProfile.remove(regionId);
@@ -1345,6 +1661,44 @@ void AppController::forgetRegion(const QString& regionId)
     m_regionOcrAtMs.remove(regionId);
     m_regionTranslateAtMs.remove(regionId);
     m_regionScreenRects.remove(regionId);
+}
+
+void AppController::clearVisualCaches()
+{
+    // Plate la anh full-vung, m_regionImages la ban mau; giu lai sau khi stop
+    // chi ton RAM. Text cache dich (TranslationCache) van duoc giu rieng.
+    m_ocrBoxCache.clear();
+    m_regionPlates.clear();
+    m_regionImages.clear();
+    m_pendingSourceBoxes.clear();
+    m_regionBoxes.clear();
+
+    m_regionLines.clear();
+    m_regionUiBoxes.clear();
+    m_regionNovelParagraphs.clear();
+    m_regionLineTexts.clear();
+    m_regionSourceText.clear();
+        m_regionTranslatedText.clear();
+    m_paragraphTranslations.clear();
+    m_regionStateAtMs.clear();
+    m_regionRequestSource.clear();
+    m_regionToken.clear();
+    m_regionOcrHash.clear();
+    m_regionOcrInfo.clear();
+    m_regionOcrToken.clear();
+    m_regionOcrAtMs.clear();
+    m_regionTranslateAtMs.clear();
+    m_regionLastChangeMs.clear();
+    m_regionServedHash.clear();
+    m_regionServedProfile.clear();
+    m_regionLinePitch.clear();
+    m_regionParagraphRatio.clear();
+    m_ocrScheduler.reset();
+
+    if (m_textOverlay) {
+        m_textOverlay->clear();
+        m_textOverlay->hideOverlay();
+    }
 }
 
 void AppController::onRegionSnapCancelled()
@@ -1547,6 +1901,7 @@ void AppController::onSettingsSaved(const EZTranslator::AppSettings& settings)
     const bool ocrReloadNeeded = updated.ocrEngine != m_settings.ocrEngine
                                  || updated.ocrUseGpu != m_settings.ocrUseGpu
                                  || updated.ocrBinarize != m_settings.ocrBinarize;
+    const bool novelModeChanged = updated.novelMode != m_settings.novelMode;
 
     m_settings = updated;
     EZTranslator::SettingsStore::save(m_settings);
@@ -1556,6 +1911,23 @@ void AppController::onSettingsSaved(const EZTranslator::AppSettings& settings)
 
     // Cài đặt có thể đổi chế độ hiển thị → đồng bộ lại (tắt hover nếu đang Overlay…).
     syncOverlayMode();
+
+    if (novelModeChanged) {
+        // Force a fresh OCR/layout pass; otherwise stale boxes keep the old
+        // mode until the user stops and restarts the overlay.
+        m_regionBoxes.clear();
+        m_regionNovelParagraphs.clear();
+        m_regionUiBoxes.clear();
+        m_regionLines.clear();
+        m_regionLineTexts.clear();
+        m_regionSourceText.clear();
+        m_regionTranslatedText.clear();
+    m_paragraphTranslations.clear();
+        m_regionServedHash.clear();
+        m_ocrScheduler.reset();
+        if (m_textOverlay)
+            m_textOverlay->clear();
+    }
 
     if (ocrReloadNeeded && m_ocrLoadAttempted)
         reloadOcr();
@@ -1584,9 +1956,13 @@ void AppController::applySettings(bool initial)
         m_textOverlay->setExcludeFromCapture(m_settings.excludeFromCapture);
     }
     // Popup hover + thanh nổi cũng nằm trên cửa sổ đích → cùng bị loại khỏi capture.
-    if (m_hoverPopup)
+    if (m_hoverPopup) {
+        m_hoverPopup->setAppearance(m_settings);
         EZTranslator::Platform::setExcludedFromCapture(quintptr(m_hoverPopup->winId()),
                                                        m_settings.excludeFromCapture);
+    }
+    if (m_floatingWindow)
+        m_floatingWindow->setAppearance(m_settings);
     if (m_miniFloatBar)
         EZTranslator::Platform::setExcludedFromCapture(quintptr(m_miniFloatBar->winId()),
                                                        m_settings.excludeFromCapture);
@@ -1707,6 +2083,8 @@ void AppController::onLanguagesChanged(const QString& source, const QString& tar
     m_regionParagraphRatio.clear();
     m_regionBoxes.clear();
     m_regionSourceText.clear();
+    m_regionTranslatedText.clear();
+    m_paragraphTranslations.clear();
     m_regionLines.clear();
     m_regionStateAtMs.clear();
     m_regionServedHash.clear();
@@ -1751,6 +2129,7 @@ void AppController::onQuit()
 
 void AppController::onTargetWindowSelected(quintptr handle, const QString& /*title*/, const QString& /*processName*/)
 {
+    clearVisualCaches();
     if (m_state == EZTranslator::TranslationState::Running || m_captureStartedForPreview) {
         if (m_capture) m_capture->stop();
         if (handle != 0) {
@@ -1761,13 +2140,47 @@ void AppController::onTargetWindowSelected(quintptr handle, const QString& /*tit
 
 void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
 {
+    // Backpressure: cho capture worker phat frame tiep theo sau khi ham nay
+    // xu ly xong (ke ca return som), tranh hang tram QImage full-screen.
+    struct FrameAckGuard {
+        EZTranslator::IWindowCapture* capture;
+        ~FrameAckGuard()
+        {
+            if (capture)
+                capture->notifyFrameConsumed();
+        }
+    } frameAck{m_capture};
+
+    if (frame.image.isNull() || frame.image.width() <= 0 || frame.image.height() <= 0) {
+        // Frame rong/den tu backend: khong coi la "da co frame" va khong cho
+        // hover dung frame cu.
+        m_hoverFrameReady = false;
+        m_hoverFrameSettle = 0;
+        return;
+    }
+
     m_gotFirstFrame = true;
     m_lastCapture = frame; // giữ lại cho timer đuổi kịp (cửa sổ tĩnh không phát frame mới)
 
     // Lưu frame mới nhất cho chế độ "dịch khi chỉ chuột" (dò dòng dưới con trỏ).
+    const QSize hoverFrameSize = frame.image.size();
+    const QRect hoverClient = targetClientRectPhysical();
+    if (hoverFrameSize != m_hoverFrameSize || hoverClient != m_hoverClientPhysical) {
+        // Doi kich thuoc/cua so/backend: phai on dinh lai roi moi probe.
+        m_hoverFrameSettle = 0;
+        m_hoverFrameReady = false;
+    }
     m_hoverFrame = frame.image;
-    m_hoverFrameSize = frame.image.size();
-    m_hoverClientPhysical = targetClientRectPhysical();
+    m_hoverFrameSize = hoverFrameSize;
+    m_hoverClientPhysical = hoverClient;
+    if (hoverClient.isEmpty()) {
+        m_hoverFrameReady = false;
+        m_hoverFrameSettle = 0;
+    } else {
+        ++m_hoverFrameSettle;
+        if (m_hoverFrameSettle >= 2)
+            m_hoverFrameReady = true;
+    }
 
     // Model OCR đang được nạp ở background → chưa xử lý gì (overlay để trống).
     if (!m_ocrReady.load()) {
@@ -1776,13 +2189,27 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
         return;
     }
 
-    if (m_regionManager.isEmpty()) {
-        if (m_textOverlay && m_textOverlay->isShowing())
-            m_textOverlay->hideOverlay();
-        return;
-    }
+    QList<EZTranslator::RegionFrame> regionFrames;
 
-    const QList<EZTranslator::RegionFrame> regionFrames = m_regionManager.extractRegions(frame);
+    if (m_regionManager.isEmpty()) {
+        if (!m_overlayMode) {
+            if (m_textOverlay && m_textOverlay->isShowing())
+                m_textOverlay->hideOverlay();
+            return;
+        }
+        // Overlay mode + "toan bo cua so": coi ca frame la mot vung.
+        EZTranslator::RegionFrame whole;
+        whole.regionId = QStringLiteral("roi_full");
+        whole.regionName = QStringLiteral("Toan bo cua so");
+        whole.regionOrder = 1;
+        whole.pixelRect = QRect(QPoint(0, 0), frame.image.size());
+        whole.sourceFrameSize = frame.image.size();
+        whole.image = frame.image;
+        whole.timestamp = frame.timestamp;
+        regionFrames.append(whole);
+    } else {
+        regionFrames = m_regionManager.extractRegions(frame);
+    }
 
     // Cập nhật lên cửa sổ Preview ROI nếu người dùng đang mở
     if (m_roiPreviewDialog && m_roiPreviewDialog->isVisible()) {
@@ -1880,7 +2307,7 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
                 m_regionOcrToken.insert(regionFrame.regionId, ++m_tokenCounter);
                 m_regionOcrInfo.insert(regionFrame.regionId,
                                        {regionFrame.pixelRect, regionFrame.sourceFrameSize});
-                m_regionImages.insert(regionFrame.regionId, regionFrame.image);
+                m_regionImages.insert(regionFrame.regionId, regionColorSample(regionFrame.image));
                 m_regionOcrHash.insert(regionFrame.regionId, regionHash);
                 m_regionOcrAtMs.insert(regionFrame.regionId, now);
                 onRegionRecognized(regionFrame.regionId, *hitBoxes);
@@ -1897,7 +2324,7 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
                                {regionFrame.pixelRect, regionFrame.sourceFrameSize});
         // Giữ ảnh ROI đã gửi OCR: plate smart-cover sẽ được dựng từ ĐÚNG ảnh này, nên nó luôn khớp
         // với các box mà worker trả về (không bao giờ dán nền cũ lên nội dung mới).
-        m_regionImages.insert(regionFrame.regionId, regionFrame.image);
+        m_regionImages.insert(regionFrame.regionId, regionColorSample(regionFrame.image));
         m_regionOcrHash.insert(regionFrame.regionId, regionHash);
         m_regionOcrAtMs.insert(regionFrame.regionId, now);
         // Đánh dấu bản đang phục vụ: các khung sau chỉ nhiễu ≤ maxDistance sẽ bị bỏ qua ở đầu tick.
@@ -1930,6 +2357,23 @@ void AppController::onRegionPlateReady(const QString& regionId, quint64 imageHas
         pool.clear(); // bounded: giữ vài nội dung mới nhất (cuộn qua lại vẫn trúng)
     pool.insert(imageHash, plate);
 
+    // Gioi han tong RAM plate tren MOI vung, khong chi tung vung.
+    qint64 totalPlateBytes = 0;
+    for (auto regionIt = m_regionPlates.constBegin(); regionIt != m_regionPlates.constEnd();
+         ++regionIt) {
+        for (const QImage& image : regionIt.value())
+            totalPlateBytes += image.sizeInBytes();
+    }
+    if (totalPlateBytes > kPlateCacheBudgetBytes) {
+        // Giu plate vua tao; bo phan con lai de RAM khong phinh.
+        m_regionPlates.clear();
+        m_regionPlates[regionId].insert(imageHash, plate);
+        // Box/overlay cu co the dang giu reference toi plate cu -> xoa luon.
+        m_regionBoxes.clear();
+        if (m_textOverlay)
+            m_textOverlay->clear();
+    }
+
     // Overlay đang hiện nội dung này mà box chưa có plate (đang che tạm bằng màu đặc) thì dán
     // plate vào và vẽ lại — nâng cấp nền "màu đặc" → "nền đã xoá chữ", không chờ thêm gì.
     const auto boxesIt = m_regionBoxes.find(regionId);
@@ -1952,6 +2396,8 @@ void AppController::onRegionPlateReady(const QString& regionId, quint64 imageHas
         overlay.textColor = textColor;
         overlay.coverColor = coverColor;
     }
+    if (m_floatingMode)
+        refreshFloatingWindow();
     updateOverlay(m_lastFrameSize);
 }
 
@@ -1993,6 +2439,73 @@ void AppController::handleRegionBoxes(const QString& regionId,
     const QRect pixelRect = info->pixelRect;
     const qint64 ocrMs = m_clock.isValid() ? m_clock.elapsed() - m_regionOcrAtMs.value(regionId, 0)
                                            : -1;
+
+    // A Chinese/Japanese novel can have short lines (<= 40 chars), so the old
+    // UI heuristic would otherwise route it to per-box layout before the novel
+    // branch gets a chance. Run a cheap layout probe first.
+    bool novelCandidate = false;
+    {
+        const auto quick = EZTranslator::OcrTextAssembler::assembleDocument(boxes, 0, 0.0);
+        QList<QRect> quickRects;
+        QStringList quickTexts;
+        for (const auto& line : quick.lines) {
+            quickRects.append(line.rect.translated(pixelRect.topLeft()));
+            quickTexts.append(line.text.simplified());
+        }
+        novelCandidate =
+            EZTranslator::OverlayLayout::looksLikeNovel(quickRects, quickTexts, pixelRect,
+                                                        m_settings.novelMode);
+    }
+
+    // UI layout: moi OCR box (label/value/button) la mot don vi dich va mot box
+    // overlay rieng. Tranh group paragraph lam label+value bi gop thanh mot cau
+    // roi dat lech sang control ben canh.
+    if (!novelCandidate && useUiBoxLayout(boxes)) {
+        QList<EZTranslator::OcrTextBox> rawBoxes;
+        QStringList texts;
+        QList<QRect> rects;
+        rawBoxes.reserve(boxes.size());
+        texts.reserve(boxes.size());
+        rects.reserve(boxes.size());
+        for (const EZTranslator::OcrTextBox& box : boxes) {
+            const QString text = compactCjkSpaces(box.text.simplified());
+            rawBoxes.append(box);
+            rects.append(box.rect.translated(pixelRect.topLeft()));
+            if (!text.isEmpty())
+                texts.append(text);
+        }
+
+        if (rawBoxes.size() >= 2) {
+            m_regionUiBoxes.insert(regionId, rawBoxes);
+            m_regionLines.insert(regionId, rects);
+            m_regionLineTexts.insert(regionId, texts);
+            m_regionSourceText.insert(regionId, texts.join(QStringLiteral("\n\n")));
+            if (m_floatingMode)
+                refreshFloatingWindow();
+            m_regionStateAtMs.insert(
+                regionId, m_regionOcrAtMs.value(regionId, m_clock.isValid()
+                                                               ? m_clock.elapsed()
+                                                               : 0));
+
+            if (buildPlate) {
+                const quint64 hash = m_regionOcrHash.value(regionId);
+                if (hash != 0) {
+                    QHash<quint64, QList<EZTranslator::OcrTextBox>>& regionCache =
+                        m_ocrBoxCache[regionId];
+                    if (regionCache.size() >= 8)
+                        regionCache.clear();
+                    regionCache.insert(hash, boxes);
+                }
+            }
+
+            qInfo().noquote() << "[OCR]" << regionId << "->" << rawBoxes.size()
+                              << "UI box(es), sau" << ocrMs << "ms";
+            m_regionNovelParagraphs.remove(regionId);
+            requestRegionTranslation(regionId, m_regionSourceText.value(regionId));
+            return;
+        }
+    }
+    m_regionUiBoxes.remove(regionId);
     qDebug().noquote() << "[OCR]" << regionId
                        << (approximate ? QStringLiteral("[tăng dần]") : QString()) << "->"
                        << boxes.size() << "line(s), sau" << ocrMs << "ms";
@@ -2065,6 +2578,49 @@ void AppController::handleRegionBoxes(const QString& regionId,
     }
     m_regionLines.insert(regionId, lineRects);
     m_regionLineTexts.insert(regionId, lineTexts);
+    maybeUpdateDetectedSource(assembled.text);
+
+    // Novel/reading layout: one paragraph block per source paragraph, translated
+    // with paragraph context. Deliberately separate from UI box layout and from
+    // the old line-count paragraph anchor.
+    if (novelCandidate
+        || EZTranslator::OverlayLayout::looksLikeNovel(lineRects, lineTexts, pixelRect,
+                                                       m_settings.novelMode)) {
+        QList<EZTranslator::OverlayLayout::NovelParagraph> paragraphs =
+            EZTranslator::OverlayLayout::groupNovelParagraphs(lineRects, lineTexts);
+        if (paragraphs.size() >= 2) {
+            QStringList paragraphTexts;
+            paragraphTexts.reserve(paragraphs.size());
+            for (const auto& paragraph : paragraphs)
+                paragraphTexts.append(paragraph.text.trimmed());
+            const QString novelText = paragraphTexts.join(QStringLiteral("\n\n"));
+            if (!novelText.trimmed().isEmpty()) {
+                m_regionNovelParagraphs.insert(regionId, paragraphs);
+                m_regionSourceText.insert(regionId, novelText);
+                if (m_floatingMode)
+                    refreshFloatingWindow();
+                m_regionStateAtMs.insert(
+                    regionId, m_regionOcrAtMs.value(regionId, m_clock.isValid()
+                                                                   ? m_clock.elapsed()
+                                                                   : 0));
+                if (buildPlate) {
+                    const quint64 hash = m_regionOcrHash.value(regionId);
+                    if (hash != 0) {
+                        QHash<quint64, QList<EZTranslator::OcrTextBox>>& regionCache =
+                            m_ocrBoxCache[regionId];
+                        if (regionCache.size() >= 8)
+                            regionCache.clear();
+                        regionCache.insert(hash, boxes);
+                    }
+                }
+                qInfo().noquote() << "[OCR]" << regionId << "->" << paragraphs.size()
+                                  << "novel paragraph(s), sau" << ocrMs << "ms";
+                requestRegionTranslation(regionId, novelText);
+                return;
+            }
+        }
+    }
+    m_regionNovelParagraphs.remove(regionId);
 
     // Hiện NGAY bản nguồn (chưa dịch) để overlay không trống; bản dịch thay sau.
     const EZTranslator::TranslatedDocument sourceDoc =
@@ -2088,6 +2644,8 @@ void AppController::handleRegionBoxes(const QString& regionId,
         }
     }
     m_regionSourceText.insert(regionId, assembled.text);
+    if (m_floatingMode)
+        refreshFloatingWindow();
     // Mốc thời gian của trạng thái CHÍNH XÁC này: lấy thời điểm DISPATCH OCR (không phải lúc kết
     // quả về) — kết quả dịch chỉ được áp khi không có lần đổi nội dung nào mới hơn mốc này (xem
     // onTranslationReady), tránh hiện box cũ lên nội dung vừa cuộn.
@@ -2182,6 +2740,35 @@ void AppController::handleRegionBoxes(const QString& regionId,
     updateOverlay(m_lastFrameSize);
 }
 
+void AppController::maybeUpdateDetectedSource(const QString& text)
+{
+    const QString detected = EZTranslator::LanguageDetect::detect(text);
+    const bool autoSource = EZTranslator::LanguageDetect::isAuto(m_settings.sourceLanguage);
+    const QString configured = autoSource ? m_detectedSource : m_settings.sourceLanguage;
+    const bool supported = detected == QLatin1String("en") || detected == QLatin1String("zh")
+                           || detected == QLatin1String("ja");
+    const auto family = [](const QString& code) {
+        if (code == QLatin1String("zh") || code == QLatin1String("ja"))
+            return QStringLiteral("cjk");
+        if (code == QLatin1String("en"))
+            return QStringLiteral("latin");
+        return QString();
+    };
+    if (!detected.isEmpty() && detected != m_detectedSource && supported
+        && family(detected) != family(configured)) {
+        m_detectedSource = detected;
+        if (m_translateWorker) {
+            m_translationConfig = translationConfig(detected);
+            QMetaObject::invokeMethod(m_translateWorker, "configure", Qt::QueuedConnection,
+                                      Q_ARG(EZTranslator::TranslationConfig,
+                                            m_translationConfig));
+        }
+        m_mainWindow->setStatus(QStringLiteral("Ngon ngu nguon: ") + detected,
+                                QColor("#38bdf8"));
+        qInfo() << "[Translate] source language changed to" << detected;
+    }
+}
+
 void AppController::requestRegionTranslation(const QString& regionId, const QString& sourceText)
 {
     // Yêu cầu dịch BẤT ĐỒNG BỘ: worker dịch chạy song song với phần dựng plate / chờ OCR phía sau.
@@ -2237,6 +2824,8 @@ void AppController::onTranslationReady(const QString& regionId, quint64 token,
         }
 
         m_hoverTranslation = translated;
+        if (m_hoverCache.size() >= kHoverCacheLimit)
+            m_hoverCache.clear();
         m_hoverCache.insert(m_hoverSource, translated);
         // Hiện ĐỒNG THỜI nguồn + bản dịch, chỉ một lần (không còn hai giai đoạn).
         m_hoverPopup->showTranslation(m_hoverSource, translated,
@@ -2268,9 +2857,42 @@ void AppController::onTranslationReady(const QString& regionId, quint64 token,
     const QRect regionBounds = m_regionOcrInfo.contains(regionId)
                                    ? m_regionOcrInfo.value(regionId).pixelRect
                                    : QRect();
-    QList<EZTranslator::OverlayBox> boxes = buildParagraphBoxes(
-        document, *lines, m_regionLineTexts.value(regionId), regionBounds,
-        /*skipUntranslated=*/true);
+
+    QList<EZTranslator::OverlayBox> boxes;
+    const auto novelParagraphs = m_regionNovelParagraphs.constFind(regionId);
+    const auto uiBoxes = m_regionUiBoxes.constFind(regionId);
+    if (novelParagraphs != m_regionNovelParagraphs.constEnd()) {
+        boxes = EZTranslator::OverlayLayout::buildNovelBoxes(document, *novelParagraphs,
+                                                             regionBounds);
+        qInfo().noquote() << "[Translate] novel layout" << regionId << "->" << boxes.size()
+                          << "paragraph box(es)";
+    } else if (uiBoxes != m_regionUiBoxes.constEnd()) {
+        boxes.reserve(uiBoxes->size());
+        int textIndex = 0;
+        for (int i = 0; i < uiBoxes->size(); ++i) {
+            const EZTranslator::OcrTextBox& raw = uiBoxes->at(i);
+            const QString rawText = compactCjkSpaces(raw.text.simplified());
+            EZTranslator::OverlayBox overlay;
+            overlay.rect = raw.rect.translated(regionBounds.topLeft());
+            overlay.coverRects.append(overlay.rect);
+            overlay.fontPixelSize = qMax(9, int(raw.rect.height() * 0.65));
+            if (rawText.isEmpty()) {
+                // Detector thay chu nhung OCR khong doc ra text: van dat panel
+                // de che chu goc, khong de lo tieng Trung.
+                overlay.coverOnly = true;
+                boxes.append(overlay);
+                continue;
+            }
+            QString translated = document.paragraphs.value(textIndex++).trimmed();
+            if (translated.isEmpty())
+                translated = rawText;
+            overlay.text = translated;
+            boxes.append(overlay);
+        }
+    } else {
+        boxes = buildParagraphBoxes(document, *lines, m_regionLineTexts.value(regionId),
+                                    regionBounds, /*skipUntranslated=*/true);
+    }
     // Smart cover: chỉ TRA plate đã dựng SẴN trên LUỒNG OCR theo hash nội dung ảnh (xem
     // OcrWorker::recognizeRegion → onRegionPlateReady) rồi dán — KHÔNG dựng ở luồng UI nữa (dựng
     // 100-270ms từng chặn cả dây chuyền: OCR ghi "sau 663ms", lượt trúng cache cũng "dịch 317ms").
@@ -2281,11 +2903,20 @@ void AppController::onTranslationReady(const QString& regionId, quint64 token,
         const QColor textColor = contrastTextColor(regionImage);
         // Màu che TẠM theo nền vùng: plate có thể về sau bản dịch ~100-200ms; che bằng màu nền
         // thật (thay vì navy đậm mặc định) để không thấy "cover đen" nhấp nháy trên trang sáng.
-        const QColor coverColor = regionCoverColor(regionImage);
         const QImage plate = findRegionPlate(regionId, m_regionOcrHash.value(regionId, 0));
+        const bool novelLayout = novelParagraphs != m_regionNovelParagraphs.constEnd();
+        const QColor coverColor =
+            novelLayout ? regionPaperColor(regionImage) : regionCoverColor(regionImage);
         for (EZTranslator::OverlayBox& overlay : boxes) {
             overlay.textColor = textColor;
             overlay.coverColor = coverColor;
+            if (!novelLayout) {
+                overlay.backdrop = regionImage;
+                overlay.backdropRect = regionBounds;
+            }
+            // Novel mode keeps the old smart-cover design: the plate is the
+            // whole page with glyphs erased, so the page texture/background
+            // stays intact instead of a flat paper slab.
             if (!plate.isNull()) {
                 overlay.plate = plate;
                 overlay.plateRect = regionBounds;
@@ -2312,6 +2943,31 @@ void AppController::onTranslationReady(const QString& regionId, quint64 token,
                           << "ms kể từ lúc nội dung đổi"
                           << "text=" << boxes.first().text.left(120);
         m_regionBoxes.insert(regionId, boxes);
+
+        // Bộ nhớ dịch theo đoạn: cuộn lên/xuống gặp lại cùng nội dung thì
+        // giữ nguyên bản dịch cũ thay vì để engine dịch lại theo cách khác.
+        QStringList translatedParagraphs = document.paragraphs;
+        if (translatedParagraphs.size() < document.sourceParagraphs.size())
+            translatedParagraphs.resize(document.sourceParagraphs.size());
+        for (int i = 0; i < document.sourceParagraphs.size(); ++i) {
+            const QString key = paragraphCacheKey(document.sourceParagraphs.at(i));
+            if (key.isEmpty())
+                continue;
+            const QString fresh = translatedParagraphs.value(i).trimmed();
+            const auto known = m_paragraphTranslations.constFind(key);
+            if (known != m_paragraphTranslations.constEnd()
+                && !known.value().trimmed().isEmpty()) {
+                translatedParagraphs[i] = known.value();
+            } else if (!fresh.isEmpty()) {
+                if (m_paragraphTranslations.size() >= 5000)
+                    m_paragraphTranslations.clear();
+                m_paragraphTranslations.insert(key, fresh);
+            }
+        }
+        m_regionTranslatedText.insert(regionId,
+                                      translatedParagraphs.join(QStringLiteral("\n\n")));
+        if (m_floatingMode)
+            refreshFloatingWindow();
         m_pendingSourceBoxes.remove(regionId);
         // Bản dịch của nội dung mới đã về: gỡ treo, hiện lại overlay ở ĐÚNG vị trí mới.
         m_overlaySuspended = false;
@@ -2341,6 +2997,12 @@ void AppController::updateOverlay(const QSize& frameSize)
 
     // Chế độ "Cửa sổ nổi": bản dịch chỉ hiện trong popup cạnh con trỏ — overlay phải ẩn
     // hẳn, nếu không người dùng thấy cùng lúc hai nơi hiển thị (điều đang bị báo lỗi).
+    if (m_floatingMode) {
+        if (m_textOverlay->isShowing())
+            m_textOverlay->hideOverlay();
+        return;
+    }
+
     if (!m_overlayMode) {
         if (m_textOverlay->isShowing())
             m_textOverlay->hideOverlay();
@@ -2378,8 +3040,37 @@ void AppController::updateOverlay(const QSize& frameSize)
         return;
     }
 
+    // Mixed regions: paper mode wins, because a glass panel drawn over a
+    // reading column looks broken and hides the page texture.
+    m_textOverlay->setGlassEnabled(m_regionNovelParagraphs.isEmpty());
     m_textOverlay->showOverTarget(client);
     m_textOverlay->setBoxes(all, frameSize);
+}
+
+void AppController::refreshFloatingWindow()
+{
+    if (!m_floatingWindow)
+        return;
+
+    // Cửa sổ nổi chỉ hiển thị vùng đang chọn (hoặc toàn cửa sổ nếu chưa vẽ vùng).
+    // Không nối lịch sử: cuộn lên/xuống vẫn là một vùng hiện tại, nhưng bản dịch
+    // của đoạn đã gặp được lấy lại từ m_paragraphTranslations.
+    QString regionId = QStringLiteral("roi_full");
+    if (!m_regions.isEmpty()) {
+        int index = m_currentRegionIndex;
+        if (index < 0 || index >= m_regions.size())
+            index = 0;
+        regionId = m_regions.at(index).id;
+    }
+
+    const QString source = m_regionSourceText.value(regionId).trimmed();
+    const QString translated = m_regionTranslatedText.value(regionId).trimmed();
+    m_floatingWindow->setSourceText(source);
+    m_floatingWindow->setTranslatedText(translated);
+    if (source.isEmpty())
+        m_floatingWindow->setStatusText(QStringLiteral("Đang chờ văn bản OCR..."));
+    else if (translated.isEmpty())
+        m_floatingWindow->setStatusText(QStringLiteral("Đang dịch..."));
 }
 
 void AppController::tickOverlayVisibility()
@@ -2388,6 +3079,11 @@ void AppController::tickOverlayVisibility()
     // capture/OCR/dịch vẫn chạy nền (không dừng gì), nên quay lại không phải chờ detect.
     if (!m_textOverlay || !m_overlayMode)
         return;
+    if (m_floatingMode) {
+        if (m_textOverlay->isShowing())
+            m_textOverlay->hideOverlay();
+        return;
+    }
     if (m_state != EZTranslator::TranslationState::Running)
         return;
 
