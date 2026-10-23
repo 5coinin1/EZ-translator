@@ -15,6 +15,7 @@
 #ifndef SENTENCEPIECE_PROCESSOR_H_
 #define SENTENCEPIECE_PROCESSOR_H_
 
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>

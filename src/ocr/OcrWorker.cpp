@@ -149,12 +149,15 @@ void OcrWorker::warmUp()
     // Cùng cỡ dải với hover để shape det được biên dịch sẵn; rec làm nóng vài bề rộng.
     QImage dummy(1200, 96, QImage::Format_RGB32);
     dummy.fill(QColor(200, 200, 200));
-    m_engine.detector().detect(dummy);
+    const auto detectedBoxes = m_engine.detector().detect(dummy);
+    Q_UNUSED(detectedBoxes);
 
     for (int width : {160, 320, 640}) {
         EZTranslator::OcrTextBox box;
         box.rect = QRect(4, 20, width, 48);
-        m_engine.recognizer().recognize(dummy, QList<EZTranslator::OcrTextBox>{box});
+        const auto recognizedBoxes =
+            m_engine.recognizer().recognize(dummy, QList<EZTranslator::OcrTextBox>{box});
+        Q_UNUSED(recognizedBoxes);
     }
 }
 

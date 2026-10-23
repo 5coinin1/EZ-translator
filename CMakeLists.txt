@@ -265,6 +265,7 @@ if(WIN32)
     target_link_libraries(EZTranslator PRIVATE
         user32
         gdi32
+        dxgi
         dwmapi
         shell32
     )

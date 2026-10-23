@@ -36,6 +36,7 @@ using namespace EZTranslator::OverlayLayout;
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <dxgi1_2.h>
 #endif
 
 #include <QApplication>
@@ -56,6 +57,56 @@ using namespace EZTranslator::OverlayLayout;
 #include <memory>
 
 namespace {
+
+/**
+ * DirectML tren iGPU dung RAM he thong nhu VRAM va co the cham hon CPU voi OCR.
+ * Chi chon GPU khi DXGI tim thay adapter phan cung co bo nho rieng du dung.
+ */
+bool hasDiscreteGpuForOcr()
+{
+#ifdef _WIN32
+    IDXGIFactory1* factory = nullptr;
+    const HRESULT factoryResult = CreateDXGIFactory1(
+        __uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory));
+    if (FAILED(factoryResult) || !factory)
+        return false;
+
+    constexpr SIZE_T minimumDedicatedVram = SIZE_T(512) * 1024 * 1024;
+    bool found = false;
+
+    for (UINT index = 0; ; ++index) {
+        IDXGIAdapter1* adapter = nullptr;
+        const HRESULT enumResult = factory->EnumAdapters1(index, &adapter);
+        if (enumResult == DXGI_ERROR_NOT_FOUND)
+            break;
+        if (FAILED(enumResult) || !adapter)
+            continue;
+
+        DXGI_ADAPTER_DESC1 desc = {};
+        const bool described = SUCCEEDED(adapter->GetDesc1(&desc));
+        adapter->Release();
+        if (!described || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
+            continue;
+
+        const QString name = QString::fromWCharArray(desc.Description).trimmed();
+        // Intel Arc la GPU roi; cac dong Intel Graphics/UHD/Iris hien tai la iGPU.
+        const bool integratedIntel = desc.VendorId == 0x8086
+                                     && !name.contains(QStringLiteral("Arc"),
+                                                       Qt::CaseInsensitive);
+        if (!integratedIntel && desc.DedicatedVideoMemory >= minimumDedicatedVram) {
+            qInfo() << "[OCR] GPU rời được chọn:" << name
+                    << "| VRAM MB =" << (desc.DedicatedVideoMemory / 1024 / 1024);
+            found = true;
+            break;
+        }
+    }
+
+    factory->Release();
+    return found;
+#else
+    return false;
+#endif
+}
 
 /** Tên hiển thị ngắn của mã ngôn ngữ (dùng cho status bar). */
 QString languageLabel(const QString& code)
@@ -575,7 +626,11 @@ EZTranslator::OcrOptions AppController::ocrOptions() const
         options.recModelPath = dir + QStringLiteral("/ch_PP-OCRv4_rec_infer.onnx");
         options.dictionaryPath = dir + QStringLiteral("/ppocr_keys_v1.txt");
     }
-    options.useGpu = m_settings.ocrUseGpu;
+    static const bool discreteGpuAvailable = hasDiscreteGpuForOcr();
+    options.useGpu = m_settings.ocrUseGpu && discreteGpuAvailable;
+    if (m_settings.ocrUseGpu && !discreteGpuAvailable) {
+        qInfo() << "[OCR] Không phát hiện GPU rời đủ VRAM; chuyển OCR sang CPU.";
+    }
     options.binarize = m_settings.ocrBinarize;
 
     // Cài đặt chỉ cho chọn engine đã cài đặt thật (paddleocr); nếu ai đó sửa registry
