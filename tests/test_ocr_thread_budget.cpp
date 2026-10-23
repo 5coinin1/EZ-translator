@@ -1,4 +1,5 @@
 #include <QtTest/QtTest>
+#include <QThread>
 
 #include "ocr/OcrThreadBudget.h"
 #include "translation/TranslationThreadBudget.h"
@@ -47,6 +48,9 @@ private slots:
         QVERIFY(cpu.detectorIntraOp >= 1 && cpu.detectorIntraOp <= 2);
         QCOMPARE(cpu.recognizerIntraOp, 1);
         QVERIFY(cpu.recognizerWorkers >= 1 && cpu.recognizerWorkers <= 4);
+        const int logicalThreads = qMax(1, QThread::idealThreadCount());
+        QCOMPARE(cpu.recognizerWorkers,
+                 logicalThreads <= 2 ? 1 : qBound(2, logicalThreads / 2, 4));
         QCOMPARE(cpu.interOp, 1);
 
         const OcrThreadBudget hover = chooseOcrThreadBudget(false, true);

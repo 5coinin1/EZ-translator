@@ -45,6 +45,24 @@ QImage makeScreen(const QSize& size = QSize(1280, 720))
     return screen;
 }
 
+QImage makeManyLines(QList<OcrTextBox>* boxes)
+{
+    QImage screen(1200, 1500, QImage::Format_RGB32);
+    screen.fill(Qt::white);
+    QPainter painter(&screen);
+    painter.setPen(Qt::black);
+    painter.setFont(QFont(QStringLiteral("Arial"), 19));
+    for (int i = 0; i < 25; ++i) {
+        const QRect rect(30, 20 + i * 58, 1120, 48);
+        painter.drawText(rect, Qt::AlignLeft | Qt::AlignVCenter,
+                         QStringLiteral("The player found item %1 near the village gate").arg(i));
+        OcrTextBox box;
+        box.rect = rect;
+        boxes->append(box);
+    }
+    return screen;
+}
+
 double msSince(const QElapsedTimer& timer)
 {
     return double(timer.nsecsElapsed()) / 1e6;
@@ -77,6 +95,7 @@ int main(int argc, char** argv)
     options.recThreads = budget.recognizerIntraOp;
     options.recWorkers = budget.recognizerWorkers;
     options.interOpThreads = budget.interOp;
+    options.disableRecBatch = !app.arguments().contains(QStringLiteral("--cpu-batch"));
     qInfo() << "thread budget: det=" << options.threads << "rec=" << options.recThreads
             << "workers=" << options.recWorkers << "inter=" << options.interOpThreads;
 
@@ -87,6 +106,28 @@ int main(int argc, char** argv)
         return 1;
     }
     qInfo() << "provider:" << engine.providerName();
+
+    if (app.arguments().contains(QStringLiteral("--rec-heavy"))) {
+        QList<OcrTextBox> boxes;
+        const QImage image = makeManyLines(&boxes);
+        for (int i = 0; i < 4; ++i) {
+            QElapsedTimer recTimer;
+            recTimer.start();
+            const QList<OcrTextBox> result = engine.recognizer().recognize(image, boxes);
+            const OcrTimings timings = engine.recognizer().lastTimings();
+            if (csv) {
+                csvOut << "rec-heavy," << (i + 1) << "," << engine.providerName() << ","
+                       << msSince(recTimer) << ",0," << timings.recMs << ",0,0,0,"
+                       << result.size() << "," << timings.recCalls << ","
+                       << timings.recCached << "\n";
+                csvOut.flush();
+            }
+            qInfo("rec-heavy #%d: total=%.1f ms rec=%.1f ms boxes=%d calls=%d batch=%d",
+                  i + 1, msSince(recTimer), timings.recMs, int(result.size()),
+                  timings.recCalls, int(timings.recBatched));
+        }
+        return 0;
+    }
 
     const QImage screen = makeScreen();
     QElapsedTimer timer;

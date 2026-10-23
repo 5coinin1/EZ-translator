@@ -162,8 +162,10 @@ QString OcrEngine::providerName() const
     return m_impl ? m_impl->runtime.providerName() : QString();
 }
 
-QList<OcrTextBox> OcrEngine::recognize(const QImage& image)
+QList<OcrTextBox> OcrEngine::recognize(const QImage& image,
+                                      const std::function<bool()>& cancelled)
 {
+    m_cancelled = cancelled;
     if (!isLoaded() || image.isNull())
         return {};
 
@@ -203,6 +205,8 @@ QList<OcrTextBox> OcrEngine::recognize(const QImage& image)
             const int y1 = std::min(input.height(), (row + 1) * input.height() / rows
                                                         + (row + 1 < rows ? overlapY : 0));
             for (int col = 0; col < cols; ++col) {
+                if (m_cancelled && m_cancelled())
+                    return {};
                 const int x0 = std::max(0, col * input.width() / cols - (col > 0 ? overlapX : 0));
                 const int x1 = std::min(input.width(), (col + 1) * input.width() / cols
                                                           + (col + 1 < cols ? overlapX : 0));
@@ -324,7 +328,7 @@ QList<OcrTextBox> OcrEngine::recognize(const QImage& image)
 
 QList<OcrTextBox> OcrEngine::recognizeProcessed(const QImage& input, bool allowAlt)
 {
-    if (!isLoaded() || input.isNull())
+    if (!isLoaded() || input.isNull() || (m_cancelled && m_cancelled()))
         return {};
 
     const QList<OcrTextBox> boxes = m_impl->detector.detect(input);
@@ -332,7 +336,7 @@ QList<OcrTextBox> OcrEngine::recognizeProcessed(const QImage& input, bool allowA
     ++m_impl->lastTiming.tileCount;
     m_impl->lastTiming.detMs += m_impl->detector.lastMs();
     m_impl->lastBoxes = boxes.size();
-    if (boxes.isEmpty())
+    if (boxes.isEmpty() || (m_cancelled && m_cancelled()))
         return {};
 
     return recognizeBoxes(input, boxes, allowAlt);
@@ -350,18 +354,22 @@ QList<OcrTextBox> OcrEngine::recognizeBoxes(const QImage& input,
     // Điểm tin cậy thấp thì thử model hệ chữ còn lại, chọn bên đọc tốt hơn — và NHỚ bên thắng để
     // các khung sau chỉ chạy MỘT model (nội dung không đổi ngôn ngữ giữa chừng).
     if (allowAlt && m_impl->altLoaded && m_impl->preferAlt) {
-        const QList<OcrTextBox> alt = m_impl->altRecognizer.recognize(input, boxes);
+        const QList<OcrTextBox> alt = m_impl->altRecognizer.recognize(input, boxes, m_cancelled);
         addRecognizerTiming(m_impl->lastTiming, m_impl->altRecognizer.lastTimings(), true);
+        if (m_cancelled && m_cancelled())
+            return {};
         if (meanConfidence(alt) >= kLowConfidence)
             return alt; // model dự phòng vẫn đọc tốt → dùng luôn
         m_impl->preferAlt = false; // đọc kém (đã đổi nội dung) → so sánh lại đầy đủ
     }
 
-    const QList<OcrTextBox> primary = m_impl->recognizer.recognize(input, boxes);
+    const QList<OcrTextBox> primary = m_impl->recognizer.recognize(input, boxes, m_cancelled);
     addRecognizerTiming(m_impl->lastTiming, m_impl->recognizer.lastTimings(), false);
+    if (m_cancelled && m_cancelled())
+        return {};
     const double primaryConfidence = meanConfidence(primary);
     if (allowAlt && primaryConfidence < kLowConfidence && ensureAltRecognizer()) {
-        const QList<OcrTextBox> alt = m_impl->altRecognizer.recognize(input, boxes);
+        const QList<OcrTextBox> alt = m_impl->altRecognizer.recognize(input, boxes, m_cancelled);
         addRecognizerTiming(m_impl->lastTiming, m_impl->altRecognizer.lastTimings(), true);
         const double altConfidence = meanConfidence(alt);
         qInfo() << "[OCR] điểm tin cậy thấp" << primaryConfidence << "| model dự phòng"

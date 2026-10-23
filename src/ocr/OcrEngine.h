@@ -7,6 +7,7 @@
 #include <QString>
 
 #include <memory>
+#include <functional>
 
 namespace EZTranslator {
 
@@ -38,7 +39,8 @@ public:
     [[nodiscard]] QString providerName() const;
 
     /** Detection rồi Recognition; trả box có text (chưa assemble). */
-    [[nodiscard]] QList<OcrTextBox> recognize(const QImage& image);
+    [[nodiscard]] QList<OcrTextBox> recognize(const QImage& image,
+                                              const std::function<bool()>& cancelled = {});
 
     [[nodiscard]] OcrTimings lastTimings() const;
 
@@ -56,6 +58,7 @@ private:
 
     struct Impl;
     std::unique_ptr<Impl> m_impl;
+    std::function<bool()> m_cancelled;
 };
 
 } // namespace EZTranslator

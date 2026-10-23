@@ -188,7 +188,8 @@ bool OcrRecognizer::load(OcrRuntime& runtime, const OcrOptions& options, QString
     return true;
 }
 
-QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrTextBox>& boxes)
+QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrTextBox>& boxes,
+                                           const std::function<bool()>& cancelled)
 {
     QList<OcrTextBox> result;
     if (!isLoaded() || image.isNull() || boxes.isEmpty())
@@ -216,6 +217,8 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
     std::vector<RecItem> items;
     items.reserve(size_t(boxes.size()));
     for (int boxIndex = 0; boxIndex < boxes.size(); ++boxIndex) {
+        if (cancelled && cancelled())
+            return {};
         const OcrTextBox& box = boxes[boxIndex];
         const QRect cropRect = box.rect.adjusted(-2, -2, 2, 2).intersected(rgb.rect());
         if (cropRect.width() < 2 || cropRect.height() < 2)
@@ -256,6 +259,8 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
     std::vector<OcrTextBox> outputs(items.size());
     std::vector<char> have(items.size(), 0);
     std::vector<size_t> pending;
+    std::vector<size_t> duplicateOf(items.size(), items.size());
+    QHash<quint64, size_t> firstPending;
     for (size_t i = 0; i < items.size(); ++i) {
         outputs[i] = items[i].box;
         keys[i] = imageContentHash(items[i].image);
@@ -265,7 +270,14 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
             have[i] = 1;
             ++impl.timings.recCached;
         } else {
-            pending.push_back(i);
+            const auto first = firstPending.constFind(keys[i]);
+            if (first != firstPending.constEnd()) {
+                duplicateOf[i] = first.value();
+                ++impl.timings.recCached;
+            } else {
+                firstPending.insert(keys[i], i);
+                pending.push_back(i);
+            }
         }
     }
 
@@ -347,6 +359,13 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
     };
 
     const auto assembleResult = [&]() {
+        for (size_t i = 0; i < items.size(); ++i) {
+            if (duplicateOf[i] < items.size() && have[duplicateOf[i]]) {
+                outputs[i].text = outputs[duplicateOf[i]].text;
+                outputs[i].confidence = outputs[duplicateOf[i]].confidence;
+                have[i] = 1;
+            }
+        }
         QList<OcrTextBox> out;
         int currentBox = -1;
         QString text;
@@ -406,20 +425,24 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
             recWorkers = impl.options.recWorkers;
         } else {
             const unsigned hw = std::thread::hardware_concurrency();
-            recWorkers = int(std::max(2u, std::min(4u, hw / 4)));
+            recWorkers = hw <= 2 ? 1 : int(std::clamp(hw / 2, 2u, 4u));
         }
     }
     if (!batch && recWorkers > 1 && pending.size() >= 2) {
         std::atomic<size_t> cursor{0};
+        std::atomic<int> calls{0};
         std::vector<std::thread> pool;
         pool.reserve(size_t(recWorkers));
         for (int worker = 0; worker < recWorkers; ++worker) {
             pool.emplace_back([&]() {
                 for (;;) {
+                    if (cancelled && cancelled())
+                        break;
                     const size_t j = cursor.fetch_add(1, std::memory_order_relaxed);
                     if (j >= pending.size())
                         break;
                     const size_t index = pending[j];
+                    ++calls;
                     QString text;
                     float confidence = 0.0f;
                     if (recOne(items[index], &text, &confidence)) {
@@ -439,7 +462,7 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
             if (have[index])
                 impl.lineCache.insert(keys[index], outputs[index]);
         }
-        impl.timings.recCalls += int(pending.size());
+        impl.timings.recCalls += calls.load();
         impl.timings.recMs = msSince(recStart);
         return assembleResult();
     }
@@ -452,6 +475,8 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
         });
     }
     for (size_t start = 0; start < pending.size();) {
+        if (cancelled && cancelled())
+            break;
         size_t end = start + 1;
         if (batch) {
             const int baseWidth = items[pending[start]].width;

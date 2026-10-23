@@ -7,6 +7,7 @@
 #include <QString>
 
 #include <memory>
+#include <functional>
 
 namespace EZTranslator {
 
@@ -43,7 +44,8 @@ public:
      * @param image Ảnh gốc (box.rect theo hệ toạ độ ảnh này).
      * @return Các box có text (bỏ box đọc rỗng).
      */
-    [[nodiscard]] QList<OcrTextBox> recognize(const QImage& image, const QList<OcrTextBox>& boxes);
+    [[nodiscard]] QList<OcrTextBox> recognize(const QImage& image, const QList<OcrTextBox>& boxes,
+                                               const std::function<bool()>& cancelled = {});
 
     [[nodiscard]] OcrTimings lastTimings() const;
 

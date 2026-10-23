@@ -27,13 +27,14 @@ OcrThreadBudget chooseOcrThreadBudget(bool gpu, bool hoverWorker)
         budget.recognizerWorkers = 1;
         budget.interOp = 1;
     } else {
-        // Giữ lại CPU cho UI/capture/translation. Với máy 16 logical threads,
-        // profile mặc định là detector 2 + recognizer 4 worker x 1 intra-op.
+        // Giữ một phần CPU cho UI/capture/translation. Recognition chạy nhiều session
+        // độc lập với intra-op=1; trên CPU phổ thông, tăng số worker giảm thời gian một ROI
+        // rõ hơn so với tăng intra-op của từng session.
         budget.detectorIntraOp = qBound(1, logicalThreads / 8, 2);
         budget.recognizerIntraOp = 1;
         budget.recognizerWorkers = logicalThreads <= 2
                                        ? 1
-                                       : qBound(2, logicalThreads / 4, 4);
+                                       : qBound(2, logicalThreads / 2, 4);
         budget.interOp = 1;
         if (hoverWorker) {
             // Hover thường chỉ có một dòng; không dành cả pool CPU cho nó.
