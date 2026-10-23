@@ -1,5 +1,6 @@
 # Build outputs (CMake / Ninja / Make)
 build/
+.venv/
 bin/
 out/
 CMakeFiles/

@@ -104,8 +104,10 @@ ReplyResult waitForReply(QNetworkReply* reply, int timeoutMs, const QString& log
             reply->abort();
     });
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    timeout.start(timeoutMs);
-    loop.exec();
+    if (!reply->isFinished()) {
+        timeout.start(timeoutMs);
+        loop.exec();
+    }
 
     result.body = reply->readAll();
     result.status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -125,7 +127,7 @@ ReplyResult waitForReply(QNetworkReply* reply, int timeoutMs, const QString& log
     return result;
 }
 
-/** Endpoint miễn phí gtx: dịch từng dòng. */
+/** Endpoint miễn phí gtx: tối đa hai dòng song song trong mỗi chunk. */
 QStringList translateFree(QNetworkAccessManager& manager, const QStringList& lines,
                           const QString& source, const QString& target,
                           int* failedStatus, bool* timedOut, qint64* retryAfterMs)
@@ -135,40 +137,51 @@ QStringList translateFree(QNetworkAccessManager& manager, const QStringList& lin
     QElapsedTimer batchTimer;
     batchTimer.start();
 
-    for (const QString& line : lines) {
-        if (line.trimmed().isEmpty()) {
-            result.append(QString());
-            continue;
+    result.resize(lines.size());
+    for (int start = 0; start < lines.size(); start += 2) {
+        QNetworkReply* replies[2] = {nullptr, nullptr};
+        const int count = std::min(2, int(lines.size()) - start);
+        for (int offset = 0; offset < count; ++offset) {
+            const QString& line = lines.at(start + offset);
+            if (line.trimmed().isEmpty())
+                continue;
+            QUrl url(QStringLiteral("https://translate.googleapis.com/translate_a/single"));
+            QUrlQuery query;
+            query.addQueryItem(QStringLiteral("client"), QStringLiteral("gtx"));
+            query.addQueryItem(QStringLiteral("sl"),
+                               source.isEmpty() ? QStringLiteral("auto") : source);
+            query.addQueryItem(QStringLiteral("tl"), target);
+            query.addQueryItem(QStringLiteral("dt"), QStringLiteral("t"));
+            query.addQueryItem(QStringLiteral("q"), line);
+            url.setQuery(query);
+            QNetworkRequest request(url);
+            request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("EZ-Translator"));
+            replies[offset] = manager.get(request);
         }
-
-        const int remainingMs = kFreeBatchTimeoutMs - int(batchTimer.elapsed());
-        if (remainingMs <= 0)
-            break;
-
-        QUrl url(QStringLiteral("https://translate.googleapis.com/translate_a/single"));
-        QUrlQuery query;
-        query.addQueryItem(QStringLiteral("client"), QStringLiteral("gtx"));
-        query.addQueryItem(QStringLiteral("sl"),
-                           source.isEmpty() ? QStringLiteral("auto") : source);
-        query.addQueryItem(QStringLiteral("tl"), target);
-        query.addQueryItem(QStringLiteral("dt"), QStringLiteral("t"));
-        query.addQueryItem(QStringLiteral("q"), line);
-        url.setQuery(query);
-
-        QNetworkRequest request(url);
-        request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("EZ-Translator"));
-
-        QNetworkReply* reply = manager.get(request);
-        const ReplyResult response = waitForReply(
-            reply, std::min(kFreeTimeoutMs, remainingMs), QStringLiteral("[Google] gtx"));
-        if (response.status != 0 && failedStatus)
-            *failedStatus = response.status;
-        if (response.timedOut && timedOut)
-            *timedOut = true;
-        if (response.retryAfterMs > 0 && retryAfterMs)
-            *retryAfterMs = response.retryAfterMs;
-        result.append(parseGtxResponse(response.body));
-        if (response.status == 429 || response.timedOut)
+        bool stop = false;
+        for (int offset = 0; offset < count; ++offset) {
+            QNetworkReply* reply = replies[offset];
+            if (!reply)
+                continue;
+            const int remainingMs = kFreeBatchTimeoutMs - int(batchTimer.elapsed());
+            if (stop || remainingMs <= 0) {
+                reply->abort();
+                reply->deleteLater();
+                stop = true;
+                continue;
+            }
+            const ReplyResult response = waitForReply(
+                reply, std::min(kFreeTimeoutMs, remainingMs), QStringLiteral("[Google] gtx"));
+            if (response.status != 0 && failedStatus)
+                *failedStatus = response.status;
+            if (response.timedOut && timedOut)
+                *timedOut = true;
+            if (response.retryAfterMs > 0 && retryAfterMs)
+                *retryAfterMs = response.retryAfterMs;
+            result[start + offset] = parseGtxResponse(response.body);
+            stop = stop || response.status == 429 || response.timedOut;
+        }
+        if (stop)
             break;
     }
 

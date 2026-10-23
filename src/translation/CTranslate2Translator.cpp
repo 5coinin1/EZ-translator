@@ -102,11 +102,15 @@ void CTranslate2Translator::attachToJob()
 
 QString CTranslate2Translator::findPython()
 {
-    // Ứng viên: EZ_PYTHON → py (launcher Windows, đúng bản có pip) → python → python3.
+    // Ưu tiên Python riêng của project khi bản cài đặt nằm cạnh thư mục build.
     QStringList candidates;
     const QString fromEnv = qEnvironmentVariable("EZ_PYTHON");
     if (!fromEnv.isEmpty())
         candidates.append(fromEnv);
+    const QString localPython = QDir(QCoreApplication::applicationDirPath())
+                                    .filePath(QStringLiteral("../.venv/Scripts/python.exe"));
+    if (QFileInfo::exists(localPython))
+        candidates.append(QFileInfo(localPython).absoluteFilePath());
     for (const QString& name : {QStringLiteral("py"), QStringLiteral("python"),
                                QStringLiteral("python3")}) {
         const QString path = QStandardPaths::findExecutable(name);

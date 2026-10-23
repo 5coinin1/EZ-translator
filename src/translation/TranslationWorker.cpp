@@ -354,7 +354,11 @@ void TranslationWorker::handleTranslate(const QString& id, const QString& text, 
     // Chia khối: giữa các khối, nếu có yêu cầu hover đang chờ thì nhường event loop
     // cho nó chạy xong trước — lượt dịch vùng dài không giữ luồng tới hết trang.
     // AI nhận khối lớn hơn để có ngữ cảnh và giảm số lần gọi API.
-    const int chunkSize = m_config.engine == QLatin1String("ai") ? 8 : 4;
+    // Offline CT2 nhận cả batch và tự tối ưu translate_batch. Nhóm lớn giảm số lần
+    // IPC/chờ sidecar; online vẫn giữ nhóm nhỏ để không làm một lượt mạng quá lâu.
+    const int chunkSize = m_config.engine == QLatin1String("ai")
+                              ? 8
+                              : (!m_offlineChain.isEmpty() ? 16 : 4);
     const auto engine = [this, chunkSize](const QStringList& units) -> QStringList {
         QStringList out;
         out.reserve(units.size());
