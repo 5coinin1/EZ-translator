@@ -64,6 +64,8 @@ signals:
     void loaded(bool ok, const QString& provider, const QString& error);
     void regionRecognized(const QString& id, quint64 requestToken, quint64 imageHash,
                           const QList<EZTranslator::OcrTextBox>& boxes);
+    void regionScrollMatched(const QString& id, quint64 requestToken, quint64 imageHash,
+                             int dy, double score);
     /** Plate (nền đã xoá chữ) của ĐÚNG ảnh vừa OCR — dựng SẴN trên luồng OCR để luồng UI không
      *  phải dựng (100-270ms, từng nằm trên luồng UI và chặn cả dây chuyền OCR/dịch phía sau).
      *  `imageHash` = dHash của ảnh — luồng UI tra plate theo hash nội dung. */

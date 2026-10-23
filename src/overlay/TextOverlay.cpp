@@ -46,6 +46,29 @@ qreal layoutParagraph(QTextLayout& layout, const QString& text, int wrapWidth, i
 
 } // namespace
 
+QList<OverlayBox> shiftOverlayBoxes(const QList<OverlayBox>& boxes, int dy,
+                                    const QRect& regionBounds)
+{
+    QList<OverlayBox> shifted;
+    shifted.reserve(boxes.size());
+    const QRect retained = regionBounds.adjusted(0, -regionBounds.height(),
+                                                0, regionBounds.height());
+    for (OverlayBox box : boxes) {
+        box.rect.translate(0, dy);
+        if (!box.rect.intersects(retained))
+            continue;
+        for (QRect& cover : box.coverRects)
+            cover.translate(0, dy);
+        // A plate/backdrop belongs to the old frame, not the moved text.
+        box.plate = {};
+        box.plateRect = {};
+        box.backdrop = {};
+        box.backdropRect = {};
+        shifted.append(std::move(box));
+    }
+    return shifted;
+}
+
 TextOverlay::TextOverlay(QWidget* parent)
     : QWidget(parent)
 {
@@ -277,8 +300,7 @@ void TextOverlay::rebuildFit()
     const double scaleX = double(width()) / double(m_frameSize.width());
     const double scaleY = double(height()) / double(m_frameSize.height());
 
-    // Co chu dung chung theo median cua vung: tranh moi box mot co khac nhau
-    // (label nho, value to) lam UI trong nhu bi loi font.
+    // The median is only a fallback for boxes without measured source text.
     if (m_fixedPixelSize > 0) {
         m_fitBasePx = std::clamp(int(std::lround(m_fixedPixelSize * scaleY)), 9, 32);
     } else {
@@ -289,7 +311,7 @@ void TextOverlay::rebuildFit()
                 continue;
             // UI: font ~ nua chieu cao dong. Novel: box cao bang ca paragraph
             // nen phai lay co chu tu dong nguon, khong lay tu rect.height.
-            int size = box.fitToBox && box.fontPixelSize > 0
+            int size = box.fontPixelSize > 0
                            ? int(std::lround(box.fontPixelSize * scaleY))
                            : int(std::lround(box.rect.height() * scaleY * 0.5));
             if (size > 0)
@@ -430,12 +452,12 @@ TextOverlay::FittedBox TextOverlay::fitBox(const OverlayBox& box, const QRectF& 
 
     const int heightLimit = std::max(6, int(std::floor(availH)));
     int maxSize = heightLimit;
-    if (m_fitBasePx > 0) {
-        maxSize = std::min(maxSize, m_fitBasePx);
-    } else if (m_fixedPixelSize > 0) {
+    if (m_fixedPixelSize > 0) {
         maxSize = std::min(maxSize, std::max(6, int(std::lround(m_fixedPixelSize * scaleY))));
     } else if (box.fontPixelSize > 0) {
         maxSize = std::min(maxSize, std::max(6, int(std::lround(box.fontPixelSize * scaleY))));
+    } else if (m_fitBasePx > 0) {
+        maxSize = std::min(maxSize, m_fitBasePx);
     } else {
         maxSize = std::min(maxSize, std::max(8, int(std::lround(availH * 0.7))));
     }
@@ -444,13 +466,13 @@ TextOverlay::FittedBox TextOverlay::fitBox(const OverlayBox& box, const QRectF& 
     // Khong de chu te o 6px: co nho nhat ~78% co chuan cua vung. Neu van
     // khong vua thi elide/ cat dong, giu duoc gu typography cua UI goc.
     const int minSize = std::max(6, std::min(maxSize,
-        std::max(9, int(std::lround(std::max(1, m_fitBasePx) * 0.72)))));
+        std::max(9, int(std::lround(maxSize * 0.72)))));
 
     // Box 1 dòng chỉ giữ 1 dòng nếu chiều cao không đủ cho 2 dòng. Label UI
     // tiếng Việt thường dài hơn tiếng Trung; cho wrap tối đa 2 dòng trong
     // đúng control thay vì bắt buộc elide gần hết chữ.
     const bool roomForTwoLines =
-        fitRect.height() >= std::max(12.0, double(std::max(1, m_fitBasePx)) * 1.9);
+        fitRect.height() >= std::max(12.0, double(maxSize) * 1.9);
     const bool shortText = box.text.simplified().size() <= 6;
     const bool singleLine =
         box.coverRects.size() <= 1 && (shortText || !roomForTwoLines);

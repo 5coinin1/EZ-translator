@@ -117,6 +117,8 @@ public slots:
                      const QString& error);
     void onRegionRecognized(const QString& regionId, quint64 requestToken, quint64 imageHash,
                             const QList<EZTranslator::OcrTextBox>& boxes);
+    void onRegionScrollMatched(const QString& regionId, quint64 requestToken,
+                               quint64 imageHash, int dy, double score);
     /** Plate dựng sẵn trên luồng OCR về: lưu theo hash nội dung; nếu overlay đang hiện nội dung
      *  này mà chưa có plate thì dán vào và vẽ lại (nâng cấp nền từ "màu đặc" sang "xoá chữ"). */
     void onRegionPlateReady(const QString& regionId, quint64 requestToken, quint64 imageHash,
@@ -404,6 +406,9 @@ private:
     /// vị trí"). Profile so được ĐỘ DỊCH thật (1-2px cũng thấy) mà rất rẻ.
     QHash<QString, GrayProfile> m_regionServedProfile;
     QHash<QString, GrayProfile> m_regionObservedProfile;
+    QHash<QString, GrayProfile> m_regionDisplayProfile;
+    QSet<QString> m_regionScrolledOverlay;
+    qint64 m_overlayScrollLogAtMs = 0;
     /// Thời điểm trạng thái CHÍNH XÁC (dòng/nguồn) của vùng được ghi (chỉ đường full OCR / cache
     /// nội dung). Kết quả dịch chỉ được áp khi không có lần đổi nội dung nào mới hơn mốc này.
     QHash<QString, qint64> m_regionStateAtMs;

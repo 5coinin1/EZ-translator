@@ -43,6 +43,10 @@ struct OverlayBox
     bool    fitToBox{false};
 };
 
+/** Move existing translations with a reliably tracked scroll; discard stale image plates. */
+QList<OverlayBox> shiftOverlayBoxes(const QList<OverlayBox>& boxes, int dy,
+                                    const QRect& regionBounds);
+
 /**
  * @brief Lớp phủ trong suốt hiển thị bản dịch/OCR đè lên cửa sổ đích.
  *

@@ -3,7 +3,6 @@
 #include <algorithm>
 
 #include "overlay/ParagraphAnchor.h"
-#include "overlay/TextFlow.h"
 
 #include <QStringList>
 
@@ -231,13 +230,15 @@ QList<OverlayBox> buildNovelBoxes(const TranslatedDocument& doc,
         const QString text = p < doc.paragraphs.size()
                                  ? doc.paragraphs.at(p).trimmed()
                                  : QString();
+        if (text.isEmpty())
+            continue;
 
         const int top = paragraph.rect.top();
         int bottom = paragraph.rect.bottom() + 1;
-        if (p + 1 < paragraphs.size())
-            bottom = qMax(bottom, paragraphs.at(p + 1).rect.top());
-        else if (regionBounds.isValid())
-            bottom = qMax(bottom, regionBounds.bottom());
+        const int nextTop = p + 1 < paragraphs.size()
+                                ? paragraphs.at(p + 1).rect.top()
+                                : (regionBounds.isValid() ? regionBounds.bottom() + 1 : bottom);
+        bottom = qMax(bottom, qMin(nextTop, bottom + qMax(2, paragraph.lineHeight / 2)));
 
         const int left = paragraph.rect.left();
         const int right = qMax(left + 8, columnRight);
@@ -247,7 +248,6 @@ QList<OverlayBox> buildNovelBoxes(const TranslatedDocument& doc,
         box.text = text;
         box.fontPixelSize = qMax(9, int(std::lround(paragraph.lineHeight * 0.72)));
         box.fitToBox = true;
-        box.coverOnly = text.isEmpty();
         boxes.append(box);
     }
     return boxes;
@@ -307,10 +307,10 @@ QList<OverlayBox> buildParagraphBoxes(const TranslatedDocument& doc, const QList
         // it may use the remaining ROI width, matching the reference renderer.
         const int top = lines.at(firstLine).top();
         int bottom = sourceSpan.bottom() + 1;
-        if (endLine < lines.size())
-            bottom = qMax(bottom, lines.at(endLine).top());
-        else if (regionBounds.isValid())
-            bottom = qMax(bottom, regionBounds.bottom());
+        const int nextTop = endLine < lines.size()
+                                ? lines.at(endLine).top()
+                                : (regionBounds.isValid() ? regionBounds.bottom() + 1 : bottom);
+        bottom = qMax(bottom, qMin(nextTop, bottom + qMax(2, firstLineHeight / 2)));
 
         int right = sourceSpan.right() + 1;
         if (regionBounds.isValid())
@@ -353,34 +353,6 @@ QList<OverlayBox> buildParagraphBoxes(const TranslatedDocument& doc, const QList
         }
     }
 
-    // Fit cỡ chữ (TextFlow — port từ bản translator): MỘT cỡ chung cho cả vùng, hạ xuống chỉ khi
-    // đoạn nào đó tràn khung. Box quá thấp để chứa một dòng (thoái hoá ở rìa vùng) bị loại khỏi
-    // phép fit — nếu không, một box xấu kéo cả trang xuống cỡ tí xíu (bài học r7.78). Sàn 70% cỡ đo
-    // từ dòng gốc để trang không bao giờ nhỏ li ti.
-    if (!boxes.isEmpty()) {
-        QList<int> sizes;
-        for (const OverlayBox& box : boxes)
-            sizes.append(box.fontPixelSize);
-        std::sort(sizes.begin(), sizes.end());
-        const int baseSize = qMax(9, sizes.at(sizes.size() / 2));
-
-        QList<TextFlow::Paragraph> paragraphs;
-        paragraphs.reserve(boxes.size());
-        for (const OverlayBox& box : boxes) {
-            if (box.rect.height() < int(baseSize * 1.2))
-                continue; // quá thấp để chứa một dòng: không cho vào fit
-            paragraphs.append(TextFlow::Paragraph{QRectF(box.rect), box.text});
-        }
-        if (!paragraphs.isEmpty()) {
-            QFont fitFont;
-            fitFont.setPixelSize(baseSize);
-            const TextFlow::Result fit = TextFlow::fitParagraphs(paragraphs, fitFont, baseSize);
-            int drawSize = fit.fontPixelSize > 0 ? fit.fontPixelSize : baseSize;
-            drawSize = qMax(drawSize, qMax(9, int(baseSize * 0.7)));
-            for (OverlayBox& box : boxes)
-                box.fontPixelSize = drawSize;
-        }
-    }
     return boxes;
 }
 

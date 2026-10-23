@@ -214,6 +214,7 @@ void OcrWorker::recognizeRegion(const QString& id, quint64 requestToken, quint64
             incremental = true;
             qInfo().noquote() << "[OCR_SCROLL] region=" << id << "dy=" << reused.dy
                               << "score=" << reused.score << "boxes=" << boxes.size();
+            emit regionScrollMatched(id, requestToken, imageHash, reused.dy, reused.score);
         } else if (!cancelled()) {
             qInfo().noquote() << "[OCR_SCROLL] fallback region=" << id
                               << "reason=" << reused.reason << "dy=" << reused.dy

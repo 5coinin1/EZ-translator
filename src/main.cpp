@@ -27,6 +27,8 @@ int main(int argc, char* argv[])
 
     QApplication app(argc, argv);
     qDebug() << "QApplication created";
+    qInfo().noquote() << "[BUILD] overlay-scroll-layout-v2 executable="
+                      << QCoreApplication::applicationFilePath();
 
     app.setApplicationName("EZ-Translator");
     app.setApplicationDisplayName("EZ-Translator");

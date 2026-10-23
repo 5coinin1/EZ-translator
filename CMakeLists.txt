@@ -539,6 +539,21 @@ if(Qt6Test_FOUND)
     )
     target_include_directories(test_overlay PRIVATE src)
     target_link_libraries(test_overlay PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+
+    add_executable(test_overlay_geometry
+        tests/test_overlay_geometry.cpp
+        src/overlay/OverlayLayout.cpp
+        src/overlay/ParagraphAnchor.cpp
+        src/overlay/TextOverlay.cpp
+        src/platform/PlatformUtils.cpp
+    )
+    target_include_directories(test_overlay_geometry PRIVATE src)
+    target_link_libraries(test_overlay_geometry PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+    set_target_properties(test_overlay_geometry PROPERTIES WIN32_EXECUTABLE FALSE AUTOMOC ON)
+    if(MINGW OR GCC)
+        target_compile_options(test_overlay_geometry PRIVATE -finput-charset=UTF-8 -fexec-charset=UTF-8)
+    endif()
+    add_test(NAME test_overlay_geometry COMMAND test_overlay_geometry)
     set_target_properties(test_overlay PROPERTIES WIN32_EXECUTABLE FALSE)
     if(MINGW OR GCC)
         target_compile_options(test_overlay PRIVATE -finput-charset=UTF-8 -fexec-charset=UTF-8)
