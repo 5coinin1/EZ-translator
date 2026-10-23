@@ -46,13 +46,16 @@ MAX_SRC_TOKENS = 400
 
 # beam 4: chất lượng tốt hơn hẳn greedy và rẻ (đo được trên máy này còn NHANH hơn
 # beam 1 vì câu lặp vô hạn không còn bị đẩy tới hết max token). Chỉnh bằng env khi A/B.
-BEAM = int(os.environ.get("EZ_CT2_BEAM", "4"))
-MAX_DECODING = int(os.environ.get("EZ_CT2_MAX_TOKENS", "256"))
+BEAM = int(os.environ.get("EZ_CT2_BEAM", "2"))
+# Pipeline thời gian thực ưu tiên phản hồi ổn định. 256 token cho một mảnh nguồn
+# <=96 token khiến các output lỗi/lặp có thể giữ CPU nhiều giây; 128 vẫn đủ rộng
+# cho EN->VI bình thường và chặn được đuôi decode bệnh lý.
+MAX_DECODING = int(os.environ.get("EZ_CT2_MAX_TOKENS", "128"))
 
 # ── Fast path ───────────────────────────────────────────────────────────────
 FAST_MODE = os.environ.get("EZ_CT2_FAST", "1").strip().lower() not in ("0", "false", "no", "off")
 FAST_MAX_TOKENS = int(os.environ.get("EZ_CT2_FAST_TOKENS", "96"))
-FAST_BEAM = int(os.environ.get("EZ_CT2_FAST_BEAM", "2"))
+FAST_BEAM = int(os.environ.get("EZ_CT2_FAST_BEAM", "1"))
 FAST_MAX_BATCH = int(os.environ.get("EZ_CT2_FAST_BATCH", "8"))
 FAST_NO_REPEAT = int(os.environ.get("EZ_CT2_NO_REPEAT", "6"))
 FAST_REP_PENALTY = float(os.environ.get("EZ_CT2_REP_PENALTY", "1.05"))

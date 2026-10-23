@@ -57,7 +57,7 @@ private:
     bool waitForReadyLine(int timeoutMs, QString* error);
     void attachToJob();
     bool writeRequest(const QByteArray& payload);
-    bool readReply(QStringList* translations);
+    bool readReply(QStringList* translations, int timeoutMs);
     void markFailed(const QString& reason);
 
     QProcess m_process;

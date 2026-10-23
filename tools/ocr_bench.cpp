@@ -95,9 +95,14 @@ int main(int argc, char** argv)
     options.recThreads = budget.recognizerIntraOp;
     options.recWorkers = budget.recognizerWorkers;
     options.interOpThreads = budget.interOp;
+    bool recWidthOk = false;
+    const int requestedRecWidth = qEnvironmentVariableIntValue("EZ_OCR_REC_MAX_WIDTH", &recWidthOk);
+    if (recWidthOk && requestedRecWidth >= 128)
+        options.recMaxWidth = requestedRecWidth;
     options.disableRecBatch = !app.arguments().contains(QStringLiteral("--cpu-batch"));
     qInfo() << "thread budget: det=" << options.threads << "rec=" << options.recThreads
-            << "workers=" << options.recWorkers << "inter=" << options.interOpThreads;
+            << "workers=" << options.recWorkers << "inter=" << options.interOpThreads
+            << "recMaxWidth=" << options.recMaxWidth;
 
     OcrEngine engine;
     QString error;

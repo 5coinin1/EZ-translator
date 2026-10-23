@@ -29,7 +29,8 @@ namespace EZTranslator {
 namespace {
 
 constexpr int kStartTimeoutMs = 30000;   ///< Python + model nạp có thể lâu
-constexpr int kReplyTimeoutMs = 2500;    ///< một lượt dịch; quá hạn coi như sidecar chết
+constexpr int kMinReplyTimeoutMs = 2500;
+constexpr int kMaxReplyTimeoutMs = 10000;
 constexpr int kWriteTimeoutMs = 1000;
 constexpr int kRestartIntervalMs = 5000; ///< giãn cách thử khởi động lại
 constexpr int kProbeTimeoutMs = 20000;   ///< kiểm tra "import ctranslate2"
@@ -286,9 +287,9 @@ bool CTranslate2Translator::writeRequest(const QByteArray& payload)
     return m_process.waitForBytesWritten(kWriteTimeoutMs);
 }
 
-bool CTranslate2Translator::readReply(QStringList* translations)
+bool CTranslate2Translator::readReply(QStringList* translations, int timeoutMs)
 {
-    QDeadlineTimer deadline(kReplyTimeoutMs);
+    QDeadlineTimer deadline(timeoutMs);
     while (!deadline.hasExpired()) {
         m_buffer += m_process.readAllStandardOutput();
         int newline = -1;
@@ -344,6 +345,9 @@ QStringList CTranslate2Translator::translate(const QStringList& lines, const QSt
     request.insert(QStringLiteral("texts"), texts);
     const QByteArray payload =
         QJsonDocument(request).toJson(QJsonDocument::Compact) + QByteArrayLiteral("\n");
+    const int replyTimeoutMs = qBound(kMinReplyTimeoutMs,
+                                      2000 + lines.size() * 375,
+                                      kMaxReplyTimeoutMs);
 
     // Một lần thử lại tại chỗ nếu sidecar vừa chết (vd bị kill từ bên ngoài).
     for (int attempt = 0; attempt < 2; ++attempt) {
@@ -354,13 +358,14 @@ QStringList CTranslate2Translator::translate(const QStringList& lines, const QSt
             return result;
         }
         QStringList translated;
-        if (readReply(&translated)) {
+        if (readReply(&translated, replyTimeoutMs)) {
             for (int i = 0; i < translated.size() && i < result.size(); ++i)
                 result[i] = translated.at(i);
             return result;
         }
-        markFailed(QStringLiteral("hết hạn chờ phản hồi (") + QString::number(kReplyTimeoutMs)
-                   + QStringLiteral("ms)"));
+        markFailed(QStringLiteral("hết hạn chờ phản hồi (") + QString::number(replyTimeoutMs)
+                   + QStringLiteral("ms, batch=") + QString::number(lines.size())
+                   + QStringLiteral(")"));
         if (attempt == 0 && ensureStarted(&error))
             continue;
         return result;
