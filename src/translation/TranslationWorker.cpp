@@ -5,6 +5,8 @@
 #include "translation/GoogleTranslator.h"
 #include "translation/MarianTranslator.h"
 #include "translation/MyMemoryTranslator.h"
+#include "translation/TranslationThreadBudget.h"
+#include "ocr/OcrTypes.h"
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -164,6 +166,7 @@ void TranslationWorker::configure(const TranslationConfig& config)
             options.sourceSpmPath = modelDir + QStringLiteral("/source.spm");
             options.targetSpmPath = modelDir + QStringLiteral("/target.spm");
             options.vocabPath = modelDir + QStringLiteral("/vocab.json");
+            options.threads = chooseTranslationThreads();
             options.useGpu = !qEnvironmentVariableIsSet("EZ_MT_CPU");
             options.debug = qEnvironmentVariableIsSet("EZ_MT_DEBUG");
 
@@ -264,14 +267,79 @@ QStringList TranslationWorker::runEngines(const QStringList& units)
     return out;
 }
 
-void TranslationWorker::translate(const QString& id, const QString& text, quint64 token)
+void TranslationWorker::translate(const QString& id, const QString& text, quint64 token,
+                                  qint64 queuedAtMs)
 {
-    handleTranslate(id, text, token, /*interactive=*/false);
+    enqueueRequest(PendingRequest{id, text, token, queuedAtMs, false});
 }
 
-void TranslationWorker::translateInteractive(const QString& id, const QString& text, quint64 token)
+void TranslationWorker::translateInteractive(const QString& id, const QString& text, quint64 token,
+                                             qint64 queuedAtMs)
 {
-    handleTranslate(id, text, token, /*interactive=*/true);
+    PendingRequest request{id, text, token, queuedAtMs, true};
+    m_interactivePending.store(true);
+
+    // Khi đang dịch vùng, cho hover chen ngay vào giữa các chunk. Các hover tiếp theo
+    // trong chính lượt hover chỉ giữ bản mới nhất để tránh đệ quy không giới hạn.
+    if (m_processing && !m_processingInteractive) {
+        m_processingInteractive = true;
+        handleTranslate(request.id, request.text, request.token, true);
+        m_processingInteractive = false;
+        drainRequests();
+        return;
+    }
+
+    m_pendingInteractive = std::move(request);
+    if (!m_processing)
+        drainRequests();
+}
+
+void TranslationWorker::enqueueRequest(PendingRequest request)
+{
+    if (request.interactive) {
+        m_pendingInteractive = std::move(request);
+        m_interactivePending.store(true);
+    } else {
+        const QString id = request.id;
+        const bool wasPending = m_pendingRegions.contains(id);
+        m_pendingRegions.insert(id, std::move(request));
+        if (!wasPending)
+            m_regionOrder.enqueue(id);
+    }
+
+    if (!m_processing)
+        drainRequests();
+}
+
+void TranslationWorker::drainRequests()
+{
+    if (m_processing)
+        return;
+
+    m_processing = true;
+    while (m_pendingInteractive.has_value() || !m_regionOrder.isEmpty()) {
+        PendingRequest request;
+        if (m_pendingInteractive.has_value()) {
+            request = std::move(*m_pendingInteractive);
+            m_pendingInteractive.reset();
+        } else {
+            const QString id = m_regionOrder.dequeue();
+            auto it = m_pendingRegions.find(id);
+            if (it == m_pendingRegions.end())
+                continue;
+            request = std::move(it.value());
+            m_pendingRegions.erase(it);
+        }
+
+        const qint64 startedAtMs = ocrMonotonicMs();
+        handleTranslate(request.id, request.text, request.token, request.interactive);
+        qInfo().noquote() << "[TRANSLATE_METRIC] id=" << request.id
+                          << "interactive=" << request.interactive
+                          << "queueMs=" << (request.queuedAtMs > 0
+                                                  ? startedAtMs - request.queuedAtMs
+                                                  : -1);
+    }
+    m_processing = false;
 }
 
 void TranslationWorker::handleTranslate(const QString& id, const QString& text, quint64 token,
@@ -319,10 +387,16 @@ void TranslationWorker::handleTranslate(const QString& id, const QString& text, 
             emit translated(id, token, cachedDocument);
     }
 
+    const qint64 startedAtMs = ocrMonotonicMs();
     const TranslatedDocument document =
         translator.translate(text, m_config.source, m_config.target, engine);
 
     emit translated(id, token, document);
+    qInfo().noquote() << "[TRANSLATE_METRIC] id=" << id
+                      << "interactive=" << interactive
+                      << "totalMs=" << (ocrMonotonicMs() - startedAtMs)
+                      << "new=" << document.newTranslations
+                      << "complete=" << document.complete;
 }
 
 } // namespace EZTranslator

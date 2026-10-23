@@ -1,4 +1,5 @@
 #include "translation/GoogleTranslator.h"
+#include "translation/TranslationCircuitBreaker.h"
 
 #include <QDebug>
 #include <QEventLoop>
@@ -12,6 +13,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QElapsedTimer>
 
 #include <algorithm>
 
@@ -20,7 +22,16 @@ namespace EZTranslator {
 namespace {
 
 constexpr int kFreeTimeoutMs = 4000; ///< chặn 'kẹt luồng' khi mạng treo
+constexpr int kFreeBatchTimeoutMs = 6000;
 constexpr int kApiTimeoutMs = 10000;
+
+struct ReplyResult
+{
+    QByteArray body;
+    int status{0};
+    bool timedOut{false};
+    qint64 retryAfterMs{0};
+};
 
 /** Ghép các đoạn dịch trong response gtx thành một chuỗi. */
 QString parseGtxResponse(const QByteArray& data)
@@ -82,8 +93,9 @@ QString decodeEntities(QString text)
 }
 
 /** Chờ reply xong, trả toàn bộ body (rỗng nếu lỗi/timeout). */
-QByteArray waitForReply(QNetworkReply* reply, int timeoutMs, const QString& logTag)
+ReplyResult waitForReply(QNetworkReply* reply, int timeoutMs, const QString& logTag)
 {
+    ReplyResult result;
     QEventLoop loop;
     QTimer timeout;
     timeout.setSingleShot(true);
@@ -95,27 +107,43 @@ QByteArray waitForReply(QNetworkReply* reply, int timeoutMs, const QString& logT
     timeout.start(timeoutMs);
     loop.exec();
 
-    const QByteArray body = reply->readAll();
+    result.body = reply->readAll();
+    result.status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    result.timedOut = reply->error() == QNetworkReply::OperationCanceledError
+                      && result.status == 0;
+    bool retryAfterOk = false;
+    const qint64 retryAfterSeconds =
+        reply->rawHeader("Retry-After").trimmed().toLongLong(&retryAfterOk);
+    if (retryAfterOk && retryAfterSeconds > 0)
+        result.retryAfterMs = retryAfterSeconds * 1000;
     if (reply->error() != QNetworkReply::NoError) {
         qWarning().noquote() << logTag << "lỗi:" << reply->errorString()
-                             << "| body:" << QString::fromUtf8(body.left(300));
+                             << "| status:" << result.status
+                             << "| body:" << QString::fromUtf8(result.body.left(300));
     }
     reply->deleteLater();
-    return body;
+    return result;
 }
 
 /** Endpoint miễn phí gtx: dịch từng dòng. */
 QStringList translateFree(QNetworkAccessManager& manager, const QStringList& lines,
-                          const QString& source, const QString& target)
+                          const QString& source, const QString& target,
+                          int* failedStatus, bool* timedOut, qint64* retryAfterMs)
 {
     QStringList result;
     result.reserve(lines.size());
+    QElapsedTimer batchTimer;
+    batchTimer.start();
 
     for (const QString& line : lines) {
         if (line.trimmed().isEmpty()) {
             result.append(QString());
             continue;
         }
+
+        const int remainingMs = kFreeBatchTimeoutMs - int(batchTimer.elapsed());
+        if (remainingMs <= 0)
+            break;
 
         QUrl url(QStringLiteral("https://translate.googleapis.com/translate_a/single"));
         QUrlQuery query;
@@ -131,8 +159,17 @@ QStringList translateFree(QNetworkAccessManager& manager, const QStringList& lin
         request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("EZ-Translator"));
 
         QNetworkReply* reply = manager.get(request);
-        const QByteArray body = waitForReply(reply, kFreeTimeoutMs, QStringLiteral("[Google] gtx"));
-        result.append(parseGtxResponse(body));
+        const ReplyResult response = waitForReply(
+            reply, std::min(kFreeTimeoutMs, remainingMs), QStringLiteral("[Google] gtx"));
+        if (response.status != 0 && failedStatus)
+            *failedStatus = response.status;
+        if (response.timedOut && timedOut)
+            *timedOut = true;
+        if (response.retryAfterMs > 0 && retryAfterMs)
+            *retryAfterMs = response.retryAfterMs;
+        result.append(parseGtxResponse(response.body));
+        if (response.status == 429 || response.timedOut)
+            break;
     }
 
     return result;
@@ -141,7 +178,8 @@ QStringList translateFree(QNetworkAccessManager& manager, const QStringList& lin
 /** Cloud Translation API v2: batch các dòng trong một request. */
 QStringList translateOfficial(QNetworkAccessManager& manager, const QString& apiKey,
                               const QStringList& lines, const QString& source,
-                              const QString& target)
+                              const QString& target, int* failedStatus, bool* timedOut,
+                              qint64* retryAfterMs)
 {
     QStringList result;
     result.resize(lines.size()); // rỗng = dòng đó lỗi
@@ -175,11 +213,17 @@ QStringList translateOfficial(QNetworkAccessManager& manager, const QString& api
 
     QNetworkReply* reply = manager.post(request,
                                         QJsonDocument(root).toJson(QJsonDocument::Compact));
-    const QByteArray body = waitForReply(reply, kApiTimeoutMs, QStringLiteral("[Google] API"));
-    if (body.isEmpty())
+    const ReplyResult response = waitForReply(reply, kApiTimeoutMs, QStringLiteral("[Google] API"));
+    if (failedStatus)
+        *failedStatus = response.status;
+    if (timedOut)
+        *timedOut = response.timedOut;
+    if (retryAfterMs)
+        *retryAfterMs = response.retryAfterMs;
+    if (response.body.isEmpty())
         return result;
 
-    const QJsonDocument document = QJsonDocument::fromJson(body);
+    const QJsonDocument document = QJsonDocument::fromJson(response.body);
     if (!document.isObject())
         return result;
 
@@ -202,6 +246,10 @@ struct GoogleTranslator::Impl
 {
     QString apiKey;
     QNetworkAccessManager manager;
+    QElapsedTimer clock;
+    TranslationCircuitBreaker breaker;
+
+    Impl() { clock.start(); }
 };
 
 GoogleTranslator::GoogleTranslator()
@@ -219,20 +267,56 @@ void GoogleTranslator::setApiKey(const QString& apiKey)
 QStringList GoogleTranslator::translate(const QStringList& lines, const QString& source,
                                         const QString& target)
 {
+    QStringList empty(lines.size());
+    if (!m_impl->breaker.allow(m_impl->clock.elapsed())) {
+        qInfo() << "[Google] circuit đang mở, bỏ qua request online để dùng fallback";
+        return empty;
+    }
+
+    bool officialRateLimited = false;
     if (!m_impl->apiKey.isEmpty()) {
-        QStringList result =
-            translateOfficial(m_impl->manager, m_impl->apiKey, lines, source, target);
+        int status = 0;
+        bool timedOut = false;
+        qint64 retryAfterMs = 0;
+        QStringList result = translateOfficial(m_impl->manager, m_impl->apiKey, lines, source,
+                                               target, &status, &timedOut, &retryAfterMs);
 
         const bool any = std::any_of(result.cbegin(), result.cend(),
                                      [](const QString& text) { return !text.isEmpty(); });
-        if (any)
+        if (any) {
+            m_impl->breaker.recordSuccess();
             return result;
+        }
+
+        if (status == 429) {
+            officialRateLimited = true;
+            m_impl->breaker.recordFailure(TranslationCircuitBreaker::Failure::RateLimited,
+                                          m_impl->clock.elapsed(), retryAfterMs);
+        } else if (timedOut || status >= 500 || status == 0) {
+            m_impl->breaker.recordFailure(TranslationCircuitBreaker::Failure::Transient,
+                                          m_impl->clock.elapsed());
+        }
 
         // Key sai/hết hạn/quota → vẫn cố dịch bằng endpoint miễn phí.
         qWarning() << "[Google] API chính thức không có kết quả → thử endpoint miễn phí";
     }
 
-    return translateFree(m_impl->manager, lines, source, target);
+    int status = 0;
+    bool timedOut = false;
+    qint64 retryAfterMs = 0;
+    QStringList result = translateFree(m_impl->manager, lines, source, target, &status, &timedOut,
+                                       &retryAfterMs);
+    const bool any = std::any_of(result.cbegin(), result.cend(),
+                                 [](const QString& text) { return !text.isEmpty(); });
+    if (any && !officialRateLimited)
+        m_impl->breaker.recordSuccess();
+    else if (status == 429)
+        m_impl->breaker.recordFailure(TranslationCircuitBreaker::Failure::RateLimited,
+                                      m_impl->clock.elapsed(), retryAfterMs);
+    else if (timedOut || status >= 500 || status == 0)
+        m_impl->breaker.recordFailure(TranslationCircuitBreaker::Failure::Transient,
+                                      m_impl->clock.elapsed());
+    return result;
 }
 
 } // namespace EZTranslator

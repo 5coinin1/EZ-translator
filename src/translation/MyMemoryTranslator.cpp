@@ -1,6 +1,7 @@
 #include "translation/MyMemoryTranslator.h"
 
 #include <QEventLoop>
+#include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
@@ -10,11 +11,14 @@
 #include <QUrl>
 #include <QUrlQuery>
 
+#include <algorithm>
+
 namespace EZTranslator {
 
 namespace {
 
 constexpr int kTimeoutMs = 4000; ///< chặn 'kẹt luồng' khi mạng treo
+constexpr int kBatchTimeoutMs = 6000;
 
 QString parseMyMemory(const QByteArray& data)
 {
@@ -51,12 +55,18 @@ QStringList MyMemoryTranslator::translate(const QStringList& lines, const QStrin
     const QString from = (source.isEmpty() || source == QLatin1String("auto"))
                              ? QStringLiteral("en")
                              : source;
+    QElapsedTimer batchTimer;
+    batchTimer.start();
 
     for (const QString& line : lines) {
         if (line.trimmed().isEmpty()) {
             result.append(QString());
             continue;
         }
+
+        const int remainingMs = kBatchTimeoutMs - int(batchTimer.elapsed());
+        if (remainingMs <= 0)
+            break;
 
         QUrl url(QStringLiteral("https://api.mymemory.translated.net/get"));
         QUrlQuery query;
@@ -76,7 +86,7 @@ QStringList MyMemoryTranslator::translate(const QStringList& lines, const QStrin
                 reply->abort();
         });
         QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-        timeout.start(kTimeoutMs);
+        timeout.start(std::min(kTimeoutMs, remainingMs));
         loop.exec();
 
         QString translated;

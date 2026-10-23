@@ -6,10 +6,13 @@
 #include "translation/TranslationConfig.h"
 
 #include <QObject>
+#include <QHash>
+#include <QQueue>
 #include <QString>
 
 #include <atomic>
 #include <memory>
+#include <optional>
 
 namespace EZTranslator {
 
@@ -42,17 +45,30 @@ public slots:
     /** Đặt cấu hình engine dịch (ngôn ngữ, engine, API key, system prompt). */
     void configure(const EZTranslator::TranslationConfig& config);
 
-    /** Dịch một văn bản; phát `translated` với cùng id/token khi xong. */
-    void translate(const QString& id, const QString& text, quint64 token);
+    /** Xếp một văn bản; mailbox tự gộp các lượt vùng trùng id. */
+    void translate(const QString& id, const QString& text, quint64 token,
+                   qint64 queuedAtMs = 0);
 
-    /** Như translate() nhưng ưu tiên cao (hover) — chen được vào giữa lượt dịch vùng. */
-    void translateInteractive(const QString& id, const QString& text, quint64 token);
+    /** Xếp hover ưu tiên cao — có thể chen vào giữa lượt dịch vùng. */
+    void translateInteractive(const QString& id, const QString& text, quint64 token,
+                              qint64 queuedAtMs = 0);
 
 signals:
     void translated(const QString& id, quint64 token,
                     const EZTranslator::TranslatedDocument& document);
 
 private:
+    struct PendingRequest
+    {
+        QString id;
+        QString text;
+        quint64 token{0};
+        qint64 queuedAtMs{0};
+        bool interactive{false};
+    };
+
+    void enqueueRequest(PendingRequest request);
+    void drainRequests();
     void handleTranslate(const QString& id, const QString& text, quint64 token, bool interactive);
     QStringList runEngines(const QStringList& units);
 
@@ -65,6 +81,11 @@ private:
     std::unique_ptr<ITranslator> m_ai;       ///< AI/LLM (OpenAI-compatible)
     QList<ITranslator*> m_offlineChain;      ///< các engine offline đang dùng được
     std::atomic<bool> m_interactivePending{false};
+    QHash<QString, PendingRequest> m_pendingRegions;
+    QQueue<QString> m_regionOrder;
+    std::optional<PendingRequest> m_pendingInteractive;
+    bool m_processing{false};
+    bool m_processingInteractive{false};
     EZTranslator::TranslationConfig m_config;
 };
 
