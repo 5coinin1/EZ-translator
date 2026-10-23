@@ -162,7 +162,7 @@ double alignmentScore(const Signal &a, const Signal &b, int s, int minOverlap)
 // Best alignment of `b` onto `a`. Writes the winning integer shift, the interpolated
 // (sub-pixel) shift and returns the score.
 double bestShift(const QList<double> &a, const QList<double> &b, int maxShift, int *shiftOut,
-                 double *exactOut, double preferredShift)
+                 double *exactOut, double preferredShift, bool usePrediction)
 {
     if (a.isEmpty() || b.isEmpty()) {
         if (shiftOut)
@@ -223,7 +223,7 @@ double bestShift(const QList<double> &a, const QList<double> &b, int maxShift, i
     constexpr int kMinAliasSeparation = 6;
     int bestS = bestCandidate;
     double bestDistance = std::abs(double(bestS) - preferredShift);
-    for (int s = -limit; s <= limit; ++s) {
+    for (int s = -limit; usePrediction && s <= limit; ++s) {
         if (scoreAt(s) < bestScore - kScoreSlack)
             continue;
         // Compare against the absolute best peak, which stays fixed. Comparing against
@@ -265,7 +265,7 @@ double bestShift(const QList<double> &a, const QList<double> &b, int maxShift, i
 
 ScrollOffset matchSignal(const QList<double> &prevRows, const QList<double> &prevCols,
                          const QList<double> &curRows, const QList<double> &curCols, int maxShift,
-                         double minScore, double preferredShift)
+                          double minScore, double preferredShift, bool usePrediction)
 {
     ScrollOffset offset;
     if (prevRows.isEmpty() || curRows.isEmpty() || prevCols.isEmpty() || curCols.isEmpty())
@@ -275,8 +275,9 @@ ScrollOffset matchSignal(const QList<double> &prevRows, const QList<double> &pre
     int dx = 0;
     double dyExact = 0.0;
     double dxExact = 0.0;
-    const double rowScore = bestShift(prevRows, curRows, maxShift, &dy, &dyExact, preferredShift);
-    const double colScore = bestShift(prevCols, curCols, maxShift, &dx, &dxExact, 0.0);
+    const double rowScore = bestShift(prevRows, curRows, maxShift, &dy, &dyExact, preferredShift,
+                                      usePrediction);
+    const double colScore = bestShift(prevCols, curCols, maxShift, &dx, &dxExact, 0.0, true);
 
     // Vertical scrolling is the main case; a text page's column profile is nearly
     // constant, so it must not be allowed to veto an otherwise perfect row match.
@@ -294,22 +295,23 @@ ScrollOffset matchSignal(const QList<double> &prevRows, const QList<double> &pre
 } // namespace
 
 ScrollOffset matchProfile(const GrayProfile &previous, const GrayProfile &current,
-                          int maxShift, double minScore, double preferredShift)
+                          int maxShift, double minScore, double preferredShift, bool usePrediction)
 {
     ScrollOffset offset;
     if (previous.isEmpty() || current.isEmpty())
         return offset;
 
     offset = matchSignal(previous.rows, previous.cols, current.rows, current.cols, maxShift,
-                         minScore, preferredShift);
+                         minScore, preferredShift, usePrediction);
 
     // Luminance could not align the frames. Text is a texture of edges, so the gradient
     // signal usually can: this is what keeps low contrast pages and pages with a
     // background gradient trackable.
-    if (!offset.valid && !previous.edgeRows.isEmpty() && !current.edgeRows.isEmpty()) {
+    if ((!offset.valid || offset.dy == 0)
+        && !previous.edgeRows.isEmpty() && !current.edgeRows.isEmpty()) {
         const ScrollOffset gradient = matchSignal(previous.edgeRows, previous.cols,
                                                   current.edgeRows, current.cols, maxShift,
-                                                  minScore, preferredShift);
+                                                  minScore, preferredShift, usePrediction);
         if (gradient.score > offset.score) {
             offset = gradient;
             offset.usedGradient = true;

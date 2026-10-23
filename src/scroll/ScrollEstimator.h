@@ -58,4 +58,4 @@ GrayProfile grayProfile(const QImage &image, const QRect &rect, int step = 4,
 // several line pitches away.
 ScrollOffset matchProfile(const GrayProfile &previous, const GrayProfile &current,
                           int maxShift = 0, double minScore = 0.90,
-                          double preferredShift = 0.0);
+                          double preferredShift = 0.0, bool usePrediction = true);

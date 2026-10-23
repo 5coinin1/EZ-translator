@@ -27,6 +27,7 @@ public:
     struct IncrementalResult
     {
         bool ok = false;
+        const char* reason = "no-reference";
         int dx = 0;
         int dy = 0;
         double score = 0.0;

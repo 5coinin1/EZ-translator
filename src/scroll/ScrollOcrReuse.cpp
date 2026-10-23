@@ -8,9 +8,12 @@ namespace {
 // tall, so 8 is plenty and halves the pixel reads of the hottest loop.
 constexpr int kProfileStep = 8;
 
-// Correlation threshold on the [0,1] normalized score. Below this the frame is not
-// reused at all and a full OCR runs instead.
-constexpr double kMinScore = 0.96;
+// A score above the strict threshold is an unambiguous match. Real captured frames
+// often land slightly below it because of animation and antialiasing, so allow a
+// relaxed score only after the horizontal/page-jump/no-motion guards below confirm
+// that this is a plausible vertical scroll.
+constexpr double kStrictScore = 0.96;
+constexpr double kVerticalScrollScore = 0.92;
 constexpr int kBandPadding = 48;
 } // namespace
 
@@ -24,6 +27,7 @@ void ScrollOcrReuse::reset()
 
 void ScrollOcrReuse::accept(const QImage &frame, const QRect &rect, const QList<OcrTextBox> &boxes)
 {
+    m_tracker.reset();
     m_profile = grayProfile(frame, rect, kProfileStep, /*withGradients=*/true);
     m_boxes = boxes;
     m_valid = !m_profile.isEmpty();
@@ -39,8 +43,10 @@ ScrollOcrReuse::IncrementalResult ScrollOcrReuse::tryIncremental(const QImage &f
 
     const GrayProfile current = grayProfile(frame, rect, kProfileStep, /*withGradients=*/true);
     if (current.isEmpty() || current.rows.size() != m_profile.rows.size()
-        || current.cols.size() != m_profile.cols.size())
+        || current.cols.size() != m_profile.cols.size()) {
+        result.reason = "size-changed";
         return result;
+    }
 
     // Text pages are noisy (antialiasing, subpixel shifts), so the match is allowed to
     // be a bit looser; the band OCR corrects whatever the estimate misses.
@@ -54,10 +60,29 @@ ScrollOcrReuse::IncrementalResult ScrollOcrReuse::tryIncremental(const QImage &f
     const int maxShift = m_tracker.hasState()
                              ? std::max(12, int(std::abs(predicted) + 24.0))
                              : std::max(rect.width(), rect.height()) / 2;
-    const ScrollOffset offset = matchProfile(m_profile, current, maxShift, kMinScore, predicted);
-    if (!offset.valid || std::abs(offset.dx) > 2
-        || std::abs(offset.dy) > rect.height() / 3)
+    const ScrollOffset offset =
+        matchProfile(m_profile, current, maxShift, kVerticalScrollScore, predicted,
+                     m_tracker.hasState());
+    result.score = offset.score;
+    result.dx = offset.dx;
+    result.dy = offset.dy;
+    if (!offset.valid) {
+        result.reason = "low-score";
         return result;
+    }
+    if (std::abs(offset.dx) > 2) {
+        result.reason = "horizontal-shift";
+        return result;
+    }
+    if (std::abs(offset.dy) > rect.height() / 3) {
+        result.reason = "page-jump";
+        return result;
+    }
+    if (offset.dy == 0) {
+        result.reason = offset.score >= kStrictScore ? "no-vertical-shift"
+                                                     : "relaxed-no-vertical-shift";
+        return result;
+    }
 
     // Filter the noisy per-frame measurement through the motion model. It smooths the
     // shift, carries the sub-pixel remainder (so a slow scroll does not round to zero
@@ -67,13 +92,17 @@ ScrollOcrReuse::IncrementalResult ScrollOcrReuse::tryIncremental(const QImage &f
     ScrollTracker tracker = m_tracker;
     const ScrollTracker::Step step =
         tracker.update(offset.dyExact, true, rect.height() / 3.0);
-    if (!step.valid)
+    if (!step.valid) {
+        result.reason = "motion-model";
         return result;
+    }
 
     const int appliedDy = step.dy;
     const int appliedDx = int(std::lround(offset.dxExact));
-    if (appliedDy == 0 || appliedDx != 0)
+    if (appliedDy == 0 || appliedDx != 0) {
+        result.reason = "no-vertical-shift";
         return result;
+    }
 
     QList<OcrTextBox> merged = m_boxes;
     for (OcrTextBox &box : merged)
@@ -101,8 +130,6 @@ ScrollOcrReuse::IncrementalResult ScrollOcrReuse::tryIncremental(const QImage &f
         const QRect absolute = band.translated(rect.topLeft());
         const QImage crop = frame.copy(absolute);
         const QList<OcrTextBox> found = bandOcr(crop);
-        if (found.isEmpty())
-            return result;
         for (OcrTextBox box : found) {
             box.rect.translate(absolute.topLeft());
             if (rect.contains(box.rect))
@@ -121,10 +148,13 @@ ScrollOcrReuse::IncrementalResult ScrollOcrReuse::tryIncremental(const QImage &f
     // An empty merge (every shifted box left the region and the band OCR found
     // nothing) must NOT be accepted, otherwise it would overwrite the state and
     // the layout would stay blank from then on.
-    if (inside.isEmpty())
+    if (inside.isEmpty()) {
+        result.reason = "no-visible-text";
         return result;
+    }
 
     result.ok = true;
+    result.reason = "reused";
     result.dx = appliedDx;
     result.dy = appliedDy;
     result.score = offset.score;
