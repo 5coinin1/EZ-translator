@@ -48,6 +48,9 @@ public:
 private:
     /** Nạp model chữ của HỆ CHỮ CÒN LẠI (en ↔ zh) theo nhu cầu — xem recognize(). */
     QList<OcrTextBox> recognizeProcessed(const QImage& image, bool allowAlt = true);
+    /** Nhận dạng các box đã detect, dùng chung cho path thường và tile detect-once. */
+    QList<OcrTextBox> recognizeBoxes(const QImage& image, const QList<OcrTextBox>& boxes,
+                                     bool allowAlt);
 
     bool ensureAltRecognizer();
 

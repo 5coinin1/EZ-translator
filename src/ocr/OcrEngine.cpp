@@ -138,7 +138,8 @@ bool OcrEngine::load(const OcrOptions& options, QString* error)
     if (!m_impl)
         return false;
 
-    m_impl->runtime.configure(options.useGpu, error);
+    const QString configuredProvider = m_impl->runtime.configure(options.useGpu, error);
+    Q_UNUSED(configuredProvider);
     m_impl->binarize = options.binarize;
     m_impl->options = options;
 
@@ -190,6 +191,71 @@ QList<OcrTextBox> OcrEngine::recognize(const QImage& image)
     const int overlapX = std::max(24, input.width() / 14);
     const int overlapY = std::max(18, input.height() / 14);
     QList<OcrTextBox> merged;
+
+    // Thí nghiệm detect-once: detector vẫn chạy theo tile để giữ recall, nhưng recognition
+    // chạy sau khi merge trên ảnh gốc. Bật/tắt được bằng biến môi trường để A/B accuracy và p95.
+    const bool detectOnce = qEnvironmentVariable("EZ_OCR_TILE_DETECT_ONCE", QStringLiteral("0"))
+                                .trimmed()
+                            != QStringLiteral("0");
+    if (detectOnce) {
+        for (int row = 0; row < rows; ++row) {
+            const int y0 = std::max(0, row * input.height() / rows - (row > 0 ? overlapY : 0));
+            const int y1 = std::min(input.height(), (row + 1) * input.height() / rows
+                                                        + (row + 1 < rows ? overlapY : 0));
+            for (int col = 0; col < cols; ++col) {
+                const int x0 = std::max(0, col * input.width() / cols - (col > 0 ? overlapX : 0));
+                const int x1 = std::min(input.width(), (col + 1) * input.width() / cols
+                                                          + (col + 1 < cols ? overlapX : 0));
+                const QRect tileRect(x0, y0, x1 - x0, y1 - y0);
+                if (tileRect.width() < 8 || tileRect.height() < 8)
+                    continue;
+                const QList<OcrTextBox> boxes =
+                    m_impl->detector.detect(input.copy(tileRect), m_impl->options.detLimitSide);
+                ++m_impl->lastTiming.detCalls;
+                ++m_impl->lastTiming.tileCount;
+                m_impl->lastTiming.detMs += m_impl->detector.lastMs();
+                for (OcrTextBox box : boxes) {
+                    box.rect.translate(tileRect.topLeft());
+                    merged.append(box);
+                }
+            }
+        }
+
+        // Merge box trùng ở vùng overlap trước khi crop recognition, tránh đọc cùng một dòng
+        // nhiều lần và bảo đảm recognizer nhìn thấy tọa độ trên ảnh gốc.
+        std::sort(merged.begin(), merged.end(), [](const OcrTextBox& a, const OcrTextBox& b) {
+            const int dy = a.rect.center().y() - b.rect.center().y();
+            if (std::abs(dy) > 6)
+                return dy < 0;
+            return a.rect.left() < b.rect.left();
+        });
+        QList<OcrTextBox> detected;
+        for (const OcrTextBox& box : merged) {
+            bool duplicate = false;
+            for (OcrTextBox& existing : detected) {
+                const QRect intersection = box.rect.intersected(existing.rect);
+                const QRect united = box.rect.united(existing.rect);
+                const double unionArea = double(united.width()) * double(united.height());
+                const double iou = unionArea > 0.0
+                                       ? double(intersection.width()) * double(intersection.height())
+                                             / unionArea
+                                       : 0.0;
+                const QPoint delta = box.rect.center() - existing.rect.center();
+                if (iou > 0.20 || (std::abs(delta.y()) < 8 && std::abs(delta.x()) < 34)) {
+                    existing.rect = existing.rect.united(box.rect);
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate)
+                detected.append(box);
+        }
+        qInfo() << "[OCR] tile detect-once boxes=" << detected.size();
+        const QList<OcrTextBox> result = recognizeBoxes(input, detected, true);
+        m_impl->lastTiming.boxes = result.size();
+        m_impl->lastTiming.totalMs = double(ocrMonotonicMs() - startedAt);
+        return result;
+    }
 
     for (int row = 0; row < rows; ++row) {
         const int y0 = std::max(0, row * input.height() / rows - (row > 0 ? overlapY : 0));
@@ -266,6 +332,15 @@ QList<OcrTextBox> OcrEngine::recognizeProcessed(const QImage& input, bool allowA
     ++m_impl->lastTiming.tileCount;
     m_impl->lastTiming.detMs += m_impl->detector.lastMs();
     m_impl->lastBoxes = boxes.size();
+    if (boxes.isEmpty())
+        return {};
+
+    return recognizeBoxes(input, boxes, allowAlt);
+}
+
+QList<OcrTextBox> OcrEngine::recognizeBoxes(const QImage& input,
+                                            const QList<OcrTextBox>& boxes, bool allowAlt)
+{
     if (boxes.isEmpty())
         return {};
 
