@@ -25,6 +25,7 @@ public:
         QImage image;
         quint64 requestToken{0};
         quint64 imageHash{0};
+        bool scrollReuse{false};
     };
 
     struct Dispatch

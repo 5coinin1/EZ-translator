@@ -63,12 +63,6 @@ set(SOURCES
     src/overlay/TextOverlay.cpp
     src/overlay/OverlayLayout.h
     src/overlay/OverlayLayout.cpp
-    src/scroll/ScrollEstimator.h
-    src/scroll/ScrollEstimator.cpp
-    src/scroll/ScrollTracker.h
-    src/scroll/ScrollTracker.cpp
-    src/scroll/ScrollOcrReuse.h
-    src/scroll/ScrollOcrReuse.cpp
     src/overlay/ParagraphAnchor.h
     src/overlay/ParagraphAnchor.cpp
     src/overlay/TextFlow.h
@@ -147,6 +141,12 @@ endif()
 
 # --- Module OCR (static lib) — Detection (PP-OCR DB) + Recognition (PP-OCR CTC) ---
 add_library(ez_ocr STATIC
+    src/scroll/ScrollEstimator.h
+    src/scroll/ScrollEstimator.cpp
+    src/scroll/ScrollTracker.h
+    src/scroll/ScrollTracker.cpp
+    src/scroll/ScrollOcrReuse.h
+    src/scroll/ScrollOcrReuse.cpp
     src/ocr/OcrTypes.h
     src/ocr/OcrScheduler.h
     src/ocr/OcrScheduler.cpp
@@ -299,9 +299,9 @@ if(WIN32)
     )
     target_include_directories(wgc_capture_helper PRIVATE src)
     target_link_libraries(wgc_capture_helper PRIVATE user32 gdi32 d3d11 dxgi runtimeobject)
-    set_target_properties(wgc_capture_helper PROPERTIES
-        WIN32_EXECUTABLE OFF
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>")
+    # Để helper cạnh EZTranslator.exe ở cả Ninja single-config lẫn multi-config.
+    # WgcWindowCapture::helperPath() tìm đúng vị trí này lúc chạy.
+    set_target_properties(wgc_capture_helper PROPERTIES WIN32_EXECUTABLE OFF)
 
     add_dependencies(EZTranslator wgc_capture_helper)
 endif()
@@ -452,6 +452,11 @@ set_target_properties(frame_noise_probe PROPERTIES WIN32_EXECUTABLE OFF AUTOMOC 
 find_package(Qt6 COMPONENTS Test QUIET)
 if(Qt6Test_FOUND)
     enable_testing()
+
+    add_executable(test_scroll_ocr_reuse tests/test_scroll_ocr_reuse.cpp)
+    target_link_libraries(test_scroll_ocr_reuse PRIVATE ez_ocr Qt6::Test)
+    set_target_properties(test_scroll_ocr_reuse PROPERTIES WIN32_EXECUTABLE FALSE)
+    add_test(NAME test_scroll_ocr_reuse COMMAND test_scroll_ocr_reuse)
 
     add_executable(test_ocr_mailbox
         tests/test_ocr_mailbox.cpp

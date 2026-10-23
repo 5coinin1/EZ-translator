@@ -175,22 +175,73 @@ void OcrWorker::load(const EZTranslator::OcrOptions& options)
     emit loaded(true, m_engine.providerName(), QString());
 }
 
+void OcrWorker::noteRegionRequest(const QString& id, quint64 token)
+{
+    std::lock_guard<std::mutex> lock(m_regionTokensMutex);
+    m_regionTokens.insert(id, token);
+}
+
 void OcrWorker::recognizeRegion(const QString& id, quint64 requestToken, quint64 imageHash,
-                                qint64 queuedAtMs, const QImage& image)
+                                qint64 queuedAtMs, const QImage& image, bool scrollReuse)
 {
     m_pendingRequests.fetch_sub(1);
 
     const qint64 startedAtMs = EZTranslator::ocrMonotonicMs();
-    const QList<EZTranslator::OcrTextBox> boxes = m_engine.recognize(image);
+    const auto cancelled = [this, id, requestToken]() {
+        std::lock_guard<std::mutex> lock(m_regionTokensMutex);
+        return m_regionTokens.value(id, 0) != requestToken;
+    };
+    if (cancelled()) {
+        qInfo() << "[OCR_METRIC] path=region action=cancelled-before-start request=" << requestToken;
+        emit regionFinished(id, requestToken);
+        return;
+    }
+    const qint64 computeStartedAtMs = EZTranslator::ocrMonotonicMs();
+    QList<EZTranslator::OcrTextBox> boxes;
+    bool incremental = false;
+    if (scrollReuse && m_scrollReuse.contains(id) && !image.isNull()) {
+        ScrollOcrReuse candidate = m_scrollReuse.value(id);
+        const auto reused = candidate.tryIncremental(image, image.rect(),
+            [this, &cancelled](const QImage& band) {
+                return cancelled() ? QList<EZTranslator::OcrTextBox>{}
+                                   : m_engine.recognize(band, cancelled);
+            });
+        if (reused.ok && !cancelled()) {
+            boxes = reused.boxes;
+            m_scrollReuse.insert(id, std::move(candidate));
+            incremental = true;
+            qInfo().noquote() << "[OCR_SCROLL] region=" << id << "dy=" << reused.dy
+                              << "score=" << reused.score << "boxes=" << boxes.size();
+        }
+    }
+    if (!incremental) {
+        boxes = m_engine.recognize(image, cancelled);
+        if (!cancelled()) {
+            if (scrollReuse && !boxes.isEmpty()) {
+                if (m_scrollReuse.size() >= 16 && !m_scrollReuse.contains(id))
+                    m_scrollReuse.clear();
+                m_scrollReuse[id].accept(image, image.rect(), boxes);
+            } else {
+                m_scrollReuse.remove(id);
+            }
+        }
+    }
     const EZTranslator::OcrTimings timings = m_engine.lastTimings();
     qInfo().noquote() << "[OCR_METRIC] path=region"
-                      << "request=" << requestToken << "queueMs="
+                      << "request=" << requestToken << "mode="
+                      << (incremental ? "scroll-band" : "full") << "queueMs="
                       << qMax<qint64>(0, startedAtMs - queuedAtMs) << "totalMs="
-                      << timings.totalMs << "detMs=" << timings.detMs << "recMs="
+                      << qMax<qint64>(0, EZTranslator::ocrMonotonicMs() - computeStartedAtMs)
+                      << "detMs=" << timings.detMs << "recMs="
                       << timings.recMs << "detCalls=" << timings.detCalls << "tiles="
                       << timings.tileCount << "altCalls=" << timings.altCalls << "boxes="
                       << timings.boxes << "recCalls=" << timings.recCalls << "recCached="
                       << timings.recCached;
+    if (cancelled()) {
+        qInfo() << "[OCR_METRIC] path=region action=cancelled request=" << requestToken;
+        emit regionFinished(id, requestToken);
+        return;
+    }
     emit regionRecognized(id, requestToken, imageHash, boxes);
 
     // Dựng plate (nền xoá chữ) trên CHÍNH luồng này, SAU khi đã phát box: plate 100-270ms KHÔNG
@@ -205,7 +256,7 @@ void OcrWorker::recognizeRegion(const QString& id, quint64 requestToken, quint64
         if (!box.rect.isEmpty())
             textRects.append(box.rect);
     }
-    if (!moreRequestsPending && !textRects.isEmpty()) {
+    if (!moreRequestsPending && !cancelled() && !textRects.isEmpty()) {
         emit regionPlateReady(id, requestToken, imageHash,
                               TextCover::cleanPlate(image, image.rect(), textRects));
     }

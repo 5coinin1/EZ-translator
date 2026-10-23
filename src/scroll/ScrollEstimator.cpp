@@ -7,12 +7,7 @@
 
 namespace {
 
-// Luminance sample used by the profile. The green channel stands in for the grey level
-// on 32 bit images: the profile is an alignment signature, not a colour measurement, and
-// skipping qGray() keeps the per pixel cost down in the hottest loop of the tracker.
-// Luminance sample for the profile. The green channel stands in for the grey level on
-// 32 bit images: the profile is an alignment signature, not a colour measurement, and
-// skipping qGray() keeps the per pixel cost down in the hottest loop of the tracker.
+// Luminance sample for the alignment profile.
 inline int grayAt(const QImage &image, int x, int y, bool thirtyTwoBit)
 {
     const uchar *line = image.constScanLine(y);
@@ -186,11 +181,9 @@ double bestShift(const QList<double> &a, const QList<double> &b, int maxShift, i
     sa.build(a);
     sb.build(b);
 
-    // Coarse to fine: a wide window is scanned with a stride, then only the best few
-    // candidates are refined at full resolution. Searching every shift directly is
-    // O(limit * n), which is the dominant cost of the whole tracking path.
+    // Inspect every integer shift. A coarse stride can miss a narrow but exact
+    // alignment peak, causing a true scroll to fall back to full OCR.
     constexpr double kScoreSlack = 0.005;
-    const int stride = limit > 24 ? 4 : 1;
 
     // One slot per shift: shifts are contiguous, so an array keyed by (s + limit) keeps
     // evaluation and selection trivial (-2 marks "not evaluated yet").
@@ -203,23 +196,8 @@ double bestShift(const QList<double> &a, const QList<double> &b, int maxShift, i
             scoreAt(s) = alignmentScore(sa, sb, s, minOverlap);
     };
 
-    for (int s = -limit; s <= limit; s += stride)
+    for (int s = -limit; s <= limit; ++s)
         evaluate(s);
-
-    // Refine only around the coarse candidates that could still win.
-    if (stride > 1) {
-        double coarseBest = kUnused;
-        for (int s = -limit; s <= limit; s += stride)
-            coarseBest = std::max(coarseBest, scoreAt(s));
-        for (int s = -limit; s <= limit; s += stride) {
-            if (scoreAt(s) < coarseBest - kScoreSlack)
-                continue;
-            const int from = std::max(-limit, s - stride);
-            const int to = std::min(limit, s + stride);
-            for (int refined = from; refined <= to; ++refined)
-                evaluate(refined);
-        }
-    }
 
     double bestScore = kUnused;
     int bestCandidate = -limit;
@@ -329,8 +307,8 @@ ScrollOffset matchProfile(const GrayProfile &previous, const GrayProfile &curren
     // signal usually can: this is what keeps low contrast pages and pages with a
     // background gradient trackable.
     if (!offset.valid && !previous.edgeRows.isEmpty() && !current.edgeRows.isEmpty()) {
-        const ScrollOffset gradient = matchSignal(previous.edgeRows, previous.edgeCols,
-                                                  current.edgeRows, current.edgeCols, maxShift,
+        const ScrollOffset gradient = matchSignal(previous.edgeRows, previous.cols,
+                                                  current.edgeRows, current.cols, maxShift,
                                                   minScore, preferredShift);
         if (gradient.score > offset.score) {
             offset = gradient;

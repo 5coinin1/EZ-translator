@@ -1,9 +1,12 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
+#include <QHash>
 
 #include "ocr/OcrEngine.h"
 #include "ocr/OcrTypes.h"
+#include "scroll/ScrollOcrReuse.h"
 
 #include <QImage>
 #include <QList>
@@ -34,12 +37,13 @@ public slots:
 
     /** OCR một vùng (ảnh ROI) → phát kết quả kèm token/hash của đúng request. */
     void recognizeRegion(const QString& id, quint64 requestToken, quint64 imageHash,
-                         qint64 queuedAtMs, const QImage& image);
+                         qint64 queuedAtMs, const QImage& image, bool scrollReuse);
 
     /** Luồng UI gọi NGAY TRƯỚC khi xếp `recognizeRegion` vào hàng đợi: worker dùng bộ đếm này để
      *  biết còn yêu cầu nào đang chờ không — lúc cuộn thì BỎ dựng plate (bản cho khung cũ vô ích
      *  và làm kết quả OCR mới phải chờ sau nó). */
     void noteRequestQueued() { ++m_pendingRequests; }
+    void noteRegionRequest(const QString& id, quint64 token);
 
     /**
      * @brief OCR ĐỒNG BỘ, trả kết quả trực tiếp — cho đường OCR TĂNG DẦN khi cuộn.
@@ -78,6 +82,9 @@ private:
     /// Số yêu cầu OCR VÙNG đã xếp hàng nhưng chưa chạy (luồng UI tăng, worker giảm). Dùng để bỏ
     /// dựng plate khi còn yêu cầu mới đang chờ (xem recognizeRegion).
     std::atomic<int> m_pendingRequests{0};
+    std::mutex m_regionTokensMutex;
+    QHash<QString, quint64> m_regionTokens;
+    QHash<QString, ScrollOcrReuse> m_scrollReuse;
 };
 
 } // namespace EZTranslator

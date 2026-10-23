@@ -2487,7 +2487,10 @@ void AppController::queueRegionOcr(const QString& regionId, quint64 requestToken
         return;
 
     const EZTranslator::OcrRegionMailbox::SubmitResult result = m_regionOcrMailbox.submit(
-        regionId, EZTranslator::OcrRegionMailbox::Request{image, requestToken, imageHash});
+        regionId, EZTranslator::OcrRegionMailbox::Request{
+                      image, requestToken, imageHash,
+                      m_settings.novelMode || m_regionNovelParagraphs.contains(regionId)});
+    m_ocrWorker->noteRegionRequest(regionId, requestToken);
     if (result == EZTranslator::OcrRegionMailbox::SubmitResult::Coalesced) {
         qInfo() << "[OCR_METRIC] path=region action=coalesced region=" << regionId
                 << "request=" << requestToken;
@@ -2517,7 +2520,7 @@ void AppController::dispatchNextRegionOcr()
             m_ocrWorker, "recognizeRegion", Qt::QueuedConnection,
             Q_ARG(QString, regionId), Q_ARG(quint64, request.requestToken),
             Q_ARG(quint64, request.imageHash), Q_ARG(qint64, queuedAtMs),
-            Q_ARG(QImage, request.image));
+            Q_ARG(QImage, request.image), Q_ARG(bool, request.scrollReuse));
         if (queued)
             return;
 

@@ -10,7 +10,8 @@ constexpr int kProfileStep = 8;
 
 // Correlation threshold on the [0,1] normalized score. Below this the frame is not
 // reused at all and a full OCR runs instead.
-constexpr double kMinScore = 0.85;
+constexpr double kMinScore = 0.96;
+constexpr int kBandPadding = 48;
 } // namespace
 
 void ScrollOcrReuse::reset()
@@ -37,7 +38,8 @@ ScrollOcrReuse::IncrementalResult ScrollOcrReuse::tryIncremental(const QImage &f
         return result;
 
     const GrayProfile current = grayProfile(frame, rect, kProfileStep, /*withGradients=*/true);
-    if (current.isEmpty())
+    if (current.isEmpty() || current.rows.size() != m_profile.rows.size()
+        || current.cols.size() != m_profile.cols.size())
         return result;
 
     // Text pages are noisy (antialiasing, subpixel shifts), so the match is allowed to
@@ -53,8 +55,8 @@ ScrollOcrReuse::IncrementalResult ScrollOcrReuse::tryIncremental(const QImage &f
                              ? std::max(12, int(std::abs(predicted) + 24.0))
                              : std::max(rect.width(), rect.height()) / 2;
     const ScrollOffset offset = matchProfile(m_profile, current, maxShift, kMinScore, predicted);
-    if (offset.valid
-        && (std::abs(offset.dx) > rect.width() / 2 || std::abs(offset.dy) > rect.height() / 2))
+    if (!offset.valid || std::abs(offset.dx) > 2
+        || std::abs(offset.dy) > rect.height() / 3)
         return result;
 
     // Filter the noisy per-frame measurement through the motion model. It smooths the
@@ -62,14 +64,15 @@ ScrollOcrReuse::IncrementalResult ScrollOcrReuse::tryIncremental(const QImage &f
     // every frame) and keeps the tracking alive for the frame or two where the matcher
     // cannot align. A residual beyond a third of the region is a page jump, not a
     // scroll, and restarts the model.
+    ScrollTracker tracker = m_tracker;
     const ScrollTracker::Step step =
-        m_tracker.update(offset.valid ? offset.dyExact : 0.0, offset.valid, rect.height() / 3.0);
+        tracker.update(offset.dyExact, true, rect.height() / 3.0);
     if (!step.valid)
         return result;
 
     const int appliedDy = step.dy;
     const int appliedDx = int(std::lround(offset.dxExact));
-    if (appliedDy == 0 && appliedDx == 0)
+    if (appliedDy == 0 || appliedDx != 0)
         return result;
 
     QList<OcrTextBox> merged = m_boxes;
@@ -78,21 +81,32 @@ ScrollOcrReuse::IncrementalResult ScrollOcrReuse::tryIncremental(const QImage &f
 
     QList<QRect> bands;
     if (appliedDy > 0)
-        bands.append(QRect(0, 0, rect.width(), appliedDy));
+        bands.append(QRect(0, 0, rect.width(), qMin(rect.height(), appliedDy + kBandPadding)));
     else if (appliedDy < 0)
-        bands.append(QRect(0, rect.height() + appliedDy, rect.width(), -appliedDy));
-    if (appliedDx > 0)
-        bands.append(QRect(0, 0, appliedDx, rect.height()));
-    else if (appliedDx < 0)
-        bands.append(QRect(rect.width() + appliedDx, 0, -appliedDx, rect.height()));
+        bands.append(QRect(0, qMax(0, rect.height() + appliedDy - kBandPadding),
+                           rect.width(), qMin(rect.height(), -appliedDy + kBandPadding)));
+
+    // Replace lines near the exposed edge too: a line may have been clipped on the
+    // previous frame and must be recognized again once fully visible.
+    for (const QRect &band : bands) {
+        for (auto it = merged.begin(); it != merged.end();) {
+            if (it->rect.intersects(band.translated(rect.topLeft())))
+                it = merged.erase(it);
+            else
+                ++it;
+        }
+    }
 
     for (const QRect &band : bands) {
         const QRect absolute = band.translated(rect.topLeft());
         const QImage crop = frame.copy(absolute);
         const QList<OcrTextBox> found = bandOcr(crop);
+        if (found.isEmpty())
+            return result;
         for (OcrTextBox box : found) {
             box.rect.translate(absolute.topLeft());
-            merged.append(box);
+            if (rect.contains(box.rect))
+                merged.append(box);
         }
     }
 
@@ -100,7 +114,7 @@ ScrollOcrReuse::IncrementalResult ScrollOcrReuse::tryIncremental(const QImage &f
     for (const OcrTextBox &box : merged) {
         if (box.text.isEmpty())
             continue;
-        if (rect.contains(box.rect.center()))
+        if (rect.contains(box.rect))
             inside.append(box);
     }
 
@@ -118,5 +132,6 @@ ScrollOcrReuse::IncrementalResult ScrollOcrReuse::tryIncremental(const QImage &f
 
     m_profile = current;
     m_boxes = inside;
+    m_tracker = tracker;
     return result;
 }
