@@ -178,7 +178,8 @@ bool OcrRecognizer::load(OcrRuntime& runtime, const OcrOptions& options, QString
     }
 
     m_impl->session = runtime.createSession(m_impl->options.recModelPath,
-                                            m_impl->options.recThreads, true, error);
+                                            m_impl->options.recThreads,
+                                            m_impl->options.interOpThreads, true, error);
     if (!m_impl->session)
         return false;
 
@@ -401,8 +402,12 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
     // đồng thời trên CPU). GPU: đi đường batch phía dưới (DirectML không cho Run song song).
     int recWorkers = 0;
     if (!gpuProvider) {
-        const unsigned hw = std::thread::hardware_concurrency();
-        recWorkers = int(std::max(2u, std::min(6u, hw / 2)));
+        if (impl.options.recWorkers > 0) {
+            recWorkers = impl.options.recWorkers;
+        } else {
+            const unsigned hw = std::thread::hardware_concurrency();
+            recWorkers = int(std::max(2u, std::min(4u, hw / 4)));
+        }
     }
     if (!batch && recWorkers > 1 && pending.size() >= 2) {
         std::atomic<size_t> cursor{0};

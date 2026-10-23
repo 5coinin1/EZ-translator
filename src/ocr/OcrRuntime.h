@@ -63,7 +63,8 @@ public:
      * @return nullptr + @p error nếu nạp thất bại.
      */
     [[nodiscard]] std::shared_ptr<OcrSession> createSession(const QString& modelPath,
-                                                            int threads, bool sequential,
+                                                            int intraThreads, int interThreads,
+                                                            bool sequential,
                                                             QString* error = nullptr);
 
 private:

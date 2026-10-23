@@ -17,14 +17,15 @@
 #include "ocr/OcrDetector.h"
 #include "ocr/OcrEngine.h"
 #include "ocr/OcrRecognizer.h"
+#include "ocr/OcrThreadBudget.h"
 
 using namespace EZTranslator;
 
 namespace {
 
-QImage makeScreen()
+QImage makeScreen(const QSize& size = QSize(1280, 720))
 {
-    QImage screen(1280, 720, QImage::Format_RGB32);
+    QImage screen(size, QImage::Format_RGB32);
     screen.fill(QColor(210, 214, 220));
     QPainter painter(&screen);
     painter.setPen(Qt::black);
@@ -38,7 +39,8 @@ QImage makeScreen()
         QStringLiteral("End of the sample text for the benchmark"),
     };
     for (int i = 0; i < lines.size(); ++i)
-        painter.drawText(QRect(40, 60 + i * 100, 1200, 60), Qt::AlignLeft | Qt::AlignVCenter,
+        painter.drawText(QRect(40, 60 + i * (size.height() / 7), size.width() - 80, 60),
+                         Qt::AlignLeft | Qt::AlignVCenter,
                          lines.at(i));
     return screen;
 }
@@ -70,6 +72,13 @@ int main(int argc, char** argv)
     options.lineCacheLimit = 0; // đo rec THẬT (không lấy từ cache nội dung dòng)
     const QByteArray gpuEnv = qgetenv("EZ_OCR_USE_GPU");
     options.useGpu = gpuEnv.isEmpty() ? true : (gpuEnv != "0");
+    const OcrThreadBudget budget = chooseOcrThreadBudget(options.useGpu, false);
+    options.threads = budget.detectorIntraOp;
+    options.recThreads = budget.recognizerIntraOp;
+    options.recWorkers = budget.recognizerWorkers;
+    options.interOpThreads = budget.interOp;
+    qInfo() << "thread budget: det=" << options.threads << "rec=" << options.recThreads
+            << "workers=" << options.recWorkers << "inter=" << options.interOpThreads;
 
     OcrEngine engine;
     QString error;
@@ -153,6 +162,49 @@ int main(int argc, char** argv)
                    << "," << timings.recCached << "\n";
         }
         qInfo("pipeline hover #%d: total=%.1f det=%.1f rec=%.1f boxes=%d calls=%d cached=%d",
+              i + 1, timings.totalMs, timings.detMs, timings.recMs, int(result.size()),
+              timings.recCalls, timings.recCached);
+    }
+
+    // End-to-end ROI nhiều dòng: workload này mới kích hoạt recWorkers CPU.
+    for (int i = 0; i < 3; ++i) {
+        const QElapsedTimer pipelineTimer = [] {
+            QElapsedTimer value;
+            value.start();
+            return value;
+        }();
+        const QList<OcrTextBox> result = engine.recognize(screen);
+        const OcrTimings timings = engine.lastTimings();
+        if (csv) {
+            csvOut << "pipeline-roi," << (i + 1) << "," << engine.providerName() << ","
+                   << msSince(pipelineTimer) << "," << timings.detMs << "," << timings.recMs
+                   << "," << timings.detCalls << "," << timings.tileCount << ","
+                   << timings.altCalls << "," << result.size() << "," << timings.recCalls
+                   << "," << timings.recCached << "\n";
+        }
+        qInfo("pipeline ROI #%d: total=%.1f det=%.1f rec=%.1f boxes=%d calls=%d cached=%d",
+              i + 1, timings.totalMs, timings.detMs, timings.recMs, int(result.size()),
+              timings.recCalls, timings.recCached);
+    }
+
+    // Full-window workload kích hoạt tiled path trên ảnh >=1600x900.
+    const QImage largeScreen = makeScreen(QSize(1920, 1080));
+    for (int i = 0; i < 3; ++i) {
+        const QElapsedTimer pipelineTimer = [] {
+            QElapsedTimer value;
+            value.start();
+            return value;
+        }();
+        const QList<OcrTextBox> result = engine.recognize(largeScreen);
+        const OcrTimings timings = engine.lastTimings();
+        if (csv) {
+            csvOut << "pipeline-large," << (i + 1) << "," << engine.providerName() << ","
+                   << msSince(pipelineTimer) << "," << timings.detMs << "," << timings.recMs
+                   << "," << timings.detCalls << "," << timings.tileCount << ","
+                   << timings.altCalls << "," << result.size() << "," << timings.recCalls
+                   << "," << timings.recCached << "\n";
+        }
+        qInfo("pipeline large #%d: total=%.1f det=%.1f rec=%.1f boxes=%d calls=%d cached=%d",
               i + 1, timings.totalMs, timings.detMs, timings.recMs, int(result.size()),
               timings.recCalls, timings.recCached);
     }

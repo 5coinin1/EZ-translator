@@ -98,6 +98,16 @@ File:
 - Ghi CPU utilization, working set/peak RAM và cache hit rate theo phiên chạy.
 - Kiểm tra accuracy với ground truth.
 
+## Số đo synthetic đã chạy bổ sung
+
+Ngày 2026-10-23, `EZ_OCR_USE_GPU=0`, model hiện tại, warm process, không cache recognition:
+
+- Hover pipeline: median khoảng `188 ms` trên 3 lượt.
+- ROI 1280x720, 6 dòng: median khoảng `628 ms` trên 3 lượt.
+- Full-window 1920x1080, tiled baseline: median khoảng `1144 ms` trên 3 lượt.
+
+Đây là số đo synthetic để kiểm tra instrumentation và làm mốc A/B; chưa phải baseline game thật, chưa có CPU utilization/working-set/CER.
+
 ## Cách chạy benchmark sau khi đóng executable đang khóa
 
 ```text

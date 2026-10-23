@@ -116,7 +116,8 @@ bool OcrDetector::load(OcrRuntime& runtime, const OcrOptions& options, QString* 
 
     m_impl->options = options;
     // Detector là một run mỗi frame → vài intra-op thread giúp ích.
-    m_impl->session = runtime.createSession(options.detModelPath, options.threads, true, error);
+    m_impl->session = runtime.createSession(options.detModelPath, options.threads,
+                                            options.interOpThreads, true, error);
     m_impl->loaded = m_impl->session != nullptr;
     return m_impl->loaded;
 }

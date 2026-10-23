@@ -1,4 +1,5 @@
 #include "translation/CTranslate2Translator.h"
+#include "translation/TranslationThreadBudget.h"
 
 #include <QCoreApplication>
 #include <QDeadlineTimer>
@@ -223,7 +224,8 @@ bool CTranslate2Translator::ensureStarted(QString* error)
 
     markFailed(QString());
     m_process.setWorkingDirectory(QFileInfo(m_script).absolutePath());
-    const int threads = qMax(1, QThread::idealThreadCount() / 2);
+    const int threads = chooseTranslationThreads();
+    qInfo() << "[Translate] CT2 thread budget =" << threads;
     m_process.start(m_python,
                     {m_script, m_modelDir, m_computeType, QString::number(threads), m_sourceLang,
                      m_targetLang});

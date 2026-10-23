@@ -160,8 +160,9 @@ QString OcrRuntime::configure(bool useGpu, QString* error)
     return m_impl->provider;
 }
 
-std::shared_ptr<OcrSession> OcrRuntime::createSession(const QString& modelPath, int threads,
-                                                      bool sequential, QString* error)
+std::shared_ptr<OcrSession> OcrRuntime::createSession(const QString& modelPath, int intraThreads,
+                                                      int interThreads, bool sequential,
+                                                      QString* error)
 {
     if (!m_impl)
         return nullptr;
@@ -169,8 +170,10 @@ std::shared_ptr<OcrSession> OcrRuntime::createSession(const QString& modelPath, 
     const auto buildOptions = [&](bool useProvider) {
         Ort::SessionOptions options;
         options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-        if (threads > 0)
-            options.SetIntraOpNumThreads(threads);
+        if (intraThreads > 0)
+            options.SetIntraOpNumThreads(intraThreads);
+        if (interThreads > 0)
+            options.SetInterOpNumThreads(interThreads);
         if (useProvider) {
             // GPU (DML/CUDA) thực thi kernel tuần tự; song song chỉ gây tranh chấp.
             options.SetExecutionMode(sequential ? ExecutionMode::ORT_SEQUENTIAL

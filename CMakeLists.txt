@@ -152,6 +152,8 @@ add_library(ez_ocr STATIC
     src/ocr/OcrScheduler.cpp
     src/ocr/OcrRegionMailbox.h
     src/ocr/OcrRegionMailbox.cpp
+    src/ocr/OcrThreadBudget.h
+    src/ocr/OcrThreadBudget.cpp
     src/ocr/OcrWorker.h
     src/ocr/OcrWorker.cpp
     src/ocr/OcrRuntime.h
@@ -191,6 +193,10 @@ add_library(ez_translate STATIC
     src/translation/DocumentTranslator.h
     src/translation/DocumentTranslator.cpp
     src/translation/TranslationConfig.h
+    src/translation/TranslationThreadBudget.h
+    src/translation/TranslationThreadBudget.cpp
+    src/translation/TranslationCircuitBreaker.h
+    src/translation/TranslationCircuitBreaker.cpp
     src/translation/TranslationProbe.h
     src/translation/TranslationProbe.cpp
     src/translation/GoogleTranslator.h
@@ -369,6 +375,16 @@ if(WIN32)
             "$<TARGET_FILE_DIR:ocr_bench>")
 endif()
 
+# --- OCR model evaluation harness: image + sidecar .txt -> CSV CER/exact/timing ---
+add_executable(ocr_model_eval tools/ocr_model_eval.cpp)
+target_link_libraries(ocr_model_eval PRIVATE ez_ocr Qt6::Core Qt6::Gui)
+set_target_properties(ocr_model_eval PROPERTIES WIN32_EXECUTABLE OFF)
+if(WIN32)
+    add_custom_command(TARGET ocr_model_eval POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${ORT_RUNTIME_DLLS}
+            "$<TARGET_FILE_DIR:ocr_model_eval>")
+endif()
+
 # --- Scroll cache bench (console) — đo "cuộn 1 dòng" trên engine dịch thật ---
 add_executable(scroll_cache_bench tools/scroll_cache_bench.cpp)
 target_link_libraries(scroll_cache_bench PRIVATE ez_translate)
@@ -446,6 +462,28 @@ if(Qt6Test_FOUND)
     target_link_libraries(test_ocr_mailbox PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
     set_target_properties(test_ocr_mailbox PROPERTIES WIN32_EXECUTABLE FALSE)
     add_test(NAME test_ocr_mailbox COMMAND test_ocr_mailbox)
+
+    add_executable(test_ocr_thread_budget
+        tests/test_ocr_thread_budget.cpp
+        src/ocr/OcrThreadBudget.h
+        src/ocr/OcrThreadBudget.cpp
+        src/translation/TranslationThreadBudget.h
+        src/translation/TranslationThreadBudget.cpp
+    )
+    target_include_directories(test_ocr_thread_budget PRIVATE src)
+    target_link_libraries(test_ocr_thread_budget PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+    set_target_properties(test_ocr_thread_budget PROPERTIES WIN32_EXECUTABLE FALSE)
+    add_test(NAME test_ocr_thread_budget COMMAND test_ocr_thread_budget)
+
+    add_executable(test_translation_qos
+        tests/test_translation_qos.cpp
+        src/translation/TranslationCircuitBreaker.h
+        src/translation/TranslationCircuitBreaker.cpp
+    )
+    target_include_directories(test_translation_qos PRIVATE src)
+    target_link_libraries(test_translation_qos PRIVATE Qt6::Core Qt6::Test)
+    set_target_properties(test_translation_qos PROPERTIES WIN32_EXECUTABLE FALSE)
+    add_test(NAME test_translation_qos COMMAND test_translation_qos)
 
     add_executable(test_region_manager
         tests/test_region_manager.cpp

@@ -35,6 +35,8 @@ struct OcrOptions
     bool binarize{false}; ///< thử nghiệm: nhị phân hoá (Otsu) ảnh vùng trước khi detect/rec
     int  threads{0};      ///< intra-op cho detector (0 = ORT tự chọn)
     int  recThreads{1};   ///< intra-op cho recognition (song song nằm ở batch)
+    int  recWorkers{0};   ///< số worker recognition CPU (0 = theo budget phần cứng)
+    int  interOpThreads{1}; ///< inter-op của detector/recognizer (1 = không tranh task)
 
     // ── Detection ────────────────────────────────────────────────────────────
     float detThreshold{0.3f};  ///< ngưỡng xác suất "là chữ"

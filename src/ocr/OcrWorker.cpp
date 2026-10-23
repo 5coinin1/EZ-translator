@@ -168,6 +168,9 @@ void OcrWorker::load(const EZTranslator::OcrOptions& options)
         emit loaded(false, QString(), error);
         return;
     }
+    qInfo() << "[OCR] thread budget provider=" << m_engine.providerName()
+            << "detIntra=" << options.threads << "recIntra=" << options.recThreads
+            << "recWorkers=" << options.recWorkers << "interOp=" << options.interOpThreads;
     warmUp();
     emit loaded(true, m_engine.providerName(), QString());
 }
@@ -365,7 +368,11 @@ void OcrWorker::probeHover(const QString& id, const QImage& band, const QPoint& 
 
     }
 
-    // QUAY VỀ BẢN CŨ: đơn vị = DÒNG con trỏ, dải cố định; không mở rộng vùng/đoạn nữa.
+    const bool clippedByBand = !lineRect.isNull()
+                               && (lineRect.left() <= 2 || lineRect.top() <= 2
+                                   || lineRect.right() >= band.width() - 3
+                                   || lineRect.bottom() >= band.height() - 3);
+
     qInfo().noquote() << "[OCR_METRIC] path=hover" << "request=" << id << "queueMs="
                       << qMax<qint64>(0, startedAtMs - queuedAtMs) << "totalMs="
                       << (EZTranslator::ocrMonotonicMs() - startedAtMs) << "detMs="
@@ -376,7 +383,7 @@ void OcrWorker::probeHover(const QString& id, const QImage& band, const QPoint& 
     qDebug() << "[Hover] dải" << band.width() << "x" << band.height() << "→ đọc"
              << lineRect.width() << "x" << lineRect.height() << text.left(40);
 
-    emit hoverProbed(id, text, lineRect, false);
+    emit hoverProbed(id, text, lineRect, clippedByBand);
 }
 
 } // namespace EZTranslator
