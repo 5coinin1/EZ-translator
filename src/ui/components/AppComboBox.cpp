@@ -8,6 +8,12 @@ AppComboBox::AppComboBox(QWidget* parent) : QComboBox(parent)
 {
     setMinimumHeight(38);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // Tiêu đề cửa sổ / tên vùng có thể rất dài. Nếu để QComboBox lấy sizeHint
+    // theo nội dung dài nhất thì minimumSizeHint của cửa sổ cũng phình theo và
+    // người dùng không thể thu nhỏ cửa sổ. Chỉ lấy độ dài tối thiểu cố định,
+    // phần chữ dài sẽ được elide khi hiển thị.
+    setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    setMinimumContentsLength(12);
 }
 
 void AppComboBox::paintEvent(QPaintEvent* event)

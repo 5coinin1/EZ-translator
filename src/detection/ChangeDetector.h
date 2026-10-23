@@ -27,7 +27,8 @@ public:
         int maxDistance{4}; ///< Khoảng cách Hamming tối đa vẫn coi là "không đổi"
     };
 
-    explicit ChangeDetector(Options options = {}) : m_options(options) {}
+    ChangeDetector() = default;
+    explicit ChangeDetector(Options options) : m_options(options) {}
 
     /**
      * @brief So sánh nội dung vùng @p regionId với lần gọi trước.

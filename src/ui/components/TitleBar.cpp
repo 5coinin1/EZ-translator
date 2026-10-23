@@ -20,6 +20,8 @@ TitleBar::TitleBar(QWidget* parent, bool showMaximize)
     auto* logo = new QLabel("Aあ", this);
     logo->setFixedSize(34, 34);
     logo->setAlignment(Qt::AlignCenter);
+    // Nhường chuột cho TitleBar để kéo cửa sổ được từ cả vùng logo/chữ.
+    logo->setAttribute(Qt::WA_TransparentForMouseEvents);
     logo->setStyleSheet(QString(R"(
         background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
                     stop:0 #2563eb, stop:1 #3b82f6);
@@ -31,6 +33,7 @@ TitleBar::TitleBar(QWidget* parent, bool showMaximize)
 
     // ── Title block ───────────────────────────────────────
     auto* titleBlock = new QWidget(this);
+    titleBlock->setAttribute(Qt::WA_TransparentForMouseEvents);
     auto* titleLay   = new QVBoxLayout(titleBlock);
     titleLay->setContentsMargins(0, 0, 0, 0);
     titleLay->setSpacing(1);
@@ -48,6 +51,7 @@ TitleBar::TitleBar(QWidget* parent, bool showMaximize)
 
     // ── Slogan (right-aligned) ────────────────────────────
     auto* slogan = new QLabel("Play in any language.", this);
+    slogan->setAttribute(Qt::WA_TransparentForMouseEvents);
     slogan->setStyleSheet(QString("color: %1; font-size: 9pt; font-style: italic;")
                               .arg(StyleTheme::ColorPlaceholder));
 
@@ -99,11 +103,14 @@ void TitleBar::setShowMaximize(bool show)
 
 void TitleBar::mousePressEvent(QMouseEvent* event)
 {
-    if (event->button() == Qt::LeftButton) {
-        m_dragging = true;
-        m_dragStartPos = event->globalPosition().toPoint() - window()->frameGeometry().topLeft();
-        event->accept();
+    if (event->button() != Qt::LeftButton) {
+        QWidget::mousePressEvent(event);
+        return;
     }
+
+    m_dragging = true;
+    m_dragStartPos = event->globalPosition().toPoint() - window()->frameGeometry().topLeft();
+    event->accept();
 }
 
 void TitleBar::mouseMoveEvent(QMouseEvent* event)

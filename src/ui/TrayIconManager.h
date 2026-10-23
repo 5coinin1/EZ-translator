@@ -14,6 +14,9 @@ public:
 
     void updateState(bool isRunning);
 
+    /** Phím tắt đang gán cho "Bắt đầu/Dừng dịch" — hiển thị trên menu khay. */
+    void setHotkeyText(const QString& keyText);
+
 signals:
     void requestShowMainWindow();
     void requestToggleTranslation();
@@ -26,5 +29,6 @@ private:
     QMenu*           m_menu{nullptr};
     QAction*         m_statusAction{nullptr};
     QAction*         m_toggleAction{nullptr};
+    QString          m_hotkeyText{QStringLiteral("F8")};
     bool             m_running{false};
 };

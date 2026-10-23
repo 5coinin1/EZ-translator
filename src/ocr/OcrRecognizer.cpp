@@ -10,8 +10,10 @@
 #include <QTextStream>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <thread>
 #include <vector>
 
 namespace EZTranslator {
@@ -321,10 +323,112 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
 
     const bool gpuProvider = impl.providerName == QLatin1String("DirectML")
                              || impl.providerName == QLatin1String("CUDA");
+    // Batch chỉ lợi trên GPU (một Run gộp nhiều dòng); trên CPU nó chậm hơn nên
+    // mặc định tắt và chạy các dòng song song thay vì gộp.
     const bool batchEnabled = !impl.options.disableRecBatch || gpuProvider;
     const bool batch = impl.dynamicBatch && pending.size() > 1 && batchEnabled;
     const size_t chunk = batch ? size_t(gpuProvider ? 48 : 8) : 1;
     impl.timings.recBatched = batch;
+
+    // Ghép các đoạn chồng lấn trở lại thành text của từng box.
+    const auto mergeOverlap = [](const QString& accumulated, const QString& next) {
+        if (accumulated.isEmpty() || next.isEmpty())
+            return accumulated + next;
+        const int maxOverlap = std::min({int(accumulated.size()), int(next.size()), 32});
+        for (int k = maxOverlap; k >= 3; --k) {
+            if (accumulated.right(k) == next.left(k))
+                return accumulated + next.mid(k);
+        }
+        return accumulated + next;
+    };
+
+    const auto assembleResult = [&]() {
+        QList<OcrTextBox> out;
+        int currentBox = -1;
+        QString text;
+        float confidence = 0.0f;
+        int counted = 0;
+        const auto flush = [&]() {
+            if (currentBox >= 0 && !text.isEmpty()) {
+                OcrTextBox box = boxes[currentBox];
+                box.text = text;
+                box.confidence = counted > 0 ? confidence / counted : 0.0f;
+                out.append(box);
+            }
+            text.clear();
+            confidence = 0.0f;
+            counted = 0;
+        };
+        for (size_t i = 0; i < items.size(); ++i) {
+            if (!have[i])
+                continue;
+            if (items[i].boxIndex != currentBox) {
+                flush();
+                currentBox = items[i].boxIndex;
+            }
+            if (!outputs[i].text.isEmpty()) {
+                text = mergeOverlap(text, outputs[i].text);
+                confidence += outputs[i].confidence;
+                ++counted;
+            }
+        }
+        flush();
+        return out;
+    };
+
+    // Recognition MỘT dòng (đường song song trên CPU).
+    const auto recOne = [&](const RecItem& item, QString* text, float* confidence) -> bool {
+        const int width = item.width;
+        const size_t plane = size_t(kRecHeight) * size_t(width);
+        std::vector<float> data(size_t(3) * plane, 0.0f);
+        fillSample(data, 0, plane, width, width, item.image);
+        const std::vector<int64_t> shape = {1, 3, kRecHeight, width};
+        return impl.session->run(
+            data.data(), shape, [&](const float* logits, const std::vector<int64_t>& outShape) {
+                if (outShape.size() != 3)
+                    return;
+                *text = decodeLogits(logits, int(outShape[1]), int(outShape[2]), impl.dictionary,
+                                     confidence);
+            });
+    };
+
+    const auto recStart = Clock::now();
+
+    // CPU: không batch thì fan các dòng ra vài worker (ORT session an toàn với Run
+    // đồng thời trên CPU). GPU: đi đường batch phía dưới (DirectML không cho Run song song).
+    int recWorkers = 0;
+    if (!gpuProvider) {
+        const unsigned hw = std::thread::hardware_concurrency();
+        recWorkers = int(std::max(2u, std::min(6u, hw / 2)));
+    }
+    if (!batch && recWorkers > 1 && pending.size() >= 2) {
+        std::atomic<size_t> cursor{0};
+        std::vector<std::thread> pool;
+        pool.reserve(size_t(recWorkers));
+        for (int worker = 0; worker < recWorkers; ++worker) {
+            pool.emplace_back([&]() {
+                for (;;) {
+                    const size_t j = cursor.fetch_add(1, std::memory_order_relaxed);
+                    if (j >= pending.size())
+                        break;
+                    const size_t index = pending[j];
+                    QString text;
+                    float confidence = 0.0f;
+                    if (recOne(items[index], &text, &confidence)) {
+                        outputs[index].text = text;
+                        outputs[index].confidence = confidence;
+                        have[index] = 1;
+                        impl.lineCache.insert(keys[index], outputs[index]);
+                    }
+                }
+            });
+        }
+        for (std::thread& worker : pool)
+            worker.join();
+        impl.timings.recCalls += int(pending.size());
+        impl.timings.recMs = msSince(recStart);
+        return assembleResult();
+    }
 
     if (batch) {
         // Pad về bề rộng lớn nhất batch, nên gộp dòng ngắn với dòng dài rất phí.
@@ -333,8 +437,6 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
             return items[a].width < items[b].width;
         });
     }
-
-    const auto recStart = Clock::now();
     for (size_t start = 0; start < pending.size();) {
         size_t end = start + 1;
         if (batch) {
@@ -386,50 +488,7 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
         start = end;
     }
     impl.timings.recMs = msSince(recStart);
-
-    // Ghép các đoạn chồng lấn trở lại thành text của từng box.
-    const auto mergeOverlap = [](const QString& accumulated, const QString& next) {
-        if (accumulated.isEmpty() || next.isEmpty())
-            return accumulated + next;
-        const int maxOverlap = std::min({int(accumulated.size()), int(next.size()), 32});
-        for (int k = maxOverlap; k >= 3; --k) {
-            if (accumulated.right(k) == next.left(k))
-                return accumulated + next.mid(k);
-        }
-        return accumulated + next;
-    };
-
-    int currentBox = -1;
-    QString text;
-    float confidence = 0.0f;
-    int counted = 0;
-    const auto flush = [&]() {
-        if (currentBox >= 0 && !text.isEmpty()) {
-            OcrTextBox box = boxes[currentBox];
-            box.text = text;
-            box.confidence = counted > 0 ? confidence / counted : 0.0f;
-            result.append(box);
-        }
-        text.clear();
-        confidence = 0.0f;
-        counted = 0;
-    };
-    for (size_t i = 0; i < items.size(); ++i) {
-        if (!have[i])
-            continue;
-        if (items[i].boxIndex != currentBox) {
-            flush();
-            currentBox = items[i].boxIndex;
-        }
-        if (!outputs[i].text.isEmpty()) {
-            text = mergeOverlap(text, outputs[i].text);
-            confidence += outputs[i].confidence;
-            ++counted;
-        }
-    }
-    flush();
-
-    return result;
+    return assembleResult();
 }
 
 int OcrRecognizer::lineCacheSize() const

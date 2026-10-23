@@ -121,7 +121,7 @@ bool OcrDetector::load(OcrRuntime& runtime, const OcrOptions& options, QString* 
     return m_impl->loaded;
 }
 
-QList<OcrTextBox> OcrDetector::detect(const QImage& image)
+QList<OcrTextBox> OcrDetector::detect(const QImage& image, int limitSideOverride)
 {
     QList<OcrTextBox> boxes;
     if (!isLoaded() || image.isNull())
@@ -133,7 +133,8 @@ QList<OcrTextBox> OcrDetector::detect(const QImage& image)
     const int originalHeight = rgb.height();
 
     // Resize cạnh dài ≤ detLimitSide, làm tròn lên bội số 32.
-    const int detLimitSide = std::max(160, impl.options.detLimitSide);
+    const int detLimitSide =
+        std::max(160, limitSideOverride > 0 ? limitSideOverride : impl.options.detLimitSide);
     const int maxSide = std::max(originalWidth, originalHeight);
     const double scale = maxSide > detLimitSide ? double(detLimitSide) / maxSide : 1.0;
     const int resizedWidth = std::max(32, int(std::ceil(originalWidth * scale / 32.0)) * 32);

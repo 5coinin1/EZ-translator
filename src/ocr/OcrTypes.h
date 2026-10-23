@@ -30,6 +30,7 @@ struct OcrOptions
     QString dictionaryPath;
 
     bool useGpu{true};
+    bool binarize{false}; ///< thử nghiệm: nhị phân hoá (Otsu) ảnh vùng trước khi detect/rec
     int  threads{0};      ///< intra-op cho detector (0 = ORT tự chọn)
     int  recThreads{1};   ///< intra-op cho recognition (song song nằm ở batch)
 
@@ -39,7 +40,7 @@ struct OcrOptions
     int   detLimitSide{640};   ///< cạnh dài ảnh đưa vào det được resize ≤ giá trị này
 
     // ── Recognition ──────────────────────────────────────────────────────────
-    bool disableRecBatch{false}; ///< tắt batch (mặc định bật trên GPU)
+    bool disableRecBatch{true};  ///< tắt batch (mặc định; CPU không lợi, GPU tự bật)
     int  lineCacheLimit{4096};   ///< cache rec theo nội dung dòng (0 = tắt)
     int  recMaxWidth{1920};      ///< dòng dài hơn sẽ bị chia đoạn ≤ giá trị này
 };
