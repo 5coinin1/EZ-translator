@@ -272,6 +272,8 @@ private:
     QHash<QString, QList<EZTranslator::OcrTextBox>> m_regionUiBoxes;
     /// Paragraph blocks cua che do Novel/reading. Co mat = vung dang o novel mode.
     QHash<QString, QList<EZTranslator::OverlayLayout::NovelParagraph>> m_regionNovelParagraphs;
+    /// Giữ quyền thử OCR dải cuộn sau khi một frame tạm thời không còn bố cục novel.
+    QSet<QString> m_regionScrollReuseEligible;
     QHash<QString, quint64> m_regionToken; ///< token yêu cầu dịch mới nhất mỗi vùng
     quint64 m_tokenCounter{0};
     QSize m_lastFrameSize;
@@ -401,6 +403,7 @@ private:
     /// ≤4 bit nên bị coi là "không đổi" rồi bỏ qua ⇒ text cũ nằm sai vị trí mãi ("thi thoảng sai
     /// vị trí"). Profile so được ĐỘ DỊCH thật (1-2px cũng thấy) mà rất rẻ.
     QHash<QString, GrayProfile> m_regionServedProfile;
+    QHash<QString, GrayProfile> m_regionObservedProfile;
     /// Thời điểm trạng thái CHÍNH XÁC (dòng/nguồn) của vùng được ghi (chỉ đường full OCR / cache
     /// nội dung). Kết quả dịch chỉ được áp khi không có lần đổi nội dung nào mới hơn mốc này.
     QHash<QString, qint64> m_regionStateAtMs;

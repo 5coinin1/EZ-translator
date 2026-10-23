@@ -170,7 +170,8 @@ void OcrWorker::load(const EZTranslator::OcrOptions& options)
     }
     qInfo() << "[OCR] thread budget provider=" << m_engine.providerName()
             << "detIntra=" << options.threads << "recIntra=" << options.recThreads
-            << "recWorkers=" << options.recWorkers << "interOp=" << options.interOpThreads;
+            << "recWorkers=" << options.recWorkers << "interOp=" << options.interOpThreads
+            << "recMaxWidth=" << options.recMaxWidth;
     warmUp();
     emit loaded(true, m_engine.providerName(), QString());
 }
@@ -199,7 +200,8 @@ void OcrWorker::recognizeRegion(const QString& id, quint64 requestToken, quint64
     const qint64 computeStartedAtMs = EZTranslator::ocrMonotonicMs();
     QList<EZTranslator::OcrTextBox> boxes;
     bool incremental = false;
-    if (scrollReuse && m_scrollReuse.contains(id) && !image.isNull()) {
+    const bool hadScrollReference = m_scrollReuse.contains(id);
+    if (scrollReuse && hadScrollReference && !image.isNull()) {
         ScrollOcrReuse candidate = m_scrollReuse.value(id);
         const auto reused = candidate.tryIncremental(image, image.rect(),
             [this, &cancelled](const QImage& band) {
@@ -212,12 +214,21 @@ void OcrWorker::recognizeRegion(const QString& id, quint64 requestToken, quint64
             incremental = true;
             qInfo().noquote() << "[OCR_SCROLL] region=" << id << "dy=" << reused.dy
                               << "score=" << reused.score << "boxes=" << boxes.size();
+        } else if (!cancelled()) {
+            qInfo().noquote() << "[OCR_SCROLL] fallback region=" << id
+                              << "reason=" << reused.reason << "dy=" << reused.dy
+                              << "dx=" << reused.dx << "score=" << reused.score;
         }
     }
     if (!incremental) {
         boxes = m_engine.recognize(image, cancelled);
         if (!cancelled()) {
-            if (scrollReuse && !boxes.isEmpty()) {
+            // Luôn giữ mốc của một lượt full OCR thành công. Quyền sử dụng mốc
+            // vẫn do scrollReuse quyết định ở lượt kế tiếp, nhưng không nên bỏ
+            // mốc chỉ vì lượt đầu chưa kịp nhận diện bố cục novel. Nếu bỏ mốc,
+            // pipeline phải chạy thêm một lượt full 2-5 giây trước khi có thể
+            // thử OCR dải cuộn.
+            if (!boxes.isEmpty()) {
                 if (m_scrollReuse.size() >= 16 && !m_scrollReuse.contains(id))
                     m_scrollReuse.clear();
                 m_scrollReuse[id].accept(image, image.rect(), boxes);
@@ -232,7 +243,9 @@ void OcrWorker::recognizeRegion(const QString& id, quint64 requestToken, quint64
                       << (incremental ? "scroll-band" : "full") << "queueMs="
                       << qMax<qint64>(0, startedAtMs - queuedAtMs) << "totalMs="
                       << qMax<qint64>(0, EZTranslator::ocrMonotonicMs() - computeStartedAtMs)
-                      << "detMs=" << timings.detMs << "recMs="
+                      << "scrollReuse=" << scrollReuse
+                      << "scrollReference=" << hadScrollReference << "detMs=" << timings.detMs
+                      << "recMs="
                       << timings.recMs << "detCalls=" << timings.detCalls << "tiles="
                       << timings.tileCount << "altCalls=" << timings.altCalls << "boxes="
                       << timings.boxes << "recCalls=" << timings.recCalls << "recCached="

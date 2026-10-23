@@ -276,8 +276,10 @@ void AppController::initConnections()
     m_paragraphTranslations.clear();
         m_regionLines.clear();
         m_regionStateAtMs.clear();
+        m_regionScrollReuseEligible.clear();
         m_regionServedHash.clear();
         m_regionServedProfile.clear();
+        m_regionObservedProfile.clear();
         m_regionLineTexts.clear();
         m_regionToken.clear();
         m_currentRegionIndex = -1;
@@ -643,6 +645,17 @@ EZTranslator::OcrOptions AppController::ocrOptions(bool hoverWorker) const
     options.interOpThreads = budget.interOp;
     options.binarize = m_settings.ocrBinarize;
 
+    // Rec head của PP-OCR tăng chi phí rất mạnh theo chiều rộng. Trên CPU, chia
+    // dòng dài thành các mảnh chồng lấn 480 px rồi ghép text nhanh hơn 2-3 lần
+    // so với đưa nguyên dòng 1000-1900 px vào model. GPU giữ ảnh rộng để giảm
+    // số lần dispatch; biến môi trường phục vụ A/B trên máy người dùng.
+    options.recMaxWidth = options.useGpu ? 1920 : 480;
+    bool recWidthOk = false;
+    const int requestedRecWidth =
+        qEnvironmentVariableIntValue("EZ_OCR_REC_MAX_WIDTH", &recWidthOk);
+    if (recWidthOk && requestedRecWidth >= 128)
+        options.recMaxWidth = qBound(128, requestedRecWidth, 1920);
+
     // Cài đặt chỉ cho chọn engine đã cài đặt thật (paddleocr); nếu ai đó sửa registry
     // thành engine chưa hỗ trợ thì cảnh báo rõ thay vì im lặng chạy nhầm.
     if (m_settings.ocrEngine != QLatin1String("paddleocr")) {
@@ -762,8 +775,10 @@ void AppController::reloadOcr()
     m_paragraphTranslations.clear();
     m_regionLines.clear();
     m_regionStateAtMs.clear();
+    m_regionScrollReuseEligible.clear();
     m_regionServedHash.clear();
     m_regionServedProfile.clear();
+    m_regionObservedProfile.clear();
     m_regionToken.clear();
     m_ocrScheduler.reset();
 
@@ -1772,9 +1787,11 @@ void AppController::forgetRegion(const QString& regionId)
     m_regionLines.remove(regionId);
     m_regionUiBoxes.remove(regionId);
     m_regionNovelParagraphs.remove(regionId);
+    m_regionScrollReuseEligible.remove(regionId);
     m_regionStateAtMs.remove(regionId);
     m_regionServedHash.remove(regionId);
     m_regionServedProfile.remove(regionId);
+    m_regionObservedProfile.remove(regionId);
     m_regionLineTexts.remove(regionId);
     m_regionToken.remove(regionId);
     m_regionOcrInfo.remove(regionId);
@@ -1802,6 +1819,7 @@ void AppController::clearVisualCaches()
     m_regionLines.clear();
     m_regionUiBoxes.clear();
     m_regionNovelParagraphs.clear();
+    m_regionScrollReuseEligible.clear();
     m_regionLineTexts.clear();
     m_regionSourceText.clear();
         m_regionTranslatedText.clear();
@@ -1818,6 +1836,7 @@ void AppController::clearVisualCaches()
     m_regionLastChangeMs.clear();
     m_regionServedHash.clear();
     m_regionServedProfile.clear();
+    m_regionObservedProfile.clear();
     m_regionLinePitch.clear();
     m_regionParagraphRatio.clear();
     m_ocrScheduler.reset();
@@ -2044,6 +2063,7 @@ void AppController::onSettingsSaved(const EZTranslator::AppSettings& settings)
         // mode until the user stops and restarts the overlay.
         m_regionBoxes.clear();
         m_regionNovelParagraphs.clear();
+        m_regionScrollReuseEligible.clear();
         m_regionUiBoxes.clear();
         m_regionLines.clear();
         m_regionLineTexts.clear();
@@ -2215,8 +2235,10 @@ void AppController::onLanguagesChanged(const QString& source, const QString& tar
     m_paragraphTranslations.clear();
     m_regionLines.clear();
     m_regionStateAtMs.clear();
+    m_regionScrollReuseEligible.clear();
     m_regionServedHash.clear();
     m_regionServedProfile.clear();
+    m_regionObservedProfile.clear();
     m_regionToken.clear();
     m_ocrScheduler.reset();
 
@@ -2378,6 +2400,13 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
             // có BẢN DỊCH của nội dung mới - không hiện bản detect nguồn (cách translator xử lý:
             // tắt khi ảnh nguồn đổi, hiện lại đúng vị trí mới khi neo xong).
             m_regionLastChangeMs.insert(regionFrame.regionId, now);
+            m_regionObservedProfile.remove(regionFrame.regionId);
+            if (m_ocrWorker && m_regionOcrMailbox.isActive(regionFrame.regionId)
+                && m_regionOcrToken.value(regionFrame.regionId) != 0) {
+                m_regionOcrToken.insert(regionFrame.regionId, 0);
+                m_ocrWorker->noteRegionRequest(regionFrame.regionId, 0);
+            }
+            m_regionOcrMailbox.remove(regionFrame.regionId);
             suspendOverlayForChange(now);
         }
 
@@ -2406,8 +2435,28 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
                     matchProfile(*servedProfile, currentProfile, 24, 0.90, 0.0);
                 const bool moved = offset.valid
                                    && (std::abs(offset.dx) >= 2 || std::abs(offset.dy) >= 2);
+                const auto observed = m_regionObservedProfile.constFind(regionFrame.regionId);
+                bool movingNow = observed == m_regionObservedProfile.constEnd();
+                if (!movingNow) {
+                    const ScrollOffset frameOffset =
+                        matchProfile(*observed, currentProfile, 24, 0.90, 0.0);
+                    movingNow = frameOffset.valid
+                                && (std::abs(frameOffset.dx) >= 2
+                                    || std::abs(frameOffset.dy) >= 2);
+                }
+                m_regionObservedProfile.insert(regionFrame.regionId, currentProfile);
                 if (!moved)
                     continue; // đứng yên thật → không làm gì (trang tĩnh: 0% CPU/GPU)
+                if (movingNow) {
+                    m_regionLastChangeMs.insert(regionFrame.regionId, now);
+                    if (m_ocrWorker && m_regionOcrMailbox.isActive(regionFrame.regionId)
+                        && m_regionOcrToken.value(regionFrame.regionId) != 0) {
+                        m_regionOcrToken.insert(regionFrame.regionId, 0);
+                        m_ocrWorker->noteRegionRequest(regionFrame.regionId, 0);
+                    }
+                    m_regionOcrMailbox.remove(regionFrame.regionId);
+                    suspendOverlayForChange(now);
+                }
                 forceOcr = true;
             }
         }
@@ -2489,7 +2538,7 @@ void AppController::queueRegionOcr(const QString& regionId, quint64 requestToken
     const EZTranslator::OcrRegionMailbox::SubmitResult result = m_regionOcrMailbox.submit(
         regionId, EZTranslator::OcrRegionMailbox::Request{
                       image, requestToken, imageHash,
-                      m_settings.novelMode || m_regionNovelParagraphs.contains(regionId)});
+                      m_settings.novelMode || m_regionScrollReuseEligible.contains(regionId)});
     m_ocrWorker->noteRegionRequest(regionId, requestToken);
     if (result == EZTranslator::OcrRegionMailbox::SubmitResult::Coalesced) {
         qInfo() << "[OCR_METRIC] path=region action=coalesced region=" << regionId
@@ -2807,6 +2856,7 @@ void AppController::handleRegionBoxes(const QString& regionId,
             const QString novelText = paragraphTexts.join(QStringLiteral("\n\n"));
             if (!novelText.trimmed().isEmpty()) {
                 m_regionNovelParagraphs.insert(regionId, paragraphs);
+                m_regionScrollReuseEligible.insert(regionId);
                 m_regionSourceText.insert(regionId, novelText);
                 if (m_floatingMode)
                     refreshFloatingWindow();
@@ -3063,6 +3113,23 @@ void AppController::onTranslationReady(const QString& regionId, quint64 token,
     // của nội dung mới sẽ tự áp bản dịch của nó.
     if (m_regionLastChangeMs.value(regionId, -1) > m_regionStateAtMs.value(regionId, -1))
         return;
+
+    // Không dựng cover-only overlay khi engine dịch chưa sẵn sàng hoặc trả về rỗng.
+    // Trước đây bản cập nhật rỗng vẫn đi qua layout novel, tạo box che toàn bộ chữ gốc
+    // nhưng không có text dịch nào để vẽ. Fallback source sẽ xử lý trường hợp engine lỗi.
+    bool hasTranslatedText = false;
+    for (const QString& paragraph : document.paragraphs) {
+        if (!paragraph.trimmed().isEmpty()) {
+            hasTranslatedText = true;
+            break;
+        }
+    }
+    if (!hasTranslatedText) {
+        qWarning().noquote() << "[Translate] bỏ qua overlay rỗng; chưa có bản dịch hợp lệ"
+                             << "region=" << regionId << "token=" << token
+                             << "complete=" << document.complete;
+        return;
+    }
 
     const auto lines = m_regionLines.constFind(regionId);
     if (lines == m_regionLines.constEnd())
