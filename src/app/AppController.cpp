@@ -281,6 +281,7 @@ void AppController::initConnections()
         m_regionServedProfile.clear();
         m_regionObservedProfile.clear();
         m_regionDisplayProfile.clear();
+        m_regionFrameProfile.clear();
         m_regionScrolledOverlay.clear();
         m_regionLineTexts.clear();
         m_regionToken.clear();
@@ -784,6 +785,7 @@ void AppController::reloadOcr()
     m_regionServedProfile.clear();
     m_regionObservedProfile.clear();
     m_regionDisplayProfile.clear();
+    m_regionFrameProfile.clear();
     m_regionScrolledOverlay.clear();
     m_regionToken.clear();
     m_ocrScheduler.reset();
@@ -1799,6 +1801,7 @@ void AppController::forgetRegion(const QString& regionId)
     m_regionServedProfile.remove(regionId);
     m_regionObservedProfile.remove(regionId);
     m_regionDisplayProfile.remove(regionId);
+    m_regionFrameProfile.remove(regionId);
     m_regionScrolledOverlay.remove(regionId);
     m_regionLineTexts.remove(regionId);
     m_regionToken.remove(regionId);
@@ -1846,6 +1849,7 @@ void AppController::clearVisualCaches()
     m_regionServedProfile.clear();
     m_regionObservedProfile.clear();
     m_regionDisplayProfile.clear();
+    m_regionFrameProfile.clear();
     m_regionScrolledOverlay.clear();
     m_regionLinePitch.clear();
     m_regionParagraphRatio.clear();
@@ -2073,6 +2077,7 @@ void AppController::onSettingsSaved(const EZTranslator::AppSettings& settings)
         // mode until the user stops and restarts the overlay.
         m_regionBoxes.clear();
         m_regionDisplayProfile.clear();
+        m_regionFrameProfile.clear();
         m_regionScrolledOverlay.clear();
         m_regionNovelParagraphs.clear();
         m_regionScrollReuseEligible.clear();
@@ -2252,6 +2257,7 @@ void AppController::onLanguagesChanged(const QString& source, const QString& tar
     m_regionServedProfile.clear();
     m_regionObservedProfile.clear();
     m_regionDisplayProfile.clear();
+    m_regionFrameProfile.clear();
     m_regionScrolledOverlay.clear();
     m_regionToken.clear();
     m_ocrScheduler.reset();
@@ -2411,15 +2417,14 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
 
         bool trackedScroll = false;
         ScrollOffset overlayScroll;
+        const GrayProfile current = grayProfile(regionFrame.image, regionFrame.image.rect(),
+                                                8, /*withGradients=*/true);
+        const auto previousFrame = m_regionFrameProfile.constFind(regionFrame.regionId);
         if (m_regionBoxes.contains(regionFrame.regionId)
-            && m_regionDisplayProfile.contains(regionFrame.regionId)) {
-            const GrayProfile current = grayProfile(regionFrame.image, regionFrame.image.rect(),
-                                                    8, /*withGradients=*/true);
+            && previousFrame != m_regionFrameProfile.constEnd()) {
             const ScrollOffset scroll = matchProfile(
-                m_regionDisplayProfile.value(regionFrame.regionId), current,
-                qMax(regionFrame.image.width(), regionFrame.image.height()) / 2,
-                0.92, 0.0,
-                false);
+                *previousFrame, current, qMax(24, regionFrame.image.height() / 3),
+                0.84, 0.0, false);
             overlayScroll = scroll;
             if (scroll.valid && std::abs(scroll.dx) <= 2 && scroll.dy != 0
                 && std::abs(scroll.dy) < regionFrame.image.height() / 3) {
@@ -2427,7 +2432,6 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
                     EZTranslator::shiftOverlayBoxes(m_regionBoxes.value(regionFrame.regionId),
                                                     scroll.dy, regionFrame.pixelRect);
                 m_regionBoxes.insert(regionFrame.regionId, shifted);
-                m_regionDisplayProfile.insert(regionFrame.regionId, current);
                 m_regionScrolledOverlay.insert(regionFrame.regionId);
                 trackedScroll = !shifted.isEmpty();
                 if (trackedScroll) {
@@ -2436,6 +2440,7 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
                 }
             }
         }
+        m_regionFrameProfile.insert(regionFrame.regionId, current);
 
         if (decision.changed) {
             if (now - m_overlayScrollLogAtMs >= 2000) {
@@ -2718,6 +2723,7 @@ void AppController::onRegionPlateReady(const QString& regionId, quint64 requestT
         // Box/overlay cu co the dang giu reference toi plate cu -> xoa luon.
         m_regionBoxes.clear();
         m_regionDisplayProfile.clear();
+        m_regionFrameProfile.clear();
         m_regionScrolledOverlay.clear();
         if (m_textOverlay)
             m_textOverlay->clear();

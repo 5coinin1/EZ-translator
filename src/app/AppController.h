@@ -407,6 +407,7 @@ private:
     QHash<QString, GrayProfile> m_regionServedProfile;
     QHash<QString, GrayProfile> m_regionObservedProfile;
     QHash<QString, GrayProfile> m_regionDisplayProfile;
+    QHash<QString, GrayProfile> m_regionFrameProfile;
     QSet<QString> m_regionScrolledOverlay;
     qint64 m_overlayScrollLogAtMs = 0;
     /// Thời điểm trạng thái CHÍNH XÁC (dòng/nguồn) của vùng được ghi (chỉ đường full OCR / cache
