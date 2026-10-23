@@ -150,7 +150,7 @@ private:
     bool startCapture(quintptr windowHandle);
 
     /** Tùy chọn OCR từ settings (đường dẫn model, GPU/CPU). */
-    [[nodiscard]] EZTranslator::OcrOptions ocrOptions() const;
+    [[nodiscard]] EZTranslator::OcrOptions ocrOptions(bool hoverWorker = false) const;
     /** Khởi động OCR worker thread và yêu cầu nạp model (bất đồng bộ). */
     void startOcr();
 
@@ -289,6 +289,8 @@ private:
     EZTranslator::CapturedFrame m_lastCapture;
     quintptr m_captureHandle{0};
     bool     m_gotFirstFrame{false}; ///< đã nhận frame nào từ backend capture chưa
+    quint64  m_captureFramesSeen{0};
+    qint64   m_captureDiagAtMs{-1000000};
     QImage m_hoverFrame;             ///< frame capture mới nhất (để dò dòng dưới chuột)
     QSize  m_hoverFrameSize;
     bool   m_hoverFrameReady{false};

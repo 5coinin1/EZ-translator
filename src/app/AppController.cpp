@@ -12,6 +12,7 @@
 #include "detection/ImageHash.h"
 #include "ocr/OcrTextAssembler.h"
 #include "ocr/OcrWorker.h"
+#include "ocr/OcrThreadBudget.h"
 #include "overlay/TextOverlay.h"
 #include "overlay/OverlayLayout.h"
 #include "overlay/TextCover.h"
@@ -371,6 +372,8 @@ bool AppController::startCapture(quintptr windowHandle)
 
     m_captureHandle = windowHandle;
     m_gotFirstFrame = false;
+    m_captureFramesSeen = 0;
+    m_captureDiagAtMs = -1000000;
 
     // Xoa trang thai hover cua phien truoc: frame/geometry cu co the khong con
     // dung voi cua so hoac backend moi, gay crop 0x0 o lan start dau.
@@ -417,6 +420,7 @@ bool AppController::startCapture(quintptr windowHandle)
         return true;
     }
 
+    qWarning() << "[Capture] WGC start failed; trying GDI fallback";
     if (m_gdiCapture && m_gdiCapture->start(windowHandle)) {
         m_capture = m_gdiCapture;
         qDebug() << "[AppController] Capture backend: GDI (fallback)";
@@ -604,7 +608,7 @@ QString ocrModelsDir()
 
 } // namespace
 
-EZTranslator::OcrOptions AppController::ocrOptions() const
+EZTranslator::OcrOptions AppController::ocrOptions(bool hoverWorker) const
 {
     const QString dir = ocrModelsDir();
     const bool english = m_settings.sourceLanguage.startsWith(QStringLiteral("en"),
@@ -631,6 +635,12 @@ EZTranslator::OcrOptions AppController::ocrOptions() const
     if (m_settings.ocrUseGpu && !discreteGpuAvailable) {
         qInfo() << "[OCR] Không phát hiện GPU rời đủ VRAM; chuyển OCR sang CPU.";
     }
+    const EZTranslator::OcrThreadBudget budget =
+        EZTranslator::chooseOcrThreadBudget(options.useGpu, hoverWorker);
+    options.threads = budget.detectorIntraOp;
+    options.recThreads = budget.recognizerIntraOp;
+    options.recWorkers = budget.recognizerWorkers;
+    options.interOpThreads = budget.interOp;
     options.binarize = m_settings.ocrBinarize;
 
     // Cài đặt chỉ cho chọn engine đã cài đặt thật (paddleocr); nếu ai đó sửa registry
@@ -653,7 +663,7 @@ void AppController::startOcr()
 
     m_mainWindow->setStatus(QStringLiteral("Đang nạp model OCR..."), QColor("#38bdf8"));
 
-    const EZTranslator::OcrOptions options = ocrOptions();
+    const EZTranslator::OcrOptions options = ocrOptions(/*hoverWorker=*/false);
     const int generation = ++m_ocrGeneration; // worker cũ (nếu còn) không còn hiệu lực
 
     // Worker VÙNG luôn cần. Worker HOVER (thread riêng, để probe không xếp hàng sau lượt OCR vùng)
@@ -667,7 +677,8 @@ void AppController::ensureHoverOcr()
     if (m_hoverOcrWorker || !m_ocrLoadAttempted)
         return;
     m_hoverOcrReady = false;
-    spawnOcrWorker(m_hoverOcrThread, m_hoverOcrWorker, ocrOptions(), m_ocrGeneration,
+    spawnOcrWorker(m_hoverOcrThread, m_hoverOcrWorker,
+                   ocrOptions(/*hoverWorker=*/true), m_ocrGeneration,
                    /*hoverWorker=*/true);
 }
 
@@ -1187,16 +1198,21 @@ void AppController::sendHoverProbe(const QPoint& screenPoint, bool prefetch, int
     const int frameW = m_hoverFrameSize.width();
     const int frameH = m_hoverFrameSize.height();
 
-    // QUAY VỀ BẢN CŨ: luôn dùng dải CỐ ĐỊNH 1200×96 cho mọi probe (bỏ thang mở rộng —
-    // đó là thứ gây ra loạt lỗi vừa rồi). Tham số `stage` giữ lại nhưng không dùng.
-    Q_UNUSED(stage);
-    const int useStage = 0;
+    // Giữ band cố định làm baseline an toàn. Bật A/B bằng EZ_HOVER_ADAPTIVE_BAND=1 để
+    // mở rộng khi detector báo dòng chạm mép, tránh làm thay đổi mặc định khi chưa đo accuracy.
+    const bool adaptiveBand = qEnvironmentVariable("EZ_HOVER_ADAPTIVE_BAND", QStringLiteral("0"))
+                                   .trimmed()
+                               != QStringLiteral("0");
+    const int useStage = adaptiveBand ? qBound(0, stage, kBandStageCount - 1) : 0;
     const int wantedW = kBandStages[useStage].width;
     const int wantedH = kBandStages[useStage].height;
     const int bandW = qMin(qMax(240, frameW), wantedW);
     const int bandH = qMin(qMax(48, frameH), wantedH);
     const int bandX = qBound(0, fx - bandW / 2, qMax(0, frameW - bandW));
     const QRect srcRect(bandX, fy - bandH / 2, bandW, bandH);
+
+    qInfo().noquote() << "[HOVER_BAND] adaptive=" << adaptiveBand << "stage=" << useStage
+                      << "rect=" << srcRect;
 
     QImage bandImage(bandW, bandH, QImage::Format_RGB32);
     bandImage.fill(QColor(200, 200, 200));
@@ -1303,7 +1319,8 @@ void AppController::showHoverLine(const QString& text, const QRect& lineClient,
         m_translateWorker->markInteractivePending();
     QMetaObject::invokeMethod(m_translateWorker, "translateInteractive", Qt::QueuedConnection,
                               Q_ARG(QString, kHoverId), Q_ARG(QString, text),
-                              Q_ARG(quint64, token));
+                              Q_ARG(quint64, token),
+                              Q_ARG(qint64, EZTranslator::ocrMonotonicMs()));
 }
 
 void AppController::onHoverProbed(const QString& id, const QString& text, const QRect& lineRect,
@@ -1481,7 +1498,8 @@ void AppController::onStartTranslation()
     if (ensureTranslator()) {
         QMetaObject::invokeMethod(m_translateWorker, "translate", Qt::QueuedConnection,
                                   Q_ARG(QString, QStringLiteral("__warmup__")),
-                                  Q_ARG(QString, QStringLiteral("Hello.")), Q_ARG(quint64, 0));
+                                  Q_ARG(QString, QStringLiteral("Hello.")), Q_ARG(quint64, 0),
+                                  Q_ARG(qint64, EZTranslator::ocrMonotonicMs()));
     }
 }
 
@@ -2270,6 +2288,18 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
     }
 
     m_gotFirstFrame = true;
+    ++m_captureFramesSeen;
+    const qint64 captureNowMs = m_clock.isValid() ? m_clock.elapsed() : 0;
+    if (captureNowMs - m_captureDiagAtMs >= 2000) {
+        m_captureDiagAtMs = captureNowMs;
+        const QString backend = m_capture == m_wgcCapture ? QStringLiteral("WGC")
+                                                           : QStringLiteral("GDI");
+        qInfo().noquote() << "[CAPTURE_METRIC] backend=" << backend
+                          << "frames=" << m_captureFramesSeen
+                          << "size=" << frame.image.size()
+                          << "bytes=" << frame.image.sizeInBytes()
+                          << "fpsConfigured=" << (m_capture ? m_capture->fps() : 0);
+    }
     m_lastCapture = frame; // giữ lại cho timer đuổi kịp (cửa sổ tĩnh không phát frame mới)
 
     // Lưu frame mới nhất cho chế độ "dịch khi chỉ chuột" (dò dòng dưới con trỏ).
@@ -2970,7 +3000,8 @@ void AppController::requestRegionTranslation(const QString& regionId, const QStr
                       << "paragraphs=" << sourceText.count(QStringLiteral("\n\n")) + 1;
     QMetaObject::invokeMethod(m_translateWorker, "translate", Qt::QueuedConnection,
                               Q_ARG(QString, regionId), Q_ARG(QString, sourceText),
-                              Q_ARG(quint64, requestToken));
+                              Q_ARG(quint64, requestToken),
+                              Q_ARG(qint64, EZTranslator::ocrMonotonicMs()));
 }
 
 void AppController::onTranslationReady(const QString& regionId, quint64 token,
@@ -3304,7 +3335,8 @@ void AppController::tickOverlayVisibility()
 
 void AppController::onCaptureError(EZTranslator::CaptureError error, const QString& detail)
 {
-    Q_UNUSED(detail)
+    qWarning().noquote() << "[CAPTURE_ERROR] code=" << static_cast<int>(error)
+                         << "detail=" << detail;
     using CE = EZTranslator::CaptureError;
     switch (error) {
     case CE::WindowClosed:
