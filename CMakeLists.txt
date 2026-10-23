@@ -150,6 +150,8 @@ add_library(ez_ocr STATIC
     src/ocr/OcrTypes.h
     src/ocr/OcrScheduler.h
     src/ocr/OcrScheduler.cpp
+    src/ocr/OcrRegionMailbox.h
+    src/ocr/OcrRegionMailbox.cpp
     src/ocr/OcrWorker.h
     src/ocr/OcrWorker.cpp
     src/ocr/OcrRuntime.h
@@ -433,6 +435,18 @@ set_target_properties(frame_noise_probe PROPERTIES WIN32_EXECUTABLE OFF AUTOMOC 
 # --- Unit Tests ---
 find_package(Qt6 COMPONENTS Test QUIET)
 if(Qt6Test_FOUND)
+    enable_testing()
+
+    add_executable(test_ocr_mailbox
+        tests/test_ocr_mailbox.cpp
+        src/ocr/OcrRegionMailbox.h
+        src/ocr/OcrRegionMailbox.cpp
+    )
+    target_include_directories(test_ocr_mailbox PRIVATE src)
+    target_link_libraries(test_ocr_mailbox PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
+    set_target_properties(test_ocr_mailbox PROPERTIES WIN32_EXECUTABLE FALSE)
+    add_test(NAME test_ocr_mailbox COMMAND test_ocr_mailbox)
+
     add_executable(test_region_manager
         tests/test_region_manager.cpp
         src/region/RegionManager.h

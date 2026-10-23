@@ -32,8 +32,9 @@ public slots:
     /** Nạp model + làm nóng (warm-up) rồi báo `loaded`. */
     void load(const EZTranslator::OcrOptions& options);
 
-    /** OCR một vùng (ảnh ROI) → phát `regionRecognized`, rồi dựng plate → phát `regionPlateReady`. */
-    void recognizeRegion(const QString& id, const QImage& image);
+    /** OCR một vùng (ảnh ROI) → phát kết quả kèm token/hash của đúng request. */
+    void recognizeRegion(const QString& id, quint64 requestToken, quint64 imageHash,
+                         qint64 queuedAtMs, const QImage& image);
 
     /** Luồng UI gọi NGAY TRƯỚC khi xếp `recognizeRegion` vào hàng đợi: worker dùng bộ đếm này để
      *  biết còn yêu cầu nào đang chờ không — lúc cuộn thì BỎ dựng plate (bản cho khung cũ vô ích
@@ -52,15 +53,19 @@ public slots:
     }
 
     /** Dò dòng dưới con trỏ trong dải `band` → phát `hoverProbed`. */
-    void probeHover(const QString& id, const QImage& band, const QPoint& cursorLocal);
+    void probeHover(const QString& id, const QImage& band, const QPoint& cursorLocal,
+                    qint64 queuedAtMs);
 
 signals:
     void loaded(bool ok, const QString& provider, const QString& error);
-    void regionRecognized(const QString& id, const QList<EZTranslator::OcrTextBox>& boxes);
+    void regionRecognized(const QString& id, quint64 requestToken, quint64 imageHash,
+                          const QList<EZTranslator::OcrTextBox>& boxes);
     /** Plate (nền đã xoá chữ) của ĐÚNG ảnh vừa OCR — dựng SẴN trên luồng OCR để luồng UI không
      *  phải dựng (100-270ms, từng nằm trên luồng UI và chặn cả dây chuyền OCR/dịch phía sau).
      *  `imageHash` = dHash của ảnh — luồng UI tra plate theo hash nội dung. */
-    void regionPlateReady(const QString& id, quint64 imageHash, const QImage& plate);
+    void regionPlateReady(const QString& id, quint64 requestToken, quint64 imageHash,
+                          const QImage& plate);
+    void regionFinished(const QString& id, quint64 requestToken);
     /** @param clippedByBand dòng chạm mép dải ⇒ gần như chắc chắn bị cắt đầu/cuối. */
     void hoverProbed(const QString& id, const QString& text, const QRect& lineRect,
                      bool clippedByBand);

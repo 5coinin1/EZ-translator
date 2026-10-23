@@ -194,6 +194,9 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
         return result;
 
     Impl& impl = *m_impl;
+    // Timings are per recognize() request; cumulative counters make tile/queue
+    // telemetry impossible to interpret and grow without bound over a session.
+    impl.timings = OcrTimings();
     const QImage rgb = image.convertToFormat(QImage::Format_RGB32);
 
     struct RecItem
@@ -418,13 +421,19 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
                         outputs[index].text = text;
                         outputs[index].confidence = confidence;
                         have[index] = 1;
-                        impl.lineCache.insert(keys[index], outputs[index]);
                     }
                 }
             });
         }
         for (std::thread& worker : pool)
             worker.join();
+
+        // QHash/QQueue trong LineCache không hỗ trợ concurrent writes. Chỉ cập nhật
+        // cache sau khi toàn bộ worker đã join; outputs/have vẫn được ghi theo index riêng.
+        for (const size_t index : pending) {
+            if (have[index])
+                impl.lineCache.insert(keys[index], outputs[index]);
+        }
         impl.timings.recCalls += int(pending.size());
         impl.timings.recMs = msSince(recStart);
         return assembleResult();

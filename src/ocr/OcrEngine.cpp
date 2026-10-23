@@ -10,6 +10,7 @@
 #include <QImage>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
 namespace EZTranslator {
@@ -109,7 +110,21 @@ struct OcrEngine::Impl
     bool loaded{false};
     bool binarize{false}; ///< Cài đặt → OCR: nhị phân hoá ảnh trước khi quét
     int lastBoxes{0};
+    OcrTimings lastTiming;
 };
+
+void addRecognizerTiming(OcrTimings& total, const OcrTimings& part, bool alternate)
+{
+    total.recMs += part.recMs;
+    total.recCalls += part.recCalls;
+    total.recCached += part.recCached;
+    total.recRunMs += part.recRunMs;
+    total.recDecodeMs += part.recDecodeMs;
+    total.recOutputBytes += part.recOutputBytes;
+    total.recBatched = total.recBatched || part.recBatched;
+    if (alternate)
+        ++total.altCalls;
+}
 
 OcrEngine::OcrEngine()
     : m_impl(std::make_unique<Impl>())
@@ -151,6 +166,9 @@ QList<OcrTextBox> OcrEngine::recognize(const QImage& image)
     if (!isLoaded() || image.isNull())
         return {};
 
+    const qint64 startedAt = ocrMonotonicMs();
+    m_impl->lastTiming = OcrTimings();
+
     const QImage input = m_impl->binarize ? binarizeImage(image) : image;
 
     // Anh lon (full window/game UI): det model resize ve ~960px lam mat chu
@@ -160,8 +178,12 @@ QList<OcrTextBox> OcrEngine::recognize(const QImage& image)
                           != QStringLiteral("0")
                       && input.width() >= 1600 && input.height() >= 900
                       && area >= 1500000;
-    if (!tile)
-        return recognizeProcessed(input);
+    if (!tile) {
+        const QList<OcrTextBox> result = recognizeProcessed(input);
+        m_impl->lastTiming.boxes = result.size();
+        m_impl->lastTiming.totalMs = double(ocrMonotonicMs() - startedAt);
+        return result;
+    }
 
     const int cols = 2;
     const int rows = 2;
@@ -229,6 +251,8 @@ QList<OcrTextBox> OcrEngine::recognize(const QImage& image)
     }
 
     m_impl->lastBoxes = result.size();
+    m_impl->lastTiming.boxes = result.size();
+    m_impl->lastTiming.totalMs = double(ocrMonotonicMs() - startedAt);
     return result;
 }
 
@@ -238,6 +262,9 @@ QList<OcrTextBox> OcrEngine::recognizeProcessed(const QImage& input, bool allowA
         return {};
 
     const QList<OcrTextBox> boxes = m_impl->detector.detect(input);
+    ++m_impl->lastTiming.detCalls;
+    ++m_impl->lastTiming.tileCount;
+    m_impl->lastTiming.detMs += m_impl->detector.lastMs();
     m_impl->lastBoxes = boxes.size();
     if (boxes.isEmpty())
         return {};
@@ -249,15 +276,18 @@ QList<OcrTextBox> OcrEngine::recognizeProcessed(const QImage& input, bool allowA
     // các khung sau chỉ chạy MỘT model (nội dung không đổi ngôn ngữ giữa chừng).
     if (allowAlt && m_impl->altLoaded && m_impl->preferAlt) {
         const QList<OcrTextBox> alt = m_impl->altRecognizer.recognize(input, boxes);
+        addRecognizerTiming(m_impl->lastTiming, m_impl->altRecognizer.lastTimings(), true);
         if (meanConfidence(alt) >= kLowConfidence)
             return alt; // model dự phòng vẫn đọc tốt → dùng luôn
         m_impl->preferAlt = false; // đọc kém (đã đổi nội dung) → so sánh lại đầy đủ
     }
 
     const QList<OcrTextBox> primary = m_impl->recognizer.recognize(input, boxes);
+    addRecognizerTiming(m_impl->lastTiming, m_impl->recognizer.lastTimings(), false);
     const double primaryConfidence = meanConfidence(primary);
     if (allowAlt && primaryConfidence < kLowConfidence && ensureAltRecognizer()) {
         const QList<OcrTextBox> alt = m_impl->altRecognizer.recognize(input, boxes);
+        addRecognizerTiming(m_impl->lastTiming, m_impl->altRecognizer.lastTimings(), true);
         const double altConfidence = meanConfidence(alt);
         qInfo() << "[OCR] điểm tin cậy thấp" << primaryConfidence << "| model dự phòng"
                 << altConfidence;
@@ -305,12 +335,7 @@ bool OcrEngine::ensureAltRecognizer()
 
 OcrTimings OcrEngine::lastTimings() const
 {
-    OcrTimings timings = m_impl ? m_impl->recognizer.lastTimings() : OcrTimings();
-    if (m_impl) {
-        timings.detMs = m_impl->detector.lastMs();
-        timings.boxes = m_impl->lastBoxes;
-    }
-    return timings;
+    return m_impl ? m_impl->lastTiming : OcrTimings();
 }
 
 OcrDetector& OcrEngine::detector()

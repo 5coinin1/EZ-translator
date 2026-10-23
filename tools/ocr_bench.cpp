@@ -12,6 +12,7 @@
 #include <QString>
 #include <QStringList>
 #include <QDebug>
+#include <QTextStream>
 
 #include "ocr/OcrDetector.h"
 #include "ocr/OcrEngine.h"
@@ -52,6 +53,12 @@ double msSince(const QElapsedTimer& timer)
 int main(int argc, char** argv)
 {
     QGuiApplication app(argc, argv);
+    const bool csv = app.arguments().contains(QStringLiteral("--csv"));
+    QTextStream csvOut(stdout);
+    if (csv) {
+        csvOut << "path,iteration,provider,totalMs,detMs,recMs,detCalls,tileCount,altCalls,"
+                   "boxes,recCalls,recCached\n";
+    }
 
     const QString dir =
         qEnvironmentVariable("EZ_MODELS_DIR", QStringLiteral(EZ_DEFAULT_MODELS_DIR));
@@ -81,6 +88,11 @@ int main(int argc, char** argv)
     for (int i = 0; i < 5; ++i) {
         timer.restart();
         const QList<OcrTextBox> rows = engine.detector().detect(fixedImage);
+        if (csv) {
+            csvOut << "det-same," << (i + 1) << "," << engine.providerName() << ","
+                   << msSince(timer) << "," << engine.detector().lastMs()
+                   << ",0,1,1,0," << rows.size() << ",0,0\n";
+        }
         qInfo("det same #%d: %.1f ms rows=%d", i + 1, msSince(timer), int(rows.size()));
     }
 
@@ -92,6 +104,11 @@ int main(int argc, char** argv)
         const QImage image = screen.copy(bands.at(i));
         timer.restart();
         const QList<OcrTextBox> rows = engine.detector().detect(image);
+        if (csv) {
+            csvOut << "det-same-size," << (i + 1) << "," << engine.providerName() << ","
+                   << msSince(timer) << "," << engine.detector().lastMs()
+                   << ",0,1,1,0," << rows.size() << ",0,0\n";
+        }
         qInfo("det same-size #%d: %.1f ms y=%d rows=%d", i + 1, msSince(timer), bands.at(i).y(),
               int(rows.size()));
     }
@@ -108,8 +125,36 @@ int main(int argc, char** argv)
         const OcrTextBox row = rows.first();
         timer.restart();
         const QList<OcrTextBox> rec = engine.recognizer().recognize(image, QList<OcrTextBox>{row});
+        const OcrTimings recTiming = engine.recognizer().lastTimings();
+        if (csv) {
+            csvOut << "rec," << (i + 1) << "," << engine.providerName() << ","
+                   << msSince(timer) << ",0," << recTiming.recMs << ",0,1,0,"
+                   << rec.size() << "," << recTiming.recCalls << "," << recTiming.recCached
+                   << "\n";
+        }
         qInfo("rec #%d: %.1f ms  text=%s", i + 1, msSince(timer),
               qUtf8Printable(rec.isEmpty() ? QString() : rec.first().text));
+    }
+
+    // End-to-end detector → recognizer baseline for the same hover-sized input.
+    for (int i = 0; i < 3; ++i) {
+        const QElapsedTimer pipelineTimer = [] {
+            QElapsedTimer value;
+            value.start();
+            return value;
+        }();
+        const QList<OcrTextBox> result = engine.recognize(fixedImage);
+        const OcrTimings timings = engine.lastTimings();
+        if (csv) {
+            csvOut << "pipeline-hover," << (i + 1) << "," << engine.providerName() << ","
+                   << msSince(pipelineTimer) << "," << timings.detMs << "," << timings.recMs
+                   << "," << timings.detCalls << "," << timings.tileCount << ","
+                   << timings.altCalls << "," << result.size() << "," << timings.recCalls
+                   << "," << timings.recCached << "\n";
+        }
+        qInfo("pipeline hover #%d: total=%.1f det=%.1f rec=%.1f boxes=%d calls=%d cached=%d",
+              i + 1, timings.totalMs, timings.detMs, timings.recMs, int(result.size()),
+              timings.recCalls, timings.recCached);
     }
 
     return 0;

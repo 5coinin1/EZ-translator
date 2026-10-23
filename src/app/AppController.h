@@ -3,10 +3,12 @@
 #include <QObject>
 #include <QPointer>
 #include <QHash>
+#include <QSet>
 #include "core/Types.h"
 #include "capture/IWindowCapture.h"
 #include "region/RegionManager.h"
 #include "ocr/OcrScheduler.h"
+#include "ocr/OcrRegionMailbox.h"
 #include "ocr/OcrTypes.h"
 #include "overlay/OverlayLayout.h"
 #include "overlay/TextOverlay.h"
@@ -113,11 +115,13 @@ public slots:
      *  khi thực sự dùng "Cửa sổ nổi") — không tính vào trạng thái sẵn sàng của worker vùng. */
     void onOcrLoaded(int generation, bool hoverWorker, bool ok, const QString& provider,
                      const QString& error);
-    void onRegionRecognized(const QString& regionId,
+    void onRegionRecognized(const QString& regionId, quint64 requestToken, quint64 imageHash,
                             const QList<EZTranslator::OcrTextBox>& boxes);
     /** Plate dựng sẵn trên luồng OCR về: lưu theo hash nội dung; nếu overlay đang hiện nội dung
      *  này mà chưa có plate thì dán vào và vẽ lại (nâng cấp nền từ "màu đặc" sang "xoá chữ"). */
-    void onRegionPlateReady(const QString& regionId, quint64 imageHash, const QImage& plate);
+    void onRegionPlateReady(const QString& regionId, quint64 requestToken, quint64 imageHash,
+                            const QImage& plate);
+    void onRegionOcrFinished(const QString& regionId, quint64 requestToken);
     void onHoverProbed(const QString& id, const QString& text, const QRect& lineRect,
                        bool clippedByBand);
 
@@ -138,6 +142,9 @@ private:
 
     /** Phím tắt toàn cục vừa bấm (id: "toggle"/"selectRegion"/"showRegion"/"settings"). */
     void dispatchHotkey(const QString& id);
+    void queueRegionOcr(const QString& regionId, quint64 requestToken, quint64 imageHash,
+                        const QImage& image);
+    void dispatchNextRegionOcr();
 
     /** Chọn backend capture: ưu tiên WGC, fallback GDI. */
     bool startCapture(quintptr windowHandle);
@@ -248,6 +255,7 @@ private:
     struct RegionFrameInfo { QRect pixelRect; QSize frameSize; };
     QHash<QString, RegionFrameInfo>  m_regionOcrInfo;
     QHash<QString, quint64>          m_regionOcrToken; ///< token OCR mới nhất mỗi vùng
+    EZTranslator::OcrRegionMailbox m_regionOcrMailbox;
     /// Nhịp dòng / khe đoạn ĐÃ GHIM theo vùng (chống nhấp nháy cấu trúc đoạn).
     ///
     /// Đo trên frame này rồi dùng lại; chỉ cập nhật khi lệch ĐÁNG KỂ (hysteresis) để box
@@ -321,6 +329,15 @@ private:
     };
     QHash<quint64, HoverProbeGeom> m_hoverProbes;
     quint64 m_hoverLastFinalToken{0}; ///< token của probe "cuối" (không phải dò trước)
+    bool m_hoverProbeRunning{false}; ///< tối đa một probe đang chạy trong worker hover
+    struct PendingHoverProbe
+    {
+        QPoint screenPoint;
+        bool prefetch{false};
+        int stage{0};
+        bool valid{false};
+    };
+    PendingHoverProbe m_pendingHoverProbe;
 
     /// Kết quả dò trước (đo trong lúc con trỏ còn đang di chuyển) để dùng lại khi dừng.
     struct HoverPrefetch
@@ -339,6 +356,7 @@ private:
      *               do khoảng đệm tới phần tử khác quyết định (kiểu meikipop).
      */
     void sendHoverProbe(const QPoint& screenPoint, bool prefetch, int stage = 0);
+    void flushPendingHoverProbe();
 
     /** Hiện bản dịch cho một dòng (hiện nguồn + bản dịch cùng lúc, hoặc đợi worker). */
     void showHoverLine(const QString& text, const QRect& lineClient,

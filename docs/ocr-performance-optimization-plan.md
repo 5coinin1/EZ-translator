@@ -1,344 +1,127 @@
-# Kế hoạch tối ưu độ trễ OCR trên CPU và GPU
+# Kế hoạch tối ưu hiệu năng OCR và Pipeline thời gian thực — CPU-first (EZ Translator)
 
-## 1. Mục tiêu
+## 1. Phạm vi và độ tin cậy
 
-Giảm chênh lệch thời gian phản hồi giữa máy có GPU rời và máy chỉ có CPU/iGPU,
-đồng thời giữ độ chính xác OCR, không làm RAM tăng dần và không để yêu cầu cũ
-chặn kết quả mới.
+Tài liệu này cập nhật plan cũ theo working tree nhánh `tu`, HEAD `d166082c55284edd6490f5e41cdba991854ddd82`. Nhánh mục tiêu trong yêu cầu là `develop-5coinin1`, commit tham chiếu `9cba5222d1b0f0ced16492310edb7872550b0706`; không trùng nhánh/HEAD hiện tại. Source working tree là nguồn sự thật; không checkout. Working tree sạch trước lần chỉnh tài liệu này.
 
-Phạm vi đo độ trễ đầu cuối:
+Máy đích: Windows 10/11 x64, i5-12500H (4 P-core + 8 E-core, 16 logical threads), 16 GB RAM, Intel Iris Xe, không có GPU rời. ONNX Runtime CPU Execution Provider là baseline bắt buộc. DirectML, FP16, CUDA và GPU rời chỉ là nhánh tùy chọn. WGC/GDI là backend capture, độc lập với OCR execution provider.
 
-```text
-capture -> schedule -> detect -> recognize -> translate -> render popup/overlay
-```
+Nhãn độ tin cậy: **Verified in Source** = đã thấy trong code, không phải số đo; **Observed in Benchmark/Log** = có thực nghiệm/log kèm cấu hình và workload; **Potential Risk** = nguy cơ chưa tái hiện; **Hypothesis** = lợi ích cần đo; **Proposed Optimization** = chưa triển khai. Không coi mục tiêu hiệu năng là kết quả đã đạt.
 
-Mục tiêu không phải làm CPU nhanh ngang mọi GPU, mà bảo đảm máy CPU vẫn phản hồi
-ổn định, không backlog và không có tình trạng chờ vô hạn.
+Mục tiêu giữ lại từ plan gốc: giảm chênh lệch phản hồi CPU/GPU, giữ accuracy, RAM ổn định, không để request cũ chặn hoặc làm sai kết quả mới. Không cần CPU nhanh ngang mọi GPU.
 
-## 2. Hiện trạng trong mã nguồn
+## 2. Source Code Assessment
 
-### 2.1 Các tối ưu đã có
+### 2.1 Hai đường xử lý thực tế
 
-- Capture GDI và WGC có cơ chế `framePending`, tránh xếp vô hạn ảnh toàn màn hình.
-- OCR chạy trên worker thread, không khóa trực tiếp UI thread.
-- `OcrScheduler` có settle, cooldown và giới hạn số lượt OCR mỗi tick.
-- Recognizer có cache theo nội dung dòng.
-- Recognizer GPU có dynamic batch và có thể dùng model FP16.
-- Recognizer CPU có thể chạy nhiều dòng song song.
-- Overlay và translation có cache theo nội dung.
-- App đã tự chuyển OCR sang CPU nếu không phát hiện GPU rời đủ VRAM.
+- **Verified in Source:** WGC dùng helper process/shared memory; AppController fallback GDI khi WGC khởi tạo hoặc không có frame đầu. Hai capture backend có `framePending` để hạn chế frame chưa tiêu thụ. GDI fallback không chứng minh nguyên nhân OCR chậm.
+- **Verified in Source:** `AppController::startOcr` tạo worker vùng; `ensureHoverOcr` tạo worker hover riêng khi cần. Mỗi worker có engine/session riêng. App chọn CPU khi không có GPU rời phù hợp. OCR không chạy trực tiếp trên UI thread.
+- **Verified in Source:** vùng đi qua dHash/change detection, box cache, scroll profile, `OcrScheduler`, region OCR, translation và overlay/smart-cover. Scheduler runtime mặc định `settleMs=15`, `minRunIntervalMs=60`, `maxRunsPerTick=1`; `src/ocr/README.md` còn ghi 130/600, không dùng làm source of truth. Có code scroll reuse, nhưng không mặc định đường incremental OCR đang được gọi trong tick hiện tại.
+- **Verified in Source:** hover prefetch khoảng 100 ms, final khoảng 120 ms. `sendHoverProbe` dùng Qt queued invocation; `m_hoverProbes` tối đa 8 chỉ giới hạn metadata, không giới hạn `QMetaCallEvent` trong worker. Token cuối bỏ kết quả stale khi trả về nhưng không bỏ inference đã xếp hàng. Fixed band 1200×96; `OcrWorker::probeHover` emit `clippedByBand=false`, nên nhánh mở rộng theo clipping không chạy.
+- **Verified in Source:** `OcrWorker::recognizeRegion` emit boxes rồi dựng smart-cover plate trên cùng OCR worker. `m_pendingRequests` là counter điều kiện hóa plate, không phải bounded queue/cancellation. Plate đã ngoài UI thread.
 
-### 2.2 Các điểm nghẽn chính
+### 2.2 OCR, dịch và những tối ưu đã tồn tại
 
-| Ưu tiên | Điểm nghẽn | Vị trí chính |
+- **Verified in Source:** PP-OCRv4 có detector/recognizer tách biệt, line cache, CPU parallel recognition và GPU dynamic batch/FP16 khi cấu hình thích hợp. Mặc định `detLimitSide=640`, `recThreads=1`, `disableRecBatch=true`; không mặc định CPU batching sẽ nhanh hơn.
+- **Verified in Source:** ảnh từ 1600×900 được chia 2×2; từng tile gọi `recognizeProcessed()` gồm detect và recognize, rồi mới dedup. Non-tiled path có alternate recognizer khi confidence thấp. `lastTimings()` lấy timing cuối, chưa phản ánh tổng nhiều tile/alternate pass.
+- **Verified in Source:** `TranslationWorker` riêng, interactive path, cache, Google/MyMemory/offline và fallback đã có. Google gọi tuần tự từng unit với timeout; chưa thấy circuit breaker 429. CTranslate2 sidecar có thread budget riêng và có thể tranh CPU OCR. Giữ source anchoring/token khi sửa scheduling.
+- **Verified in Source:** có `ocr_bench`, `hover_probe_test`, `frame_noise_probe`, `scroll_cache_bench`, `plate_bench`, `overlay_probe`. Các smoke/synthetic tools này chưa phải benchmark end-to-end trên game/capture thật và chưa chứng minh hết race/stale/backpressure.
+
+### 2.3 Rủi ro và ưu tiên
+
+| Ưu tiên | Nhận định | Phân loại | Hành động |
+| --- | --- | --- | --- |
+| P0 | Tới 6 CPU recognition threads ghi `LineCache::insert()` vào `QHash`/`QQueue` chung không khóa | Verified in Source | Gom output từng index; chỉ insert cache sau `join`; stress test |
+| P0 | Map hover không chặn Qt queue; stale token lọc khi đã OCR xong | Verified in Source | Bounded mailbox thật và đo queue wait |
+| P0 | Region signal chỉ trả `regionId`/boxes; geometry/hash trong map có thể bị frame mới ghi đè; `m_ocrGeneration` chỉ guard `loaded` | Potential Risk | Request snapshot/generation và stale tests |
+| P1 | Region plate cùng worker; pending counter không coalesce | Verified in Source | Đo plate/queue trước khi tách lịch |
+| P1 | Tiled recognition trước dedup, timing thiếu aggregate | Verified in Source | Thử detect-merge-recognize, chưa kết luận sẽ nhanh hơn |
+| P1 | Hai OCR workers, ORT threads, parallel rec và offline translation có thể tranh CPU | Potential Risk | Đo contention trên i5-12500H |
+| P1 | Google 429/timeout có thể kéo dài từng unit trước fallback | Potential Risk | Đo network stall; thử breaker |
+| P2 | Fixed hover band, clipping stage vô hiệu | Verified in Source | Chỉ A/B adaptive band sau baseline accuracy |
+| P2 | Capture copy/WGC fallback làm chậm pipeline | Hypothesis | Đo capture riêng, phân loại fallback |
+
+## 3. Benchmark và acceptance criteria
+
+**Proposed Optimization:** trace qua OCR, translation, plate, overlay với `requestId`, session generation, target window, `regionId` hoặc hover token, frame sequence/hash, geometry snapshot. Dùng monotonic timestamps cho `captureReady`, `scheduled`, `queueEntered`, `ocrStarted`, `detFinished`, `recFinished`, `translateStarted/Finished`, `plateFinished`, `presented`. Phân biệt wall-clock với tổng model time, cộng nhiều tiles/alternate pass; tách queue, preprocessing, inference, decode, cache hit, số model runs, OCR-only và end-to-end. Sampling để logging không thành bottleneck; không ghi text riêng tư mặc định.
+
+CSV/JSON gồm provider thật, image size, box count, queued/coalesced/dropped, CPU utilization, working set/peak RAM, cache hit, engine dịch, HTTP status và fallback. Đo p50/p95 cùng sample count, cold/warm, cache hit/miss, game chạy/không chạy, CPU-only và DirectML tùy chọn; ghi model/build/hardware và lưu raw data.
+
+Workload tối thiểu: (1) hover dòng ngắn, (2) hover dòng dài, (3) rê chuột liên tục nhiều vị trí, (4) ROI 2–4 dòng thoại, (5) menu nhiều boxes, (6) truyện Trung/Nhật, (7) full-window 1080p, (8) scroll liên tục, (9) OCR + dịch offline, (10) dịch online timeout/429. Có ground truth CER/recall/reading order; chữ nhỏ/lớn, nền sáng/tối, frame tĩnh/động. Cùng input, nhiều lượt lặp, so sánh trước/sau từng PR.
+
+Các số plan cũ (hover CPU p50 ≤250 ms/p95 ≤450 ms, GPU p95 ≤200 ms, ROI 1080p CPU p95 ≤1.000 ms, model nhanh hơn 20%, accuracy không giảm quá 1%) chỉ là **performance goals ứng viên**, chưa phải số đo hoặc ngưỡng đã xác thực. Phase 1 chốt acceptance từ baseline. Điều kiện chung: không stale/wrong geometry/starvation; queue thật hữu hạn; RAM dài hạn không tăng tuyến tính theo frame/request; CER/recall/đầu-cuối dòng không suy giảm ngoài ngưỡng chốt. Không đòi đúng hai model runs trong cả burst vì worker có thể hoàn thành nhiều request khi burst tiếp diễn.
+
+## 4. Roadmap theo phụ thuộc
+
+### Phase 0 — Correctness & Concurrency Audit (P0)
+
+**Evidence/problem:** cache write đa luồng, region result thiếu context, generation chỉ guard `loaded`. **Scope/proposal:** threads chỉ ghi output riêng; cache insert sau `join`; audit Qt ownership/lifecycle, stop/start, đổi window/mode, plate và translation anchoring. Gắn context immutable vừa đủ cho region request/result, xác nhận session/window/frame trước khi dùng geometry/hash. **File dự kiến:** `src/ocr/OcrRecognizer.cpp`, `OcrWorker.*`, `src/app/AppController.*`, tests. **Test:** parallel rec stress/TSAN nếu hỗ trợ, worker chậm khi đổi frame/window, stop/start, stale plate/translation. **Acceptance:** không ghi shared cache đồng thời; kết quả cũ không dùng geometry/phiên mới; prerequisite build/test rõ ràng. **Risk/rollback:** thứ tự cache/ABI đổi; giữ khả năng rollback context/policy riêng. Phase 1 trace có thể song song nhưng kết luận tối ưu phụ thuộc Phase 0.
+
+### Phase 1 — Instrumentation & CPU Baseline (P0)
+
+**Evidence/problem:** timing thiếu queue, tile aggregate, alternate pass và plate. **Scope:** trace ở mục 3, benchmark đúng hai đường hover/region bằng tools hiện có và harness workload thực. **File dự kiến:** `src/ocr/OcrTypes.h`, `OcrEngine.cpp`, `OcrWorker.*`, `src/app/AppController.*`, `tools/*bench*`. **Test:** monotonic timestamps, nối đúng id, cache hit/miss, multi-tile aggregate. **Acceptance:** baseline p50/p95 từng stage, CPU/RAM/accuracy, queue depth/model runs cho 10 workload trên i5-12500H CPU EP, raw data/repro steps. **Risk/rollback:** logging overhead; sampling/feature flag, đo overhead.
+
+### Phase 2 — Bounded Scheduling & Latest-wins (P0, sau 0–1)
+
+**Evidence/problem:** `m_hoverProbes` không bound queued calls, region counter không coalesce. **Proposed Optimization:** hover mailbox 1 running + 1 newest pending; pending thay thế tại chỗ, chỉ enqueue khi worker rảnh; final ưu tiên prefetch; completion/error/stop đều nhả running. Region coalesce theo `regionId` + frame/hash/generation, fairness nhiều ROI, giữ scroll/box cache. Context Phase 0 quyết định invalidation; không giả định hủy ORT run đang chạy là an toàn. **File dự kiến:** `src/app/AppController.*`, `src/ocr/OcrWorker.*`, scheduler/tests. **Test:** fake worker chậm + 50 hover events, prefetch/final race, nhiều ROI, đổi frame/window, plate chậm. **Acceptance:** Qt queue hữu hạn, latest final được trình bày khi worker bắt kịp, không starvation, RAM không tăng theo số event. **Risk/rollback:** coalesce làm mất cập nhật; policy feature flag, giữ context P0.
+
+### Phase 3 — CPU Thread Budget (P1, sau 1–2)
+
+**Evidence/problem:** hai OCR sessions/workers, ORT intra-op, tới 6 rec threads, sidecar dịch có thể tranh CPU. **Hypothesis:** giới hạn tổng concurrency cải thiện p95/RAM. Thử detector/recognizer intra-op 2/2, 2/4, 4/4 và nhiều mức parallel-rec; tách intra-op, inter-op, số sessions, `std::thread`, translation threads và game load. Không giả định 16 logical threads đều tốt hoặc dùng chung `Ort::Env` tạo global pool. Giữ provider selection/fallback hiện có; profile Auto/CPU-balanced chỉ sau đo. **File dự kiến:** `src/ocr/OcrRuntime.*`, `OcrTypes.h`, `OcrRecognizer.cpp`, `src/app/AppController.cpp`, translation sidecar/config khi cần. **Test/acceptance:** A/B hover+ROI+offline dịch trên máy đích, p50/p95, CPU/RAM, UI/game responsiveness và accuracy không thoái hóa quá ngưỡng chốt. **Risk/rollback:** giảm throughput máy khác; giữ Auto/override cũ.
+
+### Phase 4 — Translation QoS (P1, sau 1–2)
+
+**Evidence/problem:** worker/cache/fallback/interactive đã có, Google tuần tự/timeout, chưa có breaker 429. **Proposed Optimization:** đo queue/network/cache; ưu tiên interactive có fairness, deadline hover, 429 backoff/circuit breaker TTL và fallback sớm; stale token/context trước render. Không coi hủy queued call là hủy network request đang chạy. **File dự kiến:** `src/translation/GoogleTranslator.cpp`, `MyMemoryTranslator.cpp`, `TranslationWorker.*`, `src/app/AppController.*`. **Test:** cache hit, timeout/429 lặp, nhiều ROI + hover, fallback, stale result. **Acceptance:** UI không treo, online stall bị giới hạn theo policy, không spam 429, offline không đói. **Risk/rollback:** breaker quá lâu; TTL/config, policy cũ.
+
+### Phase 5 — Adaptive Hover Experiment (P2, sau 1–3)
+
+**Evidence/problem:** fixed 1200×96 và `clippedByBand=false`; band nhỏ có thể từng bị rollback vì mất chữ, chưa có dữ liệu. **Hypothesis:** band/`detLimitSide` thích ứng giảm CPU time. A/B fixed baseline với candidate width/resolution, clipping thật, retry khi mép/no box/low confidence; recognize crop ảnh gốc. **File dự kiến:** `src/app/AppController.*`, `src/ocr/OcrWorker.*`, detector/tests. **Test:** dòng dài, chữ nhỏ, mép cửa sổ, text lân cận, EN/CJK. **Acceptance:** p50/p95 cải thiện có ý nghĩa mà không mất đầu/cuối dòng hay tăng CER/false positive ngoài ngưỡng. **Risk/rollback:** accuracy regression; feature flag fixed band.
+
+### Phase 6 — Large ROI & Smart-cover (P2, sau 1)
+
+**Evidence/problem:** 2×2 tile recognize trước dedup; plate cùng worker. **Hypothesis/proposal:** thử detect tile → map tọa độ ảnh gốc → merge/dedup → recognize; so sánh 1/2/4 tile, không tile ROI nhỏ. Không mặc định gộp box vào một ONNX Run nhanh trên CPU; batch CPU đang tắt. Đo plate wait/run và peak RAM trước khi tách lịch. **File dự kiến:** `src/ocr/OcrEngine.cpp`, `OcrDetector.*`, `OcrRecognizer.*`, `OcrWorker.cpp`, tests. **Test:** overlap, reading order, CJK novel, scroll anchoring, menu, plate không che sai. **Acceptance:** đúng tọa độ/accuracy, p95 và RAM có lợi ích được đo hoặc giữ baseline nếu không. **Risk/rollback:** merge mất box; feature flag tiled path cũ, không đưa plate về UI.
+
+### Phase 7 — Capture & Memory (P2, sau 1)
+
+**Evidence/problem:** WGC helper/shared memory và `framePending` đã có; cần phân loại fallback và đo copy/cache. **Proposed Optimization:** log helper missing/start/handshake/first-frame/unsupported/frame-invalid riêng; kiểm tra helper cạnh exe từng build/deployment (CMake đã có target dependency/output path, không kết luận packaging sai vô điều kiện). Đo capture-to-ROI, image copies, frame/box/line/plate caches theo bytes và RAM dài hạn. Chỉ thêm adaptive FPS khi trace chứng minh cần. **File dự kiến:** `src/capture/WgcWindowCapture.cpp`, `GdiWindowCapture.cpp`, `src/app/AppController.cpp`, packaging config nếu thực nghiệm cần. **Test:** WGC/GDI, cửa sổ tĩnh/động, resize/DPI, helper mất, chạy dài/scroll. **Acceptance:** fallback có lý do, frame đúng, RAM ổn định, capture latency không thoái hóa. **Risk/rollback:** cache nhỏ tăng OCR, FPS thấp bỏ lỡ chữ; giữ ngưỡng cũ.
+
+### Phase 8 — CPU Model Evaluation (P3, sau 1–3)
+
+**Hypothesis:** INT8/QDQ hoặc PP-OCR mobile khác có thể giảm inference; đổi model không sửa backlog. So sánh FP32 hiện tại, INT8/QDQ và model phù hợp ngôn ngữ bằng cùng dataset/preprocessing, package/license; CPU trước, DirectML/FP16/CUDA tùy chọn. **File dự kiến:** model manifests/config, benchmark, detector/recognizer nếu format thay. **Test:** CER, detection recall, reading order EN/CJK, p50/p95, warm/cold, RAM/package. **Acceptance:** chỉ đổi model khi lợi ích end-to-end rõ và accuracy qua ngưỡng Phase 1; 20% là goal, không phải kết quả. **Risk/rollback:** regression ngôn ngữ/unsupported ops; giữ FP32 hiện tại.
+
+## 5. Pull Request Plan
+
+Mỗi PR phải mô tả problem, source evidence, scope/dependencies, solution, files, test, benchmark, acceptance, regression risk và rollback như phase tương ứng. Không tạo PR chỉ để đổi tên hoặc sắp xếp file. Tên dưới đây là gợi ý, không tạo PR trong tác vụ này.
+
+| Thứ tự | PR gợi ý | Phụ thuộc | Trọng tâm |
+| --- | --- | --- | --- |
+| 0 | `fix/ocr-cache-thread-safety` | Không | P0 cache race, context và lifecycle |
+| 1 | `perf/pipeline-tracing-baseline` | Song song 0 | Trace, CPU baseline, accuracy |
+| 2 | `perf/ocr-bounded-mailbox` | 0–1 | Queue thật hữu hạn, latest final, region fairness |
+| 3 | `perf/cpu-thread-budget` | 1–2 | A/B thread matrix, contention |
+| 4 | `perf/translation-qos` | 1–2 | Timeout/429/fallback, interactive latency |
+| 5 | `perf/hover-band-experiment` | 1–3 | Accuracy/latency A/B, feature flag |
+| 6 | `perf/tile-and-plate` | 1–2 | Dedup, reading order, plate/RAM |
+| 7 | `perf/wgc-memory-capture` | 1 | Fallback diagnostics, RAM dài hạn |
+| 8 | `perf/cpu-model-evaluation` | 1–3 | FP32/INT8, accuracy gate |
+
+Nếu không đạt acceptance, ghi kết quả âm và rollback/dừng, không tuyên bố tối ưu thành công.
+
+## 6. Chưa thể kết luận từ source
+
+Chưa có baseline đáng tin cho p50/p95 end-to-end trên i5-12500H, queue wait thực, Qt queued calls, RAM dài hạn, cache hit rate, contention CTranslate2, tần suất 429, WGC/GDI latency và lợi ích adaptive band/tile refactor/INT8. Phase 1 hoặc thí nghiệm tương ứng phải trả lời; không gán chúng là lỗi đã chứng minh. Cần kiểm chứng Windows thực tế cho WGC helper/deployment, DPI/resize, optional DirectML, game load và Qt lifecycle.
+
+## 7. Revision Summary
+
+| Nội dung plan cũ | Xử lý | Lý do |
 | --- | --- | --- |
-| P0 | Hover gửi probe nhanh hơn tốc độ OCR CPU | `AppController::onHoverTick`, `sendHoverProbe` |
-| P0 | Probe mới thay token, kết quả CPU cũ liên tục bị bỏ | `AppController::onHoverProbed` |
-| P1 | Ảnh lớn bị chia 2x2 và chạy cả detect lẫn recognize trên từng tile | `OcrEngine::recognize` |
-| P1 | Detector, recognizer và dịch offline có thể tranh toàn bộ CPU | `OcrRuntime`, `OcrRecognizer`, các translation engine |
-| P1 | CPU và GPU dùng gần như cùng một cấu hình đầu vào | `OcrOptions`, `AppController::ocrOptions` |
-| P1 | Google GTX trả HTTP 429, mỗi dòng có thể chờ timeout rồi mới fallback | `GoogleTranslator`, `TranslationWorker` |
-| P2 | Worker vùng và hover nạp session/model OCR riêng | `AppController::spawnOcrWorker` |
-| P2 | WGC helper chưa được deploy đúng cho một số kiểu build, phải fallback GDI | `WgcWindowCapture`, `CMakeLists.txt` |
-
-### 2.3 Vấn đề hover cần sửa trước
-
-Hover hiện có thể gửi yêu cầu mới mỗi 100-120 ms. `m_hoverProbes` chỉ giữ tối đa
-8 phần tử, nhưng xóa phần tử khỏi map không xóa các `QMetaCallEvent` đã nằm trong
-event queue của worker.
-
-Khi OCR CPU trả kết quả chậm:
-
-1. Token mới đã thay `m_hoverLastFinalToken`.
-2. Kết quả cũ bị bỏ vì token không còn là token cuối.
-3. Yêu cầu tiếp tục được gửi trong khi worker vẫn xử lý backlog.
-4. Người dùng không thấy popup dù OCR vẫn đang chạy.
-
-Đây là lỗi điều phối yêu cầu, không chỉ là vấn đề tốc độ model.
-
-## 3. Chỉ số và ngưỡng nghiệm thu
-
-### 3.1 Chỉ số bắt buộc
-
-Mỗi yêu cầu cần có một `requestId` và các mốc thời gian:
-
-- `captureReadyAt`
-- `scheduledAt`
-- `queueEnteredAt`
-- `ocrStartedAt`
-- `detFinishedAt`
-- `recFinishedAt`
-- `translateStartedAt`
-- `translateFinishedAt`
-- `presentedAt`
-
-Log cần bổ sung:
-
-- Provider: CPU, DirectML hoặc CUDA.
-- Kích thước ảnh và số pixel.
-- Độ sâu hàng đợi và số yêu cầu bị gộp hoặc loại bỏ.
-- Số box, số lần gọi recognizer và cache hit.
-- Thời gian preprocess, model run và decode.
-- Engine dịch, cache hit, HTTP status và fallback.
-- Working set/RAM theo chu kỳ.
-
-### 3.2 Mục tiêu hiệu năng
-
-| Tình huống | Mục tiêu |
-| --- | --- |
-| Hover OCR CPU | p50 <= 250 ms, p95 <= 450 ms |
-| Hover OCR GPU rời | p95 <= 200 ms |
-| OCR vùng 1080p trên CPU | p95 <= 1.000 ms |
-| Hàng đợi hover | Tối đa 1 running + 1 pending |
-| Kết quả bị token mới làm mất | Không xảy ra starvation |
-| RAM sau 10 phút | Ổn định, không tăng theo số frame |
-| Độ chính xác | Không giảm quá 1% so với baseline |
-
-Độ trễ dịch online phải được báo cáo riêng, không tính chung vào benchmark OCR.
-
-## 4. Lộ trình triển khai
-
-### Giai đoạn 1: Instrumentation và benchmark
-
-#### Công việc
-
-- Tạo cấu trúc `PipelineTrace` hoặc `OcrRequestMetrics` dùng chung.
-- Đưa thời gian chờ trong queue vào log, thay vì chỉ log `detMs` và `recMs`.
-- Nâng cấp `tools/ocr_bench.cpp` để xuất JSON hoặc CSV.
-- Bổ sung benchmark hover latest-wins với fake OCR session có độ trễ cố định.
-- Tạo bộ dữ liệu benchmark cố định:
-  - Hover band ở 720p và 1080p.
-  - ROI nhỏ, vừa và toàn màn hình.
-  - Ảnh tĩnh và ảnh đang cuộn.
-  - Tiếng Anh, Trung và Nhật.
-  - Chữ nhỏ, chữ lớn, nền sáng và nền tối.
-- Chạy trên ít nhất ba nhóm máy:
-  - CPU 4 core, không có GPU rời.
-  - CPU 8 core, không có GPU rời.
-  - GPU rời tầm trung.
-
-#### File dự kiến
-
-- `src/ocr/OcrTypes.h`
-- `src/ocr/OcrWorker.*`
-- `src/app/AppController.*`
-- `tools/ocr_bench.cpp`
-- `tools/hover_probe_test.cpp`
-
-#### Điều kiện hoàn thành
-
-- Có báo cáo p50 và p95 cho từng stage.
-- Phân biệt được model chậm, queue chậm hay mạng chậm.
-- Benchmark có thể lặp lại trên máy khác với cùng dữ liệu đầu vào.
-
-### Giai đoạn 2: Backpressure và latest-wins
-
-#### Công việc
-
-- Thay queue hover hiện tại bằng mailbox:
-  - Tối đa một yêu cầu đang chạy.
-  - Tối đa một yêu cầu mới nhất đang chờ.
-  - Yêu cầu mới thay thế yêu cầu pending cũ.
-- Thêm signal hoặc callback `requestFinished` để gửi yêu cầu pending mới nhất.
-- Ưu tiên probe chính thức hơn prefetch.
-- Trên CPU, chỉ prefetch khi worker hoàn toàn rảnh.
-- Gộp OCR vùng theo `regionId + imageHash`.
-- Kiểm tra yêu cầu stale trước preprocess và trước model run nếu có thể.
-- Không dùng kích thước `m_hoverProbes` làm queue depth vì map token không phản ánh
-  event queue của Qt.
-
-#### File dự kiến
-
-- `src/app/AppController.h`
-- `src/app/AppController.cpp`
-- `src/ocr/OcrWorker.h`
-- `src/ocr/OcrWorker.cpp`
-
-#### Test bắt buộc
-
-- Fake OCR mất 500 ms, gửi 50 probe trong 2 giây.
-- Chỉ yêu cầu đầu và yêu cầu mới nhất được xử lý.
-- Queue không vượt quá hai yêu cầu.
-- Popup hiển thị kết quả của vị trí chuột cuối cùng.
-- RAM không tăng theo số probe.
-
-### Giai đoạn 3: Profile CPU/GPU và ngân sách thread
-
-#### Thiết kế
-
-Thêm `OcrExecutionProfile`:
-
-```text
-Auto
-CpuBalanced
-DiscreteGpu
-```
-
-`Auto` là mặc định. Người dùng có thể ghi đè thành CPU hoặc GPU trong Settings.
-
-#### CPU profile
-
-- Detector dùng 2-4 intra-op thread tùy số core vật lý.
-- Recognizer dùng ngân sách CPU chung, không tự mở tới 6 worker trong mỗi engine.
-- OCR và dịch offline không được đồng thời chiếm toàn bộ core.
-- Ưu tiên hover, sau đó mới đến OCR vùng và dịch nền.
-- Dùng một `Ort::Env` chia sẻ để tránh tạo nhiều thread pool ONNX riêng.
-
-#### GPU profile
-
-- Bật FP16 khi model FP16 tồn tại và độ chính xác đạt ngưỡng.
-- Dynamic batch theo nhóm chiều rộng gần nhau.
-- Giới hạn batch theo VRAM và độ trễ, không chỉ theo throughput.
-- Không chạy song song nhiều `Run` trên DirectML.
-
-#### Lựa chọn provider tự động
-
-- Phát hiện GPU rời như hiện tại.
-- Warm-up bằng các shape thực tế của hover và ROI.
-- Nếu GPU rời vẫn chậm hơn CPU hoặc khởi tạo lỗi, fallback CPU cho phiên hiện tại.
-- Log rõ lý do và provider thực tế.
-
-#### File dự kiến
-
-- `src/ocr/OcrTypes.h`
-- `src/ocr/OcrRuntime.*`
-- `src/ocr/OcrRecognizer.cpp`
-- `src/app/AppController.cpp`
-- `src/core/Types.h`
-- `src/ui/SettingsDialog.cpp`
-
-### Giai đoạn 4: Tối ưu hover trên CPU
-
-#### Công việc
-
-- Giảm band ban đầu từ `1200x96` xuống khoảng `768-896x96` trên CPU.
-- Detector CPU chạy lần đầu với `detLimitSide=512`.
-- Retry với 640 nếu không có box, confidence thấp hoặc box chạm mép.
-- Sửa `clippedByBand`: hiện worker luôn emit `false`, nên nhánh mở rộng band không chạy.
-- Recognition vẫn crop từ ảnh gốc, không crop từ ảnh detector đã resize.
-- Chỉ OCR lại khi con trỏ sang dòng khác hoặc nội dung frame thay đổi thật.
-- Cache kết quả theo `imageHash + lineRect`, không chỉ theo text.
-
-#### Điều kiện hoàn thành
-
-- CPU hover không tạo backlog.
-- Di chuyển chuột nhanh không làm OCR tất cả vị trí trung gian.
-- Dòng dài vẫn được đọc đầy đủ sau khi band mở rộng.
-- Tỷ lệ nhận sai không tăng quá ngưỡng benchmark.
-
-### Giai đoạn 5: Refactor OCR ảnh lớn
-
-Hiện tại mỗi tile gọi `recognizeProcessed()`, nên mỗi tile đều chạy cả detector và
-recognizer. Luồng mới:
-
-```text
-detect theo tile
-    -> quy đổi box về tọa độ ảnh gốc
-    -> loại box trùng
-    -> recognize toàn bộ box một lần
-```
-
-#### Công việc
-
-- Tách API `detectTiles()` và `recognizeBoxes()`.
-- Loại box trùng trước recognition.
-- Không tile ROI nhỏ.
-- Chạy detector coarse một lần; chỉ tile khi chữ nhỏ hoặc coarse detect bỏ sót.
-- Thử các cấu hình 1 pass, 2 tile và 4 tile bằng benchmark.
-- Không dùng ngưỡng kích thước ảnh cố định làm điều kiện duy nhất.
-
-#### File dự kiến
-
-- `src/ocr/OcrEngine.cpp`
-- `src/ocr/OcrDetector.*`
-- `src/ocr/OcrRecognizer.*`
-- `tests/test_detection.cpp`
-
-### Giai đoạn 6: Tối ưu capture và bộ nhớ
-
-#### Công việc
-
-- Bảo đảm `wgc_capture_helper.exe` nằm cạnh executable cho mọi build config.
-- Thêm kiểm tra startup xác nhận WGC helper tồn tại và handshake thành công.
-- Chỉ dùng GDI làm fallback và log rõ lý do fallback.
-- Giảm copy `QImage` không cần thiết; crop ROI càng sớm càng tốt.
-- Dùng FPS thích ứng:
-  - Tăng khi đang cuộn hoặc có chuyển động.
-  - Giảm khi frame tĩnh.
-- Giữ cơ chế một frame pending hiện tại.
-- Giới hạn cache theo byte cho line cache, plate cache và frame cache.
-
-#### File dự kiến
-
-- `src/capture/WgcWindowCapture.cpp`
-- `src/capture/GdiWindowCapture.cpp`
-- `src/app/AppController.cpp`
-- `CMakeLists.txt`
-
-### Giai đoạn 7: Tối ưu translation và rate limit
-
-#### Công việc
-
-- Khi Google GTX trả HTTP 429, mở circuit breaker trong 30-60 giây.
-- Trong thời gian breaker, fallback ngay thay vì thử Google cho từng dòng.
-- Gộp nhiều unit trong một request nếu API hỗ trợ.
-- Hủy yêu cầu hover cũ khi con trỏ đã sang dòng mới.
-- Ưu tiên cache và offline engine nếu đã sẵn sàng.
-- Tách thread budget của dịch offline khỏi OCR CPU.
-- Hiển thị trạng thái rõ: `OCR xong, engine dịch đang bị giới hạn`.
-
-#### File dự kiến
-
-- `src/translation/GoogleTranslator.cpp`
-- `src/translation/MyMemoryTranslator.cpp`
-- `src/translation/TranslationWorker.*`
-- `src/app/AppController.cpp`
-
-### Giai đoạn 8: Đánh giá model CPU
-
-Chỉ thực hiện sau khi queue và pipeline đã được sửa, vì đổi model không khắc phục
-được backlog.
-
-#### Thử nghiệm
-
-- PP-OCR mobile detector/recognizer hiện tại.
-- Model ONNX INT8 hoặc QDQ tối ưu cho CPU.
-- FP32 với các cấu hình thread khác nhau.
-- So sánh model tiếng Anh riêng và model đa ngôn ngữ.
-
-#### Điều kiện chấp nhận model mới
-
-- p95 nhanh hơn ít nhất 20% trên máy CPU mục tiêu.
-- Text recall và CER không giảm quá 1%.
-- Không tăng số box rác trên UI/game.
-- RAM và kích thước package nằm trong ngân sách.
-
-## 5. Thứ tự pull request đề xuất
-
-1. `perf/metrics-benchmark`: instrumentation và benchmark có thể lặp lại.
-2. `perf/ocr-latest-wins`: backpressure, coalesce và test queue.
-3. `perf/cpu-execution-profile`: CPU thread budget và shared ORT environment.
-4. `perf/hover-adaptive-band`: band/limit thích ứng và sửa `clippedByBand`.
-5. `perf/tiled-detect-once`: detect tile, loại box trùng, recognize một lần.
-6. `perf/wgc-packaging`: deploy helper và benchmark capture.
-7. `perf/translation-circuit-breaker`: xử lý HTTP 429 và fallback nhanh.
-8. `perf/cpu-model-evaluation`: đánh giá INT8/mobile model.
-
-Mỗi pull request phải kèm benchmark trước/sau và test regression. Không gom tất cả
-thay đổi vào một pull request lớn vì sẽ khó xác định tối ưu nào thực sự có tác dụng.
-
-## 6. Ưu tiên thực tế
-
-Thứ tự nên làm ngay:
-
-1. Instrumentation tối thiểu.
-2. Latest-wins và giới hạn queue hover.
-3. CPU thread budget.
-4. Hover band và detector resolution thích ứng.
-5. Refactor tile để chỉ recognize một lần.
-6. Circuit breaker cho Google 429.
-7. WGC packaging và adaptive FPS.
-8. Thử model INT8 sau cùng.
-
-Ba mục đầu có khả năng cải thiện trải nghiệm CPU lớn nhất mà không đổi model và có
-rủi ro ảnh hưởng độ chính xác thấp nhất.
+| Mục tiêu phản hồi, accuracy, RAM | Giữ | Vẫn đúng, chuyển thành CPU-first với baseline |
+| Instrumentation, benchmark, latest-wins | Giữ và mở rộng | Trace request, tile/plate/queue và region scheduling |
+| Parallel CPU recognition là tối ưu sẵn có | Sửa | Cache write đa luồng là P0 correctness |
+| Stale hover chỉ do token | Sửa | Qt queued calls không bị chặn bởi map token |
+| Region/plate, scroll/cache | Bổ sung | Context geometry, worker plate, scheduler khác README |
+| Hover band nhỏ hơn, tiled detect-once, INT8 nhanh hơn | Hoãn thành thí nghiệm | Thiếu A/B, có rủi ro accuracy |
+| Shared `Ort::Env` như lời giải global thread pool | Loại bỏ kết luận | Không bảo đảm global pool; phải đo thread thật |
+| WGC helper chắc chắn deploy lỗi, GDI làm OCR chậm | Loại bỏ kết luận | CMake đã có dependency/output path; cần benchmark capture độc lập |
+| GPU rời/FP16/CUDA, mục tiêu p95 cố định | Hạ ưu tiên | Máy đích không có GPU rời; số cũ chỉ là goals |
+| Translation/cache/fallback cần xây mới | Loại bỏ | Đã tồn tại; trọng tâm QoS, 429 và stale result |

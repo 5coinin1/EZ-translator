@@ -4,6 +4,8 @@
 #include <QString>
 #include <QtTypes>
 
+#include <chrono>
+
 namespace EZTranslator {
 
 /**
@@ -48,9 +50,13 @@ struct OcrOptions
 /** Thời gian/chi phí của lần recognize() gần nhất. */
 struct OcrTimings
 {
+    double totalMs{0.0};  ///< toàn bộ OcrEngine::recognize(), gồm preprocess/merge/tile
     double detMs{0.0};
     double recMs{0.0};
     int    boxes{0};
+    int    detCalls{0};   ///< số lần detector forward trong request
+    int    tileCount{0};  ///< số tile/đường detect đã chạy
+    int    altCalls{0};   ///< số lần gọi recognizer model dự phòng
     int    recCalls{0};    ///< số forward pass (một batch gộp nhiều dòng)
     int    recCached{0};   ///< số dòng lấy từ cache (không chạy model)
     bool   recBatched{false};
@@ -58,5 +64,14 @@ struct OcrTimings
     double recDecodeMs{0.0}; ///< phần CTC decode trên CPU
     qint64 recOutputBytes{0};
 };
+
+/** Đồng hồ monotonic dùng chung giữa UI thread và OCR worker để đo queue wait. */
+inline qint64 ocrMonotonicMs()
+{
+    using Clock = std::chrono::steady_clock;
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               Clock::now().time_since_epoch())
+        .count();
+}
 
 } // namespace EZTranslator

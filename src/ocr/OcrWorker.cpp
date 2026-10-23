@@ -172,12 +172,23 @@ void OcrWorker::load(const EZTranslator::OcrOptions& options)
     emit loaded(true, m_engine.providerName(), QString());
 }
 
-void OcrWorker::recognizeRegion(const QString& id, const QImage& image)
+void OcrWorker::recognizeRegion(const QString& id, quint64 requestToken, quint64 imageHash,
+                                qint64 queuedAtMs, const QImage& image)
 {
     m_pendingRequests.fetch_sub(1);
 
+    const qint64 startedAtMs = EZTranslator::ocrMonotonicMs();
     const QList<EZTranslator::OcrTextBox> boxes = m_engine.recognize(image);
-    emit regionRecognized(id, boxes); // phát NGAY: assembly + gửi dịch chạy tiếp
+    const EZTranslator::OcrTimings timings = m_engine.lastTimings();
+    qInfo().noquote() << "[OCR_METRIC] path=region"
+                      << "request=" << requestToken << "queueMs="
+                      << qMax<qint64>(0, startedAtMs - queuedAtMs) << "totalMs="
+                      << timings.totalMs << "detMs=" << timings.detMs << "recMs="
+                      << timings.recMs << "detCalls=" << timings.detCalls << "tiles="
+                      << timings.tileCount << "altCalls=" << timings.altCalls << "boxes="
+                      << timings.boxes << "recCalls=" << timings.recCalls << "recCached="
+                      << timings.recCached;
+    emit regionRecognized(id, requestToken, imageHash, boxes);
 
     // Dựng plate (nền xoá chữ) trên CHÍNH luồng này, SAU khi đã phát box: plate 100-270ms KHÔNG
     // được nằm trên luồng UI — trước đây nó dựng ở đó và chặn mọi kết quả OCR/dịch phía sau
@@ -192,13 +203,16 @@ void OcrWorker::recognizeRegion(const QString& id, const QImage& image)
             textRects.append(box.rect);
     }
     if (!moreRequestsPending && !textRects.isEmpty()) {
-        emit regionPlateReady(id, EZTranslator::imageDifferenceHash(image),
+        emit regionPlateReady(id, requestToken, imageHash,
                               TextCover::cleanPlate(image, image.rect(), textRects));
     }
+    emit regionFinished(id, requestToken);
 }
 
-void OcrWorker::probeHover(const QString& id, const QImage& band, const QPoint& cursorLocal)
+void OcrWorker::probeHover(const QString& id, const QImage& band, const QPoint& cursorLocal,
+                           qint64 queuedAtMs)
 {
+    const qint64 startedAtMs = EZTranslator::ocrMonotonicMs();
     // Giữ nguyên ĐỘ PHÂN GIẢI hiệu dụng khi dải rộng: det resize sao cho cạnh dài ≤
     // giới hạn, nên dải rộng gấp rưỡi mà giữ giới hạn 640 thì chữ nhỏ đi 1.5 lần và
     // det dễ hụt. Thang theo bề rộng dải (dải thường 1200 → vẫn đúng 640 như trước).
@@ -226,6 +240,8 @@ void OcrWorker::probeHover(const QString& id, const QImage& band, const QPoint& 
 
     QString text;
     QRect lineRect;
+    EZTranslator::OcrTimings recTimings;
+    bool recRan = false;
 
     // Khoan dung khi con trỏ nằm giữa hai dòng: bám dòng gần nhất thay vì im lặng.
     if (hit && hitVertical <= qMax(8, hit->rect.height())
@@ -304,6 +320,8 @@ void OcrWorker::probeHover(const QString& id, const QImage& band, const QPoint& 
         }
         const QList<EZTranslator::OcrTextBox> recognized =
             m_engine.recognizer().recognize(band, input);
+        recTimings = m_engine.recognizer().lastTimings();
+        recRan = true;
 
         // SẮP LẠI theo thứ tự ĐỌC trước khi ghép: recognizer trả về theo thứ tự input, mà
         // input lại bị xáo theo cụm/đoạn — không sắp thì các câu bị đảo và bản dịch sai nghĩa.
@@ -344,9 +362,17 @@ void OcrWorker::probeHover(const QString& id, const QImage& band, const QPoint& 
             lineRect = QRect();
         else
             m_hoverLineHeight = qMax(1, lineRect.height());
+
     }
 
     // QUAY VỀ BẢN CŨ: đơn vị = DÒNG con trỏ, dải cố định; không mở rộng vùng/đoạn nữa.
+    qInfo().noquote() << "[OCR_METRIC] path=hover" << "request=" << id << "queueMs="
+                      << qMax<qint64>(0, startedAtMs - queuedAtMs) << "totalMs="
+                      << (EZTranslator::ocrMonotonicMs() - startedAtMs) << "detMs="
+                      << m_engine.detector().lastMs() << "recMs="
+                      << (recRan ? recTimings.recMs : 0.0) << "boxes=" << boxes.size()
+                      << "recCalls=" << (recRan ? recTimings.recCalls : 0)
+                      << "recCached=" << (recRan ? recTimings.recCached : 0);
     qDebug() << "[Hover] dải" << band.width() << "x" << band.height() << "→ đọc"
              << lineRect.width() << "x" << lineRect.height() << text.left(40);
 

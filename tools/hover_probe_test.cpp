@@ -68,7 +68,8 @@ int main(int argc, char** argv)
 
     // Trỏ vào DÒNG GIỮA — nếu thuật toán chỉ đọc dòng con trỏ thì kết quả là 1 dòng.
     timer.restart();
-    worker.probeHover(QStringLiteral("test"), image, QPoint(300, 74));
+    worker.probeHover(QStringLiteral("test"), image, QPoint(300, 74),
+                      EZTranslator::ocrMonotonicMs());
     const qint64 ms = timer.elapsed();
 
     qInfo().noquote() << "[test] text =" << text;

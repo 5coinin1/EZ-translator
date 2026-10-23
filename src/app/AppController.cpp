@@ -693,6 +693,8 @@ void AppController::spawnOcrWorker(QThread*& thread, EZTranslator::OcrWorker*& w
                 this, &AppController::onRegionRecognized, Qt::QueuedConnection);
         connect(worker, &EZTranslator::OcrWorker::regionPlateReady,
                 this, &AppController::onRegionPlateReady, Qt::QueuedConnection);
+        connect(worker, &EZTranslator::OcrWorker::regionFinished,
+                this, &AppController::onRegionOcrFinished, Qt::QueuedConnection);
     }
 
     connect(thread, &QThread::finished, worker, &QObject::deleteLater);
@@ -706,6 +708,10 @@ void AppController::stopOcr()
     m_ocrLoadAttempted = false;
     m_hoverOcrReady = false;
     m_ocrProvider.clear();
+    m_hoverProbeRunning = false;
+    m_pendingHoverProbe.valid = false;
+    m_hoverProbes.clear();
+    m_regionOcrMailbox.clear();
 
     const auto stopWorker = [this](QThread*& thread, EZTranslator::OcrWorker*& worker) {
         if (worker)
@@ -736,6 +742,7 @@ void AppController::reloadOcr()
 
     m_regionOcrInfo.clear();
     m_regionOcrToken.clear();
+    m_regionOcrMailbox.clear();
     m_regionLinePitch.clear();
     m_regionParagraphRatio.clear();
     m_regionBoxes.clear();
@@ -1153,6 +1160,18 @@ void AppController::sendHoverProbe(const QPoint& screenPoint, bool prefetch, int
     if (!m_hoverFrameReady || m_hoverFrameSize.isEmpty()
         || m_hoverClientPhysical.isEmpty())
         return;
+
+    // Không xếp thêm QMetaCallEvent khi worker đang OCR. Chỉ giữ request mới nhất;
+    // probe chính thức luôn thay probe prefetch đang chờ.
+    if (m_hoverProbeRunning) {
+        if (!m_pendingHoverProbe.valid || !prefetch || m_pendingHoverProbe.prefetch) {
+            m_pendingHoverProbe.screenPoint = screenPoint;
+            m_pendingHoverProbe.prefetch = prefetch;
+            m_pendingHoverProbe.stage = stage;
+            m_pendingHoverProbe.valid = true;
+        }
+        return;
+    }
 #ifdef _WIN32
     const QRect client = m_hoverClientPhysical;
     const QPoint clientPoint = screenPoint - client.topLeft();
@@ -1203,18 +1222,37 @@ void AppController::sendHoverProbe(const QPoint& screenPoint, bool prefetch, int
     if (!prefetch)
         m_hoverLastFinalToken = token;
 
+    m_hoverProbeRunning = true;
+
     m_hoverLastSendMs = m_clock.isValid() ? m_clock.elapsed() : 0;
     m_hoverSentCursor = screenPoint;
 
     const QPoint cursorLocal(fx - srcRect.x(), fy - srcRect.y());
-    QMetaObject::invokeMethod(m_hoverOcrWorker, "probeHover", Qt::QueuedConnection,
-                              Q_ARG(QString, QString::number(token)),
-                              Q_ARG(QImage, bandImage), Q_ARG(QPoint, cursorLocal));
+    const qint64 queuedAtMs = EZTranslator::ocrMonotonicMs();
+    const bool queued = QMetaObject::invokeMethod(
+        m_hoverOcrWorker, "probeHover", Qt::QueuedConnection,
+        Q_ARG(QString, QString::number(token)), Q_ARG(QImage, bandImage),
+        Q_ARG(QPoint, cursorLocal), Q_ARG(qint64, queuedAtMs));
+    if (!queued) {
+        m_hoverProbeRunning = false;
+        m_hoverProbes.remove(token);
+        flushPendingHoverProbe();
+    }
 #else
     Q_UNUSED(screenPoint);
     Q_UNUSED(prefetch);
     Q_UNUSED(stage);
 #endif
+}
+
+void AppController::flushPendingHoverProbe()
+{
+    if (m_hoverProbeRunning || !m_pendingHoverProbe.valid)
+        return;
+
+    const PendingHoverProbe pending = m_pendingHoverProbe;
+    m_pendingHoverProbe.valid = false;
+    sendHoverProbe(pending.screenPoint, pending.prefetch, pending.stage);
 }
 
 void AppController::showHoverLine(const QString& text, const QRect& lineClient,
@@ -1271,15 +1309,21 @@ void AppController::showHoverLine(const QString& text, const QRect& lineClient,
 void AppController::onHoverProbed(const QString& id, const QString& text, const QRect& lineRect,
                                   bool clippedByBand)
 {
-    if (!m_hoverPopup)
-        return;
-
     const quint64 token = id.toULongLong();
     const auto geomIt = m_hoverProbes.constFind(token);
-    if (geomIt == m_hoverProbes.constEnd())
+    if (geomIt == m_hoverProbes.constEnd()) {
+        m_hoverProbeRunning = false;
+        flushPendingHoverProbe();
         return; // probe cũ / không rõ hình học
+    }
     const HoverProbeGeom geom = geomIt.value();
     m_hoverProbes.erase(geomIt);
+    m_hoverProbeRunning = false;
+
+    if (!m_hoverPopup) {
+        flushPendingHoverProbe();
+        return;
+    }
 
     const bool hasLine = !lineRect.isNull() && !text.isEmpty();
 
@@ -1291,6 +1335,7 @@ void AppController::onHoverProbed(const QString& id, const QString& text, const 
         && geom.stage + 1 < kBandStageCount) {
         qDebug() << "[Hover] cụm chạm mép dải → mở rộng bước" << (geom.stage + 1);
         sendHoverProbe(geom.cursorScreen, /*prefetch=*/false, geom.stage + 1);
+        flushPendingHoverProbe();
         return;
     }
 
@@ -1307,10 +1352,14 @@ void AppController::onHoverProbed(const QString& id, const QString& text, const 
     // Dò trước: chỉ để dành, KHÔNG hiện popup (con trỏ còn đang di chuyển).
     const qint64 nowMs = m_clock.isValid() ? m_clock.elapsed() : 0;
 
-    if (geom.prefetch)
+    if (geom.prefetch) {
+        flushPendingHoverProbe();
         return;
-    if (token != m_hoverLastFinalToken)
+    }
+    if (token != m_hoverLastFinalToken) {
+        flushPendingHoverProbe();
         return; // đã có yêu cầu cuối mới hơn
+    }
 
     if (!hasLine) {
         // Debounce: mot probe rong (frame dang chuyen, vung trong, OCR nham)
@@ -1322,6 +1371,7 @@ void AppController::onHoverProbed(const QString& id, const QString& text, const 
             m_hoverPending = false;
             m_hoverEmptyStreak = 0;
         }
+        flushPendingHoverProbe();
         return;
     }
 
@@ -1329,11 +1379,13 @@ void AppController::onHoverProbed(const QString& id, const QString& text, const 
     m_hoverLastValidMs = nowMs;
     if (text == m_hoverSource && m_hoverLineValid
         && (m_hoverPending || !m_hoverTranslation.isEmpty())) {
+        flushPendingHoverProbe();
         return;
     }
 
     m_hoverProbedCursor = geom.cursorScreen;
     showHoverLine(text, m_hoverPrefetch.lineClient, geom.cursorScreen);
+    flushPendingHoverProbe();
 }
 
 void AppController::start()
@@ -1709,6 +1761,7 @@ void AppController::forgetRegion(const QString& regionId)
     m_regionToken.remove(regionId);
     m_regionOcrInfo.remove(regionId);
     m_regionOcrToken.remove(regionId);
+    m_regionOcrMailbox.remove(regionId);
     m_regionLinePitch.remove(regionId);
     m_regionParagraphRatio.remove(regionId);
     m_regionImages.remove(regionId);
@@ -1741,6 +1794,7 @@ void AppController::clearVisualCaches()
     m_regionOcrHash.clear();
     m_regionOcrInfo.clear();
     m_regionOcrToken.clear();
+    m_regionOcrMailbox.clearPending();
     m_regionOcrAtMs.clear();
     m_regionTranslateAtMs.clear();
     m_regionLastChangeMs.clear();
@@ -2134,6 +2188,7 @@ void AppController::onLanguagesChanged(const QString& source, const QString& tar
     m_hoverCache.clear();
     m_regionOcrInfo.clear();
     m_regionOcrToken.clear();
+    m_regionOcrMailbox.clearPending();
     m_regionLinePitch.clear();
     m_regionParagraphRatio.clear();
     m_regionBoxes.clear();
@@ -2365,7 +2420,9 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
                 m_regionImages.insert(regionFrame.regionId, regionColorSample(regionFrame.image));
                 m_regionOcrHash.insert(regionFrame.regionId, regionHash);
                 m_regionOcrAtMs.insert(regionFrame.regionId, now);
-                onRegionRecognized(regionFrame.regionId, *hitBoxes);
+                onRegionRecognized(regionFrame.regionId,
+                                   m_regionOcrToken.value(regionFrame.regionId), regionHash,
+                                   *hitBoxes);
                 continue;
             }
         }
@@ -2384,28 +2441,94 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
         m_regionOcrAtMs.insert(regionFrame.regionId, now);
         // Đánh dấu bản đang phục vụ: các khung sau chỉ nhiễu ≤ maxDistance sẽ bị bỏ qua ở đầu tick.
         m_regionServedHash.insert(regionFrame.regionId, regionHash);
-        // Báo worker biết có yêu cầu mới đang xếp hàng (worker bỏ dựng plate khi còn yêu cầu chờ).
-        m_ocrWorker->noteRequestQueued();
-        QMetaObject::invokeMethod(m_ocrWorker, "recognizeRegion", Qt::QueuedConnection,
-                                  Q_ARG(QString, regionFrame.regionId),
-                                  Q_ARG(QImage, regionFrame.image));
+        queueRegionOcr(regionFrame.regionId,
+                       m_regionOcrToken.value(regionFrame.regionId), regionHash,
+                       regionFrame.image);
     }
 
     m_lastFrameSize = frameSize;
     updateOverlay(frameSize);
 }
 
-void AppController::onRegionRecognized(const QString& regionId,
+void AppController::queueRegionOcr(const QString& regionId, quint64 requestToken,
+                                   quint64 imageHash, const QImage& image)
+{
+    if (!m_ocrWorker || !m_ocrReady.load())
+        return;
+
+    const EZTranslator::OcrRegionMailbox::SubmitResult result = m_regionOcrMailbox.submit(
+        regionId, EZTranslator::OcrRegionMailbox::Request{image, requestToken, imageHash});
+    if (result == EZTranslator::OcrRegionMailbox::SubmitResult::Coalesced) {
+        qInfo() << "[OCR_METRIC] path=region action=coalesced region=" << regionId
+                << "request=" << requestToken;
+    }
+    dispatchNextRegionOcr();
+}
+
+void AppController::dispatchNextRegionOcr()
+{
+    if (!m_ocrWorker || !m_ocrReady.load())
+        return;
+
+    while (const auto dispatch = m_regionOcrMailbox.startNext()) {
+        const QString& regionId = dispatch->regionId;
+        const EZTranslator::OcrRegionMailbox::Request& request = dispatch->request;
+
+        // Region có thể đã bị xoá hoặc đổi nội dung trong lúc chờ round-robin.
+        if (m_regionOcrToken.value(regionId, 0) != request.requestToken
+            || m_regionOcrHash.value(regionId, 0) != request.imageHash) {
+            m_regionOcrMailbox.finish(regionId);
+            continue;
+        }
+
+        m_ocrWorker->noteRequestQueued();
+        const qint64 queuedAtMs = EZTranslator::ocrMonotonicMs();
+        const bool queued = QMetaObject::invokeMethod(
+            m_ocrWorker, "recognizeRegion", Qt::QueuedConnection,
+            Q_ARG(QString, regionId), Q_ARG(quint64, request.requestToken),
+            Q_ARG(quint64, request.imageHash), Q_ARG(qint64, queuedAtMs),
+            Q_ARG(QImage, request.image));
+        if (queued)
+            return;
+
+        m_regionOcrMailbox.finish(regionId);
+        qWarning() << "[OCR] Không xếp được region request:" << regionId;
+    }
+}
+
+void AppController::onRegionRecognized(const QString& regionId, quint64 requestToken,
+                                       quint64 imageHash,
                                        const QList<EZTranslator::OcrTextBox>& boxes)
 {
+    if (m_regionOcrToken.value(regionId, 0) != requestToken
+        || m_regionOcrHash.value(regionId, 0) != imageHash) {
+        qInfo() << "[OCR] Bỏ kết quả region cũ" << regionId << requestToken << imageHash;
+        return;
+    }
     handleRegionBoxes(regionId, boxes, /*buildPlate=*/true);
 }
 
-void AppController::onRegionPlateReady(const QString& regionId, quint64 imageHash,
-                                       const QImage& plate)
+void AppController::onRegionOcrFinished(const QString& regionId, quint64 requestToken)
+{
+    if (!m_regionOcrMailbox.isActive(regionId))
+        return;
+
+    qInfo() << "[OCR] region finished" << regionId << "request" << requestToken;
+    m_regionOcrMailbox.finish(regionId);
+    dispatchNextRegionOcr();
+}
+
+void AppController::onRegionPlateReady(const QString& regionId, quint64 requestToken,
+                                       quint64 imageHash, const QImage& plate)
 {
     if (plate.isNull())
         return;
+
+    if (m_regionOcrToken.value(regionId, 0) != requestToken
+        || m_regionOcrHash.value(regionId, 0) != imageHash) {
+        qInfo() << "[OCR] Bỏ plate region cũ" << regionId << requestToken << imageHash;
+        return;
+    }
 
     QHash<quint64, QImage>& pool = m_regionPlates[regionId];
     if (pool.size() >= 3)
@@ -2866,9 +2989,11 @@ void AppController::onTranslationReady(const QString& regionId, quint64 token,
 
         m_hoverPending = false;
         const QString translated = document.paragraphs.value(0).trimmed();
-        if (m_clock.isValid())
-            qDebug() << "[Hover] translated in" << (m_clock.elapsed() - m_hoverProbeMs) << "ms"
-                     << "source=" << m_hoverSource.left(40);
+        const qint64 hoverTranslateMs =
+            m_clock.isValid() ? m_clock.elapsed() - m_hoverProbeMs : -1;
+        qInfo().noquote() << "[PIPE_METRIC] path=hover stage=translation request=" << token
+                          << "translationMs=" << hoverTranslateMs
+                          << "presented=1 chars=" << translated.size();
 
         if (translated.isEmpty()) {
             // Không dịch được → vẫn hiện dòng gốc để không im lặng.
@@ -2997,6 +3122,15 @@ void AppController::onTranslationReady(const QString& regionId, quint64 token,
                           << "dịch" << translateMs << "ms | HIỆN SAU" << showMs
                           << "ms kể từ lúc nội dung đổi"
                           << "text=" << boxes.first().text.left(120);
+        qInfo().noquote() << "[PIPE_METRIC] path=region stage=presentation request="
+                          << token << "translationMs=" << translateMs
+                          << "pipelineMs="
+                          << (m_clock.isValid()
+                                  ? m_clock.elapsed() - m_regionOcrAtMs.value(regionId, 0)
+                                  : -1)
+                          << "presentationMs=" << showMs
+                          << "translationRuns=" << document.newTranslations
+                          << "presented=1";
         m_regionBoxes.insert(regionId, boxes);
 
         // Bộ nhớ dịch theo đoạn: cuộn lên/xuống gặp lại cùng nội dung thì
