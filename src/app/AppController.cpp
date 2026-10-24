@@ -2424,7 +2424,7 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
             && previousFrame != m_regionFrameProfile.constEnd()) {
             const ScrollOffset scroll = matchProfile(
                 *previousFrame, current, qMax(24, regionFrame.image.height() / 3),
-                0.84, 0.0, false);
+                0.98, 0.0, false);
             overlayScroll = scroll;
             if (scroll.valid && std::abs(scroll.dx) <= 2 && scroll.dy != 0
                 && std::abs(scroll.dy) < regionFrame.image.height() / 3) {
@@ -2464,8 +2464,12 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
                 m_ocrWorker->noteRegionRequest(regionFrame.regionId, 0);
             }
             m_regionOcrMailbox.remove(regionFrame.regionId);
-            if (!trackedScroll)
+            if (!trackedScroll) {
+                m_regionBoxes.remove(regionFrame.regionId);
+                m_regionScrolledOverlay.remove(regionFrame.regionId);
+                m_pendingSourceBoxes.remove(regionFrame.regionId);
                 suspendOverlayForChange(now);
+            }
         }
 
         // NỘI DUNG Y HỆT BẢN ĐÃ PHỤC VỤ (trong ngưỡng "không đổi" của scheduler): KHÔNG làm gì cả —
@@ -2513,8 +2517,12 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
                         m_ocrWorker->noteRegionRequest(regionFrame.regionId, 0);
                     }
                     m_regionOcrMailbox.remove(regionFrame.regionId);
-                    if (!trackedScroll)
+                    if (!trackedScroll) {
+                        m_regionBoxes.remove(regionFrame.regionId);
+                        m_regionScrolledOverlay.remove(regionFrame.regionId);
+                        m_pendingSourceBoxes.remove(regionFrame.regionId);
                         suspendOverlayForChange(now);
+                    }
                 }
                 forceOcr = true;
             }
@@ -3466,6 +3474,22 @@ void AppController::tickOverlayVisibility()
     }
     if (m_state != EZTranslator::TranslationState::Running)
         return;
+
+    // A shifted translation is provisional until OCR confirms the new frame.
+    // Drop it if recognition stalls, instead of pinning old words to new text.
+    if (m_clock.isValid()) {
+        QStringList expired;
+        for (const QString& regionId : m_regionScrolledOverlay) {
+            if (m_clock.elapsed() - m_regionLastChangeMs.value(regionId, 0) > 2500)
+                expired.append(regionId);
+        }
+        for (const QString& regionId : expired) {
+            m_regionBoxes.remove(regionId);
+            m_regionScrolledOverlay.remove(regionId);
+        }
+        if (!expired.isEmpty())
+            updateOverlay(m_lastFrameSize);
+    }
 
     bool foreground = true;
 #ifdef _WIN32
