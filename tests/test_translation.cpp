@@ -257,6 +257,24 @@ private slots:
                                 .arg(second.newTranslations)));
         QVERIFY(second.complete);
     }
+
+    void document_keepsCodeAndPageNumberOutsideTranslation()
+    {
+        DocumentTranslator translator;
+        QStringList sent;
+        const auto doc = translator.translate(
+            QStringLiteral("An explanatory sentence.\n// Returns an instance of Responder\nPattern timeMatcher = Pattern.compile(x);\n56\nAnother paragraph."),
+            QStringLiteral("en"), QStringLiteral("vi"), [&sent](const QStringList& units) {
+                sent = units;
+                return QStringList(units.size(), QStringLiteral("Da dich"));
+            });
+        QCOMPARE(doc.sourceParagraphs.size(), 5);
+        QCOMPARE(doc.paragraphs.at(1), QStringLiteral("// Returns an instance of Responder"));
+        QCOMPARE(doc.paragraphs.at(2), QStringLiteral("Pattern timeMatcher = Pattern.compile(x);"));
+        QCOMPARE(doc.paragraphs.at(3), QStringLiteral("56"));
+        QCOMPARE(sent.size(), 2);
+        QVERIFY(doc.complete);
+    }
 };
 
 QTEST_MAIN(TestTranslation)

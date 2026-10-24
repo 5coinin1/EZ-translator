@@ -69,6 +69,47 @@ private slots:
         QCOMPARE(boxes.first().rect.top(), 70);
         QVERIFY(!boxes.first().coverOnly);
     }
+
+    void readingBlocksDoNotMergeHeadingsCodeAndPageNumbers()
+    {
+        const QList<QRect> lines = {QRect(20, 10, 210, 18), QRect(20, 33, 220, 18),
+                                    QRect(20, 57, 190, 27), QRect(30, 90, 200, 18),
+                                    QRect(20, 114, 15, 18)};
+        const QStringList text = {QStringLiteral("A long prose line that continues"),
+                                  QStringLiteral("on the next line."),
+                                  QStringLiteral("Informative Comments"),
+                                  QStringLiteral("// Returns an instance"),
+                                  QStringLiteral("56")};
+        const auto blocks = EZTranslator::OverlayLayout::groupNovelParagraphs(lines, text);
+        QCOMPARE(blocks.size(), 4);
+        QCOMPARE(blocks.at(0).lineRects.size(), 2);
+        QCOMPARE(blocks.at(1).text, QStringLiteral("Informative Comments"));
+        QCOMPARE(blocks.at(2).text, QStringLiteral("// Returns an instance"));
+        QCOMPARE(blocks.at(3).text, QStringLiteral("56"));
+    }
+
+    void twoColumnsKeepTheirOwnTextAndBounds()
+    {
+        const QList<QRect> lines = {QRect(30, 20, 280, 18), QRect(600, 20, 280, 18),
+                                    QRect(30, 42, 280, 18), QRect(600, 42, 280, 18)};
+        const QStringList text = {QStringLiteral("Left column first sentence continues"),
+                                  QStringLiteral("Right column first sentence continues"),
+                                  QStringLiteral("left column second line ends here"),
+                                  QStringLiteral("right column second line ends here")};
+        const auto blocks = EZTranslator::OverlayLayout::groupNovelParagraphs(lines, text);
+        QCOMPARE(blocks.size(), 2);
+        QCOMPARE(blocks.at(0).lineRects.size(), 2);
+        QCOMPARE(blocks.at(1).lineRects.size(), 2);
+        QVERIFY(blocks.at(0).text.contains(QStringLiteral("Left column")));
+        QVERIFY(!blocks.at(0).text.contains(QStringLiteral("Right column")));
+
+        EZTranslator::TranslatedDocument doc;
+        doc.paragraphs = {QStringLiteral("Cot trai"), QStringLiteral("Cot phai")};
+        const auto boxes = EZTranslator::OverlayLayout::buildNovelBoxes(
+            doc, blocks, QRect(0, 0, 1000, 500));
+        QCOMPARE(boxes.size(), 2);
+        QVERIFY(boxes.at(0).rect.right() < boxes.at(1).rect.left());
+    }
 };
 
 QTEST_GUILESS_MAIN(TestOverlayGeometry)

@@ -2,6 +2,7 @@
 
 #include "translation/TranslationCache.h"
 #include "translation/TranslationPost.h"
+#include "translation/ProtectedText.h"
 
 #include <algorithm>
 
@@ -174,6 +175,11 @@ TranslatedDocument DocumentTranslator::translate(const QString& assembledText, c
             flushParagraph();
             continue;
         }
+        if (isProtectedCode(line) || isPageNumber(line)) {
+            flushParagraph();
+            paragraphLines.append({line});
+            continue;
+        }
         currentLines.append(line);
         if (endsWithSentenceEnd(line))
             flushParagraph();
@@ -189,6 +195,9 @@ TranslatedDocument DocumentTranslator::translate(const QString& assembledText, c
         const int paragraphIndex = document.sourceParagraphs.size();
         document.sourceParagraphs.append(lines.join(QLatin1Char('\n')));
         document.lineCounts.append(std::max(1, int(lines.size())));
+        if (lines.size() == 1
+            && (isProtectedCode(lines.first()) || isPageNumber(lines.first())))
+            continue;
         for (const QString& unit :
              splitSentences(lines.join(QLatin1Char(' ')).simplified(), kMaxUnitChars)) {
             units.append(unit);
@@ -196,8 +205,16 @@ TranslatedDocument DocumentTranslator::translate(const QString& assembledText, c
         }
     }
 
-    if (units.isEmpty())
+    document.paragraphs = QStringList(document.sourceParagraphs.size());
+    for (int i = 0; i < document.sourceParagraphs.size(); ++i) {
+        const QString& paragraph = document.sourceParagraphs.at(i);
+        if (isProtectedCode(paragraph) || isPageNumber(paragraph))
+            document.paragraphs[i] = paragraph;
+    }
+    if (units.isEmpty()) {
+        document.complete = true;
         return document;
+    }
 
     QStringList translations(units.size());
     QStringList missing;
@@ -231,7 +248,6 @@ TranslatedDocument DocumentTranslator::translate(const QString& assembledText, c
     }
 
     // Ghép các đơn vị đã dịch lại theo đoạn (thứ tự giữ nguyên như nguồn).
-    document.paragraphs = QStringList(document.sourceParagraphs.size());
     for (int i = 0; i < units.size(); ++i) {
         const QString& value = translations.at(i);
         if (value.isEmpty())

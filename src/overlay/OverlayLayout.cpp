@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "overlay/ParagraphAnchor.h"
+#include "translation/ProtectedText.h"
 
 #include <QStringList>
 
@@ -112,7 +113,33 @@ QList<NovelParagraph> groupNovelParagraphs(const QList<QRect>& lineRects,
         if (!lineRects.at(i).isEmpty())
             order.append(i);
     }
-    std::sort(order.begin(), order.end(), [&lineRects](int a, int b) {
+    // A page may contain two reading columns. Sort each column top-to-bottom
+    // before assembling paragraphs, so adjacent rows in different columns
+    // never become the same translated block.
+    int columnSplit = 0;
+    if (order.size() >= 4) {
+        QList<int> lefts;
+        QRect extent;
+        for (int index : order) {
+            lefts.append(lineRects.at(index).left());
+            extent = extent.isNull() ? lineRects.at(index) : extent.united(lineRects.at(index));
+        }
+        std::sort(lefts.begin(), lefts.end());
+        int largestGap = 0;
+        for (int i = 1; i < lefts.size(); ++i) {
+            const int gap = lefts.at(i) - lefts.at(i - 1);
+            if (i >= 2 && lefts.size() - i >= 2 && gap > largestGap) {
+                largestGap = gap;
+                columnSplit = (lefts.at(i) + lefts.at(i - 1)) / 2;
+            }
+        }
+        if (largestGap < qMax(48, extent.width() / 4))
+            columnSplit = 0;
+    }
+    std::sort(order.begin(), order.end(), [&lineRects, columnSplit](int a, int b) {
+        if (columnSplit && (lineRects.at(a).left() < columnSplit)
+                                != (lineRects.at(b).left() < columnSplit))
+            return lineRects.at(a).left() < columnSplit;
         if (lineRects.at(a).top() != lineRects.at(b).top())
             return lineRects.at(a).top() < lineRects.at(b).top();
         return lineRects.at(a).left() < lineRects.at(b).left();
@@ -132,9 +159,17 @@ QList<NovelParagraph> groupNovelParagraphs(const QList<QRect>& lineRects,
     NovelParagraph current;
     QRect previousRect;
     QString previousText;
+    bool previousSpecial = false;
+    bool previousRightColumn = false;
     for (int index : order) {
         const QRect rect = lineRects.at(index);
         const QString text = lineTexts.value(index).simplified();
+        const bool pageNumber = EZTranslator::isPageNumber(text);
+        const bool code = EZTranslator::isProtectedCode(text);
+        const bool heading = !code && !pageNumber && text.size() <= 90
+                             && rect.height() >= lineHeight * 1.28;
+        const bool special = code || pageNumber || heading;
+        const bool rightColumn = columnSplit && rect.left() >= columnSplit;
 
         bool newParagraph = current.lineRects.isEmpty();
         if (!newParagraph) {
@@ -144,7 +179,8 @@ QList<NovelParagraph> groupNovelParagraphs(const QList<QRect>& lineRects,
             const bool indented =
                 gap > 2 && indent >= std::max(6, int(std::lround(lineHeight * 0.85)))
                 && endsSentence(previousText);
-            newParagraph = blankGap || indented;
+            newParagraph = blankGap || indented || special || previousSpecial
+                           || rightColumn != previousRightColumn;
         }
         if (newParagraph) {
             if (!current.lineRects.isEmpty())
@@ -168,6 +204,8 @@ QList<NovelParagraph> groupNovelParagraphs(const QList<QRect>& lineRects,
             current.text += text;
         }
         previousRect = rect;
+        previousSpecial = special;
+        previousRightColumn = rightColumn;
         if (!text.isEmpty())
             previousText = text;
     }
@@ -236,12 +274,21 @@ QList<OverlayBox> buildNovelBoxes(const TranslatedDocument& doc,
         const int top = paragraph.rect.top();
         int bottom = paragraph.rect.bottom() + 1;
         const int nextTop = p + 1 < paragraphs.size()
+                                && paragraphs.at(p + 1).rect.top() > top
                                 ? paragraphs.at(p + 1).rect.top()
                                 : (regionBounds.isValid() ? regionBounds.bottom() + 1 : bottom);
         bottom = qMax(bottom, qMin(nextTop, bottom + qMax(2, paragraph.lineHeight / 2)));
 
         const int left = paragraph.rect.left();
-        const int right = qMax(left + 8, columnRight);
+        const bool fixedWidth = EZTranslator::isProtectedCode(paragraph.text)
+                                || EZTranslator::isPageNumber(paragraph.text);
+        int localRight = columnRight;
+        for (const NovelParagraph& other : paragraphs) {
+            if (other.rect.left() > left + qMax(48, paragraph.lineHeight * 4)
+                && other.rect.top() < bottom && other.rect.bottom() >= top)
+                localRight = qMin(localRight, other.rect.left() - 6);
+        }
+        const int right = qMax(left + 8, fixedWidth ? paragraph.rect.right() + 1 : localRight);
         OverlayBox box;
         box.rect = QRect(left, top, right - left, qMax(8, bottom - top));
         box.coverRects = paragraph.lineRects;
