@@ -1,7 +1,9 @@
 #include "ocr/OcrRecognizer.h"
 #include "ocr/OcrRuntime.h"
 
+#include <QDebug>
 #include <QFile>
+#include <QFileInfo>
 #include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -15,6 +17,16 @@
 #include <cmath>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace EZTranslator {
 
@@ -153,13 +165,32 @@ bool OcrRecognizer::load(OcrRuntime& runtime, const OcrOptions& options, QString
     m_impl->lineCache.limit = std::max(0, options.lineCacheLimit);
 
     // fp16 chỉ áp cho rec: nhanh hơn ~15% trên GPU, và box không bị ảnh hưởng.
-    if (options.useGpu) {
+    // Dùng provider THỰC TẾ (CPU fallback thì tuyệt đối không lấy model fp16).
+    const bool gpuProvider = runtime.providerName() == QLatin1String("DirectML")
+                             || runtime.providerName() == QLatin1String("CUDA");
+    if (gpuProvider) {
         QString base = options.recModelPath;
         if (base.endsWith(QStringLiteral(".onnx"), Qt::CaseInsensitive))
             base.chop(5);
         const QString fp16 = base + QStringLiteral("_fp16.onnx");
         if (QFile::exists(fp16))
             m_impl->options.recModelPath = fp16;
+    } else if (qEnvironmentVariable("EZ_OCR_REC_INT8", QStringLiteral("1"))
+               != QLatin1String("0")) {
+        // CPU: model Conv int8 (QDQ) đi kèm model fp32. Chỉ quantize Conv nên
+        // classifier/Softmax vẫn fp32 — nhanh ~2.5-3x, ít RAM hơn, lỗi chữ nhỏ
+        // hơn kiểu int8 toàn mạng. Tắt bằng EZ_OCR_REC_INT8=0 để quay lại fp32.
+        QString base = m_impl->options.recModelPath;
+        if (base.endsWith(QStringLiteral(".onnx"), Qt::CaseInsensitive))
+            base.chop(5);
+        if (!base.endsWith(QStringLiteral("_int8conv"))) {
+            const QString int8 = base + QStringLiteral("_int8conv.onnx");
+            if (QFile::exists(int8)) {
+                m_impl->options.recModelPath = int8;
+                qInfo() << "[OCR] rec CPU dùng model int8 Conv:"
+                        << QFileInfo(int8).fileName();
+            }
+        }
     }
 
     QFile dictFile(m_impl->options.dictionaryPath);
@@ -400,19 +431,26 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
     };
 
     // Recognition MỘT dòng (đường song song trên CPU).
+    std::atomic<double> cpuRecRunMs{0.0};
+    std::atomic<double> cpuRecDecodeMs{0.0};
     const auto recOne = [&](const RecItem& item, QString* text, float* confidence) -> bool {
         const int width = item.width;
         const size_t plane = size_t(kRecHeight) * size_t(width);
         std::vector<float> data(size_t(3) * plane, 0.0f);
         fillSample(data, 0, plane, width, width, item.image);
         const std::vector<int64_t> shape = {1, 3, kRecHeight, width};
-        return impl.session->run(
+        const auto runStart = Clock::now();
+        const bool ok = impl.session->run(
             data.data(), shape, [&](const float* logits, const std::vector<int64_t>& outShape) {
                 if (outShape.size() != 3)
                     return;
+                const auto decodeStart = Clock::now();
                 *text = decodeLogits(logits, int(outShape[1]), int(outShape[2]), impl.dictionary,
                                      confidence);
+                cpuRecDecodeMs.fetch_add(msSince(decodeStart), std::memory_order_relaxed);
             });
+        cpuRecRunMs.fetch_add(msSince(runStart), std::memory_order_relaxed);
+        return ok;
     };
 
     const auto recStart = Clock::now();
@@ -435,6 +473,15 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
         pool.reserve(size_t(recWorkers));
         for (int worker = 0; worker < recWorkers; ++worker) {
             pool.emplace_back([&]() {
+#if defined(_WIN32)
+                // CPU OCR là burst ngắn; trên máy đang cuộn Chrome/game, worker
+                // normal dễ bị đẩy sang E-core. Cho phép A/B bằng env; mặc định
+                // giữ normal để không tranh CPU với UI.
+                if (qEnvironmentVariable("EZ_OCR_REC_HIGHPRIORITY", QStringLiteral("0"))
+                    == QLatin1String("1")) {
+                    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+                }
+#endif
                 for (;;) {
                     if (cancelled && cancelled())
                         break;
@@ -463,6 +510,8 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
                 impl.lineCache.insert(keys[index], outputs[index]);
         }
         impl.timings.recCalls += calls.load();
+        impl.timings.recRunMs += cpuRecRunMs.load(std::memory_order_relaxed);
+        impl.timings.recDecodeMs += cpuRecDecodeMs.load(std::memory_order_relaxed);
         impl.timings.recMs = msSince(recStart);
         return assembleResult();
     }

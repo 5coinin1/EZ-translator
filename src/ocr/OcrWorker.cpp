@@ -4,6 +4,7 @@
 #include "ocr/OcrDetector.h"
 #include "ocr/OcrRecognizer.h"
 #include "ocr/OcrTextAssembler.h"
+#include "ocr/OcrThreadBudget.h"
 #include "overlay/TextCover.h"
 
 #include <QThread>
@@ -152,7 +153,7 @@ void OcrWorker::warmUp()
     const auto detectedBoxes = m_engine.detector().detect(dummy);
     Q_UNUSED(detectedBoxes);
 
-    for (int width : {160, 320, 640}) {
+    for (int width : {160, 320, 480, 640}) {
         EZTranslator::OcrTextBox box;
         box.rect = QRect(4, 20, width, 48);
         const auto recognizedBoxes =
@@ -163,17 +164,68 @@ void OcrWorker::warmUp()
 
 void OcrWorker::load(const EZTranslator::OcrOptions& options)
 {
+    EZTranslator::OcrOptions effective = options;
     QString error;
-    if (!m_engine.load(options, &error)) {
+    QString fallbackReason;
+
+    const auto applyCpuOptions = [](EZTranslator::OcrOptions& opts) {
+        opts.useGpu = false;
+        opts.gpuAdapterIndex = 0;
+        opts.recMaxWidth = std::min(opts.recMaxWidth, 480);
+        const EZTranslator::ResourceProfile profile =
+            opts.lowResource
+                ? EZTranslator::ResourceProfile::Low
+                : EZTranslator::detectOcrResourcePlan(0).profile;
+        const EZTranslator::OcrThreadBudget budget =
+            EZTranslator::chooseOcrThreadBudget(false, opts.hoverWorker, profile);
+        opts.threads = budget.detectorIntraOp;
+        opts.recThreads = budget.recognizerIntraOp;
+        opts.recWorkers = budget.recognizerWorkers;
+        opts.interOpThreads = budget.interOp;
+    };
+
+    bool ok = m_engine.load(effective, &error);
+    if (ok && effective.useGpu
+        && m_engine.providerName() == QLatin1String("CPU")) {
+        // Session GPU đã fallback CPU bên trong OcrRuntime. Nạp lại bằng option CPU
+        // (không fp16, recMaxWidth 480, budget CPU) để máy yếu không chạy 1 worker/1920.
+        fallbackReason = QStringLiteral("GPU session fell back to CPU");
+        EZTranslator::OcrOptions cpu = effective;
+        applyCpuOptions(cpu);
+        error.clear();
+        ok = m_engine.load(cpu, &error);
+        if (ok)
+            effective = cpu;
+    } else if (!ok && effective.useGpu) {
+        // GPU load thất bại (ví dụ fp16 model không chạy trên CPU, driver lỗi).
+        const QString gpuError = error;
+        EZTranslator::OcrOptions cpu = effective;
+        applyCpuOptions(cpu);
+        error.clear();
+        ok = m_engine.load(cpu, &error);
+        if (ok) {
+            effective = cpu;
+            fallbackReason = gpuError;
+        } else if (!gpuError.isEmpty()) {
+            error = gpuError + QStringLiteral(" | CPU fallback: ") + error;
+        }
+    }
+
+    if (!ok) {
         emit loaded(false, QString(), error);
         return;
     }
+
     qInfo() << "[OCR] thread budget provider=" << m_engine.providerName()
-            << "detIntra=" << options.threads << "recIntra=" << options.recThreads
-            << "recWorkers=" << options.recWorkers << "interOp=" << options.interOpThreads
-            << "recMaxWidth=" << options.recMaxWidth;
+            << "detIntra=" << effective.threads << "recIntra=" << effective.recThreads
+            << "recWorkers=" << effective.recWorkers << "interOp=" << effective.interOpThreads
+            << "recMaxWidth=" << effective.recMaxWidth
+            << "lowResource=" << effective.lowResource;
+    if (!fallbackReason.isEmpty())
+        qInfo() << "[OCR] CPU fallback reason=" << fallbackReason;
+
     warmUp();
-    emit loaded(true, m_engine.providerName(), QString());
+    emit loaded(true, m_engine.providerName(), fallbackReason);
 }
 
 void OcrWorker::noteRegionRequest(const QString& id, quint64 token)
@@ -222,7 +274,20 @@ void OcrWorker::recognizeRegion(const QString& id, quint64 requestToken, quint64
         }
     }
     if (!incremental) {
-        boxes = m_engine.recognize(image, cancelled);
+        // CPU full-page: gửi cụm dòng đầu về UI ngay khi nhận dạng xong để dịch/hiện
+        // sớm. Chỉ phát MỘT lần; kết quả đầy đủ vẫn là `regionRecognized` bên dưới.
+        bool partialEmitted = false;
+        const OcrEngine::ProgressFn progress =
+            [this, &partialEmitted, &cancelled, &id, requestToken, imageHash](
+                const QList<EZTranslator::OcrTextBox>& partial) {
+                if (partialEmitted || partial.isEmpty() || cancelled())
+                    return;
+                partialEmitted = true;
+                qInfo().noquote() << "[OCR] partial region=" << id << "request=" << requestToken
+                                  << "boxes=" << partial.size();
+                emit regionRecognizedPartial(id, requestToken, imageHash, partial);
+            };
+        boxes = m_engine.recognize(image, cancelled, progress);
         if (!cancelled()) {
             // Luôn giữ mốc của một lượt full OCR thành công. Quyền sử dụng mốc
             // vẫn do scrollReuse quyết định ở lượt kế tiếp, nhưng không nên bỏ
@@ -250,7 +315,9 @@ void OcrWorker::recognizeRegion(const QString& id, quint64 requestToken, quint64
                       << timings.recMs << "detCalls=" << timings.detCalls << "tiles="
                       << timings.tileCount << "altCalls=" << timings.altCalls << "boxes="
                       << timings.boxes << "recCalls=" << timings.recCalls << "recCached="
-                      << timings.recCached;
+                      << timings.recCached << "recBatched=" << timings.recBatched
+                      << "recRunMs=" << timings.recRunMs << "recDecodeMs="
+                      << timings.recDecodeMs;
     if (cancelled()) {
         qInfo() << "[OCR_METRIC] path=region action=cancelled request=" << requestToken;
         emit regionFinished(id, requestToken);

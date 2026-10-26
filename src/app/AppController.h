@@ -8,6 +8,7 @@
 #include "capture/IWindowCapture.h"
 #include "region/RegionManager.h"
 #include "ocr/OcrScheduler.h"
+#include "ocr/OcrThreadBudget.h"
 #include "ocr/OcrRegionMailbox.h"
 #include "ocr/OcrTypes.h"
 #include "overlay/OverlayLayout.h"
@@ -117,6 +118,9 @@ public slots:
      *  khi thực sự dùng "Cửa sổ nổi") — không tính vào trạng thái sẵn sàng của worker vùng. */
     void onOcrLoaded(int generation, bool hoverWorker, bool ok, const QString& provider,
                      const QString& error);
+    void onRegionRecognizedPartial(const QString& regionId, quint64 requestToken,
+                                   quint64 imageHash,
+                                   const QList<EZTranslator::OcrTextBox>& boxes);
     void onRegionRecognized(const QString& regionId, quint64 requestToken, quint64 imageHash,
                             const QList<EZTranslator::OcrTextBox>& boxes);
     void onRegionScrollMatched(const QString& regionId, quint64 requestToken,
@@ -202,7 +206,7 @@ private:
      *  cập nhật trạng thái hiển thị (vị trí xấp xỉ hiện lên rồi bị sửa là lỗi người dùng vừa báo). */
     void handleRegionBoxes(const QString& regionId,
                            const QList<EZTranslator::OcrTextBox>& boxesIn, bool buildPlate,
-                           bool approximate = false);
+                           bool approximate = false, bool preview = false);
     /** Reconfigure the translation model when OCR reveals a different language family. */
     void maybeUpdateDetectedSource(const QString& text);
     /** Gửi yêu cầu dịch cho vùng (tăng token + nhớ text nguồn của lượt này để neo theo nội dung). */
@@ -244,6 +248,13 @@ private:
     EZTranslator::TextOverlay*      m_textOverlay{nullptr};
     EZTranslator::RegionManager      m_regionManager;
     EZTranslator::OcrScheduler       m_ocrScheduler;
+    /// Kế hoạch tài nguyên (profile + ngưỡng OCR/cache/fps) tính một lần lúc khởi động.
+    EZTranslator::OcrResourcePlan    m_resourcePlan;
+    qint64                           m_motionWindowMs{80};
+    bool                             m_gpuAvailable{false};
+    int                              m_gpuAdapterIndex{0};
+    int                              m_gpuVramMb{0};
+    QString                          m_gpuName;
     QThread*                         m_ocrThread{nullptr};      ///< thread OCR cho VÙNG dịch
     EZTranslator::OcrWorker*         m_ocrWorker{nullptr};
     QThread*                         m_hoverOcrThread{nullptr}; ///< thread OCR RIÊNG cho hover

@@ -32,6 +32,9 @@ struct OcrOptions
     QString dictionaryPath;
 
     bool useGpu{true};
+    int  gpuAdapterIndex{0};   ///< DXGI adapter index (DirectML); 0 = default
+    bool hoverWorker{false};   ///< worker hover (dùng budget CPU nhỏ khi fallback)
+    bool lowResource{false};   ///< máy yếu: CPU fallback dùng 2 worker, cache nhỏ
     bool binarize{false}; ///< thử nghiệm: nhị phân hoá (Otsu) ảnh vùng trước khi detect/rec
     int  threads{0};      ///< intra-op cho detector (0 = ORT tự chọn)
     int  recThreads{1};   ///< intra-op cho recognition (song song nằm ở batch)

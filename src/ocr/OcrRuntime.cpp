@@ -104,6 +104,7 @@ struct OcrRuntime::Impl
     Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "ez-translator-ocr"};
     QString provider{QStringLiteral("CPU")};
     void*   providerSymbol{nullptr};
+    int     adapterIndex{0};
 };
 
 OcrRuntime::OcrRuntime()
@@ -118,7 +119,7 @@ QString OcrRuntime::providerName() const
     return m_impl ? m_impl->provider : QString();
 }
 
-QString OcrRuntime::configure(bool useGpu, QString* error)
+QString OcrRuntime::configure(bool useGpu, int adapterIndex, QString* error)
 {
     if (!m_impl)
         return {};
@@ -126,8 +127,11 @@ QString OcrRuntime::configure(bool useGpu, QString* error)
     if (!useGpu) {
         m_impl->provider = QStringLiteral("CPU");
         m_impl->providerSymbol = nullptr;
+        m_impl->adapterIndex = 0;
         return m_impl->provider;
     }
+
+    m_impl->adapterIndex = qMax(0, adapterIndex);
 
 #if defined(_WIN32)
     // Provider được resolve lúc chạy để một binary dùng được cho cả build
@@ -145,6 +149,10 @@ QString OcrRuntime::configure(bool useGpu, QString* error)
         if (void* symbol = findProviderSymbol(candidate.symbol)) {
             m_impl->providerSymbol = symbol;
             m_impl->provider = QString::fromLatin1(candidate.name);
+            // adapterIndex là chỉ số DXGI (chỉ có nghĩa với DirectML). CUDA dùng
+            // device index riêng, để 0 cho an toàn.
+            if (QString::fromLatin1(candidate.name) == QLatin1String("CUDA"))
+                m_impl->adapterIndex = 0;
             return m_impl->provider;
         }
     }
@@ -157,6 +165,7 @@ QString OcrRuntime::configure(bool useGpu, QString* error)
 
     m_impl->provider = QStringLiteral("CPU");
     m_impl->providerSymbol = nullptr;
+    m_impl->adapterIndex = 0;
     return m_impl->provider;
 }
 
@@ -179,7 +188,7 @@ std::shared_ptr<OcrSession> OcrRuntime::createSession(const QString& modelPath, 
             options.SetExecutionMode(sequential ? ExecutionMode::ORT_SEQUENTIAL
                                                 : ExecutionMode::ORT_PARALLEL);
             auto append = reinterpret_cast<AppendProviderFn>(m_impl->providerSymbol);
-            if (OrtStatus* status = append(options, 0)) {
+            if (OrtStatus* status = append(options, m_impl->adapterIndex)) {
                 const char* message = Ort::GetApi().GetErrorMessage(status);
                 const QString detail = QString::fromUtf8(message ? message : "append failed");
                 Ort::GetApi().ReleaseStatus(status);

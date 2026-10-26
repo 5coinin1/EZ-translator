@@ -51,9 +51,10 @@ public:
     /**
      * @brief Chọn Execution Provider.
      * @param useGpu  true → thử DirectML/CUDA, thất bại thì rơi về CPU.
+     * @param adapterIndex  DXGI adapter index cho DirectML (0 = default).
      * @return Tên provider thực tế ("DirectML"/"CUDA"/"CPU").
      */
-    [[nodiscard]] QString configure(bool useGpu, QString* error = nullptr);
+    [[nodiscard]] QString configure(bool useGpu, int adapterIndex = 0, QString* error = nullptr);
 
     [[nodiscard]] QString providerName() const;
 
