@@ -44,8 +44,10 @@ public:
 
     [[nodiscard]] bool isLoaded() const;
 
-    /** Provider thực tế của session ("DirectML"/"CUDA"/"CPU"). */
+    /** Provider thực tế dạng "Det:.../Rec:...". */
     [[nodiscard]] QString providerName() const;
+    [[nodiscard]] QString detProviderName() const;
+    [[nodiscard]] QString recProviderName() const;
 
     /** Detection rồi Recognition; trả box có text (chưa assemble). */
     [[nodiscard]] QList<OcrTextBox> recognize(const QImage& image,

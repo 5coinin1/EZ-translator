@@ -123,10 +123,13 @@ void TranslationWorker::configure(const TranslationConfig& config)
     // so với ~98ms), lại có beam search nên chất lượng tốt hơn.
     if (allowOffline && allowCt2 && offline) {
         const QString modelDir = dir + QString::fromLatin1(offline->dir);
-        // Đổi CẶP = đổi model: bỏ sidecar cũ, nếu không nó vẫn phục vụ model cũ (im lặng sai).
-        if (m_ct2 && m_ct2ModelDir != modelDir) {
+        const QString wantedDevice = m_config.device.trimmed().toLower();
+        // Đổi CẶP/model hoặc thiết bị: bỏ sidecar cũ, nếu không nó vẫn phục vụ
+        // model/device cũ (im lặng sai).
+        if (m_ct2 && (m_ct2ModelDir != modelDir || m_ct2Device != wantedDevice)) {
             m_ct2.reset();
             m_ct2ModelDir.clear();
+            m_ct2Device.clear();
         }
         if (!m_ct2 && QDir(modelDir).exists()) {
             const QString python = CTranslate2Translator::findPython();
@@ -140,9 +143,10 @@ void TranslationWorker::configure(const TranslationConfig& config)
                 // sidecar — mất toàn bộ công nạp sẵn.
                 if (ct2->start(python, QString(), modelDir, QStringLiteral("int8"),
                                QString::fromLatin1(offline->source),
-                               QString::fromLatin1(offline->target), &error)) {
+                               QString::fromLatin1(offline->target), &error, wantedDevice)) {
                     m_ct2 = std::move(ct2);
                     m_ct2ModelDir = modelDir;
+                    m_ct2Device = wantedDevice;
                     qInfo() << "[Translate] engine ct2 sẵn sàng" << offline->source << "->"
                             << offline->target << "(python =" << python << ")";
                 } else {

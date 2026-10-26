@@ -92,8 +92,8 @@ không dựng plate**; kết quả full ngay sau đó thay thế bằng box đ�
 - GPU không dùng progressive vì batch cả trang đã nhanh.
 - Tắt/A-B: `EZ_OCR_PROGRESSIVE=0`; đổi cụm: `EZ_OCR_PROGRESSIVE_CHUNK=<2..12>`.
 
-> Phần **dịch offline** vẫn chạy CTranslate2 int8 trên **CPU** (ổn định và nhanh hơn
-> Marian GPU với batch nhỏ); Marian ONNX chỉ dùng GPU khi ép
+> Phần **dịch offline** dùng CTranslate2: CPU int8 hoặc CUDA float16 nếu tìm thấy
+> cuBLAS/cuDNN (sidecar tự fallback CPU). Marian ONNX chỉ dùng GPU khi ép
 > `EZ_TRANSLATE_ENGINE=marian`. `useGpuAcceleration` là cờ legacy, không điều khiển OCR.
 
 ## Tài nguyên (máy yếu)
@@ -141,3 +141,31 @@ Render ảnh có chữ rồi chạy det+rec, in box/text/timing.
 | det | ~12 ms |
 | rec | ~170 ms cho 36 dòng (lần đầu chậm hơn do warmup) |
 | rec (cache) | ~0 ms cho dòng đã gặp |
+
+## Thiết bị OCR theo stage (Auto)
+
+Settings → OCR có hai lựa chọn độc lập:
+
+- **Detection**: `auto | cpu | directml | cuda`
+- **Recognition**: `auto | cpu | directml | cuda`
+
+Fallback:
+
+```text
+auto/cuda: CUDA → DirectML → CPU
+directml: DirectML → CPU
+cpu: CPU
+```
+
+Provider thực tế hiển thị dạng `Det:<provider>/Rec:<provider>` trong status/log.
+CUDA OCR cần gói ONNX Runtime CUDA cài thêm; build DirectML mặc định sẽ fallback
+DirectML rồi CPU. Mặc định vẫn là `auto`.
+
+### Gói CUDA OCR optional
+
+Base app chỉ có ONNX Runtime DirectML. Trong Settings → OCR, chọn CUDA sẽ hỏi
+tải gói ONNX Runtime CUDA (~750 MB–1 GB). Script cài vào
+`%LOCALAPPDATA%\EZTeam\EZ-Translator\cuda`, tạo profile app riêng và marker.
+Lần mở sau, launcher ẩn trong `main.cpp` sẽ chạy profile CUDA nếu setting vẫn
+là CUDA; nếu gói thiếu/lỗi, app quay lại DirectML/CPU. Không cần chọn launcher
+thủ công.

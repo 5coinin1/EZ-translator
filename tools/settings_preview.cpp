@@ -2,7 +2,7 @@
 // không cần mở app thật. Dùng cài đặt THẬT đang lưu để thấy đúng trạng thái người dùng.
 //
 //   set QT_QPA_PLATFORM=offscreen
-//   settings_preview.exe [thư-mục-xuất]
+//   settings_preview.exe [thư-mục-xuất] [rộng] [cao]
 #include <QApplication>
 #include <QDir>
 #include <QFileInfo>
@@ -27,7 +27,9 @@ int main(int argc, char** argv)
 
     SettingsDialog dialog;
     dialog.setSettings(settings);
-    dialog.resize(760, 560);
+    const int width = argc > 2 ? QString::fromLocal8Bit(argv[2]).toInt() : 880;
+    const int height = argc > 3 ? QString::fromLocal8Bit(argv[3]).toInt() : 680;
+    dialog.resize(width, height);
     // Đặt ngoài màn hình: render được đủ nét với font thật mà không nháy cửa sổ trước mắt
     // người dùng (offscreen platform không có font hệ thống nên chữ ra ô vuông).
     dialog.move(-4000, -4000);

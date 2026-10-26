@@ -119,7 +119,10 @@ struct AppSettings {
     QString ocrEngine{"paddleocr"};       // engine OCR đang dùng thật ("paddleocr"; các engine khác chưa hỗ trợ)
     QString sourceLanguage{"en"};         // ngôn ngữ nguồn cho OCR/translate ("auto", "en", "zh", ...)
     QString targetLanguage{"vi"};         // ngôn ngữ đích của bản dịch
-    bool ocrUseGpu{true};                 // true = thử GPU (DirectML), tự fallback CPU
+    bool ocrUseGpu{true};                 // legacy; migrate sang ocrDetDevice/ocrRecDevice
+    QString ocrDetDevice{"auto"};         // auto | cpu | directml | cuda
+    QString ocrRecDevice{"auto"};         // auto | cpu | directml | cuda
+    QString translateDevice{"auto"};      // auto | cpu | cuda (CTranslate2)
     bool ocrBinarize{false};              // thử nghiệm: nhị phân hoá ảnh vùng trước khi OCR
     int cacheCapacityLines{5000};         // số dòng tối đa giữ trong cache bản dịch
 

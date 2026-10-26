@@ -75,6 +75,7 @@ private:
     TranslationCache m_cache;
     std::unique_ptr<ITranslator> m_ct2;      ///< ưu tiên 1: CTranslate2 int8 (nhanh nhất)
     QString m_ct2ModelDir;                   ///< model dir sidecar đang phục vụ (đổi cặp = đổi model)
+    QString m_ct2Device;                     ///< auto/cpu/cuda đang dùng
     std::unique_ptr<ITranslator> m_marian;   ///< ưu tiên 2: Marian ONNX fp32
     std::unique_ptr<ITranslator> m_primary;  ///< online: Google (API key hoặc gtx)
     std::unique_ptr<ITranslator> m_fallback; ///< online dự phòng: MyMemory

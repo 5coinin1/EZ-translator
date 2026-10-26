@@ -56,6 +56,7 @@ private:
 
     // Translation page widgets
     QComboBox*       m_translationEngine{nullptr};
+    QComboBox*       m_translateDevice{nullptr};
     QLineEdit*       m_googleApiKey{nullptr};
     QLineEdit*       m_aiEndpoint{nullptr};
     QLineEdit*       m_aiApiKey{nullptr};
@@ -71,8 +72,12 @@ private:
 
     // OCR page widgets
     QLabel*          m_ocrModelLabel{nullptr};
-    ToggleSwitch*    m_ocrGpu{nullptr};
+    QComboBox*       m_ocrDetDevice{nullptr};
+    QComboBox*       m_ocrRecDevice{nullptr};
+    QPushButton*     m_cudaInstallBtn{nullptr};
+    QLabel*          m_cudaPackStatus{nullptr};
     ToggleSwitch*    m_ocrBinarize{nullptr};
+    bool             m_loadingSettings{false};
 
     // Hotkeys page widgets
     QKeySequenceEdit* m_hotkeyToggle{nullptr};

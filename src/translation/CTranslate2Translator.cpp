@@ -178,15 +178,18 @@ void CTranslate2Translator::markFailed(const QString& reason)
 bool CTranslate2Translator::start(const QString& pythonExe, const QString& scriptPath,
                                   const QString& modelDir, const QString& computeType,
                                   const QString& sourceLang, const QString& targetLang,
-                                  QString* error)
+                                  QString* error, const QString& device)
 {
     const QString resolved = scriptPath.isEmpty() ? ct2ScriptPath() : scriptPath;
-    // Đổi model/ngôn ngữ thì phải khởi động lại, nếu không sidecar cũ vẫn phục vụ
-    // model cũ (đổi ngôn ngữ sẽ im lặng không có tác dụng).
+    QString normalizedDevice = device.trimmed().toLower();
+    if (normalizedDevice != QLatin1String("cpu") && normalizedDevice != QLatin1String("cuda"))
+        normalizedDevice = QStringLiteral("auto");
+    // Đổi model/ngôn ngữ/thiết bị thì phải khởi động lại, nếu không sidecar cũ vẫn
+    // phục vụ model hoặc device cũ (đổi ngôn ngữ/GPU sẽ im lặng không có tác dụng).
     if (isReady()
         && (m_python != pythonExe || m_script != resolved || m_modelDir != modelDir
             || m_computeType != computeType || m_sourceLang != sourceLang
-            || m_targetLang != targetLang)) {
+            || m_targetLang != targetLang || m_device != normalizedDevice)) {
         stop();
     }
     m_python = pythonExe;
@@ -195,6 +198,7 @@ bool CTranslate2Translator::start(const QString& pythonExe, const QString& scrip
     m_computeType = computeType;
     m_sourceLang = sourceLang;
     m_targetLang = targetLang;
+    m_device = normalizedDevice;
     return ensureStarted(error);
 }
 
@@ -229,8 +233,11 @@ bool CTranslate2Translator::ensureStarted(QString* error)
 
     markFailed(QString());
     m_process.setWorkingDirectory(QFileInfo(m_script).absolutePath());
+    QProcessEnvironment processEnv = QProcessEnvironment::systemEnvironment();
+    processEnv.insert(QStringLiteral("EZ_CT2_DEVICE"), m_device);
+    m_process.setProcessEnvironment(processEnv);
     const int threads = chooseTranslationThreads();
-    qInfo() << "[Translate] CT2 thread budget =" << threads;
+    qInfo() << "[Translate] CT2 thread budget =" << threads << "| device =" << m_device;
     m_process.start(m_python,
                     {m_script, m_modelDir, m_computeType, QString::number(threads), m_sourceLang,
                      m_targetLang});
@@ -261,8 +268,14 @@ bool CTranslate2Translator::waitForReadyLine(int timeoutMs, QString* error)
             if (line.isEmpty())
                 continue;
             const QJsonObject object = QJsonDocument::fromJson(line).object();
-            if (object.contains(QStringLiteral("ready")))
+            if (object.contains(QStringLiteral("ready"))) {
+                const QString device = object.value(QStringLiteral("device")).toString();
+                const QString compute = object.value(QStringLiteral("compute")).toString();
+                if (!device.isEmpty())
+                    qInfo().noquote() << "[Translate] CT2 sidecar device =" << device
+                                      << "| compute =" << compute;
                 return true;
+            }
         }
         if (m_process.state() == QProcess::NotRunning)
             break;

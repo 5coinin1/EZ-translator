@@ -3,6 +3,21 @@
 Dịch văn bản đã OCR theo cặp ngôn ngữ chọn trên màn hình chính (mặc định en → vi).
 Tách **cache** / **engine** / **ghép đoạn**.
 
+## CPU / GPU
+
+Sidecar CTranslate2 tự chọn **CUDA** nếu tìm thấy cuBLAS/cuDNN (ưu tiên
+`torch/lib` của PyTorch, sau đó `nvidia/*/bin` hoặc `CUDA_PATH`). Trên GPU dùng
+`float16`; nếu không tạo được CUDA session thì tự fallback CPU `int8`.
+
+- CPU: 4 thread, model `ct2-en-vi-int8`, batch 8.
+- GPU: 1 thread, `float16`, batch 32; VRAM dùng thêm khoảng 0.3-0.5 GB.
+- Đo 20 câu mới: CPU ~0.20-0.25 s; GPU ~0.04-0.07 s sau warm-up.
+- Sidecar warm-up một batch nhỏ trước khi báo ready để tránh trễ lượt đầu.
+- Settings → Dịch thuật → **Thiết bị dịch**: `Tự động (CUDA → CPU) / CPU / CUDA`.
+- Ép chế độ: `EZ_CT2_DEVICE=auto|cpu|cuda`; compute: `EZ_CT2_COMPUTE=...`;
+  batch GPU: `EZ_CT2_FAST_BATCH=32`.
+- Nếu máy không có CUDA/cuDNN, app vẫn chạy CPU như cũ.
+
 ## Thành phần
 
 ### `ITranslator` — interface engine

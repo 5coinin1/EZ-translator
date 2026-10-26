@@ -684,20 +684,39 @@ EZTranslator::OcrOptions AppController::ocrOptions(bool hoverWorker) const
         options.recModelPath = dir + QStringLiteral("/ch_PP-OCRv4_rec_infer.onnx");
         options.dictionaryPath = dir + QStringLiteral("/ppocr_keys_v1.txt");
     }
-    options.useGpu = m_settings.ocrUseGpu && m_gpuAvailable;
+    const auto normalizeDevice = [](QString device) {
+        device = device.trimmed().toLower();
+        if (device != QLatin1String("cpu") && device != QLatin1String("directml")
+            && device != QLatin1String("cuda")) {
+            device = QStringLiteral("auto");
+        }
+        return device;
+    };
+    const QString detDevice = normalizeDevice(m_settings.ocrDetDevice);
+    const QString recDevice = normalizeDevice(m_settings.ocrRecDevice);
+    const bool detGpu = detDevice != QLatin1String("cpu");
+    const bool recGpu = recDevice != QLatin1String("cpu");
+
+    options.detDevice = detDevice;
+    options.recDevice = recDevice;
+    options.useGpu = detGpu || recGpu; // legacy + worker fallback
     options.gpuAdapterIndex = m_gpuAdapterIndex;
     options.hoverWorker = hoverWorker;
     options.lowResource = m_resourcePlan.profile == EZTranslator::ResourceProfile::Low;
-    if (m_settings.ocrUseGpu && !m_gpuAvailable) {
-        qInfo() << "[OCR] Không phát hiện GPU rời đủ VRAM; chuyển OCR sang CPU.";
+    if (options.useGpu && !m_gpuAvailable) {
+        qInfo() << "[OCR] Không phát hiện GPU rời đủ VRAM; OCR sẽ fallback CPU.";
     }
-    const EZTranslator::OcrThreadBudget budget =
-        EZTranslator::chooseOcrThreadBudget(options.useGpu, hoverWorker,
-                                            m_resourcePlan.profile);
-    options.threads = budget.detectorIntraOp;
-    options.recThreads = budget.recognizerIntraOp;
-    options.recWorkers = budget.recognizerWorkers;
-    options.interOpThreads = budget.interOp;
+
+    // Det và Rec có budget riêng: det CPU có thể 1-2 thread trong khi rec GPU
+    // chỉ 1 session; ngược lại rec CPU dùng nhiều worker.
+    const EZTranslator::OcrThreadBudget cpuBudget =
+        EZTranslator::chooseOcrThreadBudget(false, hoverWorker, m_resourcePlan.profile);
+    const EZTranslator::OcrThreadBudget gpuBudget =
+        EZTranslator::chooseOcrThreadBudget(true, hoverWorker, m_resourcePlan.profile);
+    options.threads = detGpu ? gpuBudget.detectorIntraOp : cpuBudget.detectorIntraOp;
+    options.recThreads = recGpu ? gpuBudget.recognizerIntraOp : cpuBudget.recognizerIntraOp;
+    options.recWorkers = recGpu ? gpuBudget.recognizerWorkers : cpuBudget.recognizerWorkers;
+    options.interOpThreads = 1;
     options.binarize = m_settings.ocrBinarize;
     options.lineCacheLimit = m_resourcePlan.lineCacheLimit;
 
@@ -705,8 +724,7 @@ EZTranslator::OcrOptions AppController::ocrOptions(bool hoverWorker) const
     // dòng dài thành các mảnh chồng lấn 480 px rồi ghép text nhanh hơn 2-3 lần
     // so với đưa nguyên dòng 1000-1900 px vào model. GPU giữ ảnh rộng để giảm
     // số lần dispatch; biến môi trường phục vụ A/B trên máy người dùng.
-    options.recMaxWidth =
-        EZTranslator::chooseOcrRecMaxWidth(options.useGpu, m_gpuVramMb);
+    options.recMaxWidth = EZTranslator::chooseOcrRecMaxWidth(recGpu, m_gpuVramMb);
     bool recWidthOk = false;
     const int requestedRecWidth =
         qEnvironmentVariableIntValue("EZ_OCR_REC_MAX_WIDTH", &recWidthOk);
@@ -889,19 +907,17 @@ void AppController::onOcrLoaded(int generation, bool hoverWorker, bool ok, const
         return;
 
     m_ocrProvider = provider;
-    if (m_ocrProvider == QLatin1String("CPU")) {
-        if (!m_settings.ocrUseGpu) {
-            m_mainWindow->setStatus(QStringLiteral("OCR: CPU (đã tắt GPU trong Cài đặt)"),
-                                    QColor("#38bdf8"));
-        } else if (error.isEmpty()) {
-            m_mainWindow->setStatus(
-                QStringLiteral("OCR: CPU (không có GPU DX12/DirectML)"), QColor("#f59e0b"));
-        } else {
-            const QString detail = error.left(90);
-            m_mainWindow->setStatus(QStringLiteral("OCR: CPU (GPU fallback: ") + detail + ')',
-                                    QColor("#f59e0b"));
-            qInfo() << "[OCR] CPU fallback detail:" << detail;
-        }
+    const bool anyCpu = m_ocrProvider.contains(QStringLiteral("CPU"));
+    const bool anyGpu = m_ocrProvider.contains(QStringLiteral("DirectML"))
+                        || m_ocrProvider.contains(QStringLiteral("CUDA"));
+    if (anyCpu) {
+        const QString detail = error.left(90);
+        m_mainWindow->setStatus(QStringLiteral("OCR: ") + m_ocrProvider
+                                    + (detail.isEmpty() ? QString() : QStringLiteral(" (")
+                                                                     + detail + ')'),
+                                anyGpu ? QColor("#f59e0b") : QColor("#38bdf8"));
+        if (!detail.isEmpty())
+            qInfo() << "[OCR] fallback detail:" << detail;
     } else {
         m_mainWindow->setStatus(QStringLiteral("OCR: ") + m_ocrProvider, QColor("#22c55e"));
     }
@@ -936,6 +952,9 @@ EZTranslator::TranslationConfig AppController::translationConfig(const QString& 
     config.aiModel = m_settings.aiModel;
     config.aiSystemPrompt = m_settings.aiSystemPrompt;
     config.cacheCapacity = qMin(m_settings.cacheCapacityLines, m_resourcePlan.translationCacheLines);
+    config.device = m_settings.translateDevice.trimmed().toLower();
+    if (config.device != QLatin1String("cpu") && config.device != QLatin1String("cuda"))
+        config.device = QStringLiteral("auto");
     return config;
 }
 
@@ -2131,6 +2150,8 @@ void AppController::onSettingsSaved(const EZTranslator::AppSettings& settings)
     // Đổi engine/đường dẫn model OCR cần nạp lại model (nặng) — chỉ khi app đã từng nạp.
     const bool ocrReloadNeeded = updated.ocrEngine != m_settings.ocrEngine
                                  || updated.ocrUseGpu != m_settings.ocrUseGpu
+                                 || updated.ocrDetDevice != m_settings.ocrDetDevice
+                                 || updated.ocrRecDevice != m_settings.ocrRecDevice
                                  || updated.ocrBinarize != m_settings.ocrBinarize;
     const bool novelModeChanged = updated.novelMode != m_settings.novelMode;
 
