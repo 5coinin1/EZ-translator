@@ -211,6 +211,12 @@ AppController::AppController(QObject* parent)
     m_visibilityTimer = new QTimer(this);
     m_visibilityTimer->setInterval(250);
     connect(m_visibilityTimer, &QTimer::timeout, this, &AppController::tickOverlayVisibility);
+
+    // Timer xac minh: khi scroll-tracking giu ban dich cu, van phai OCR lai sau khi anh dung yen
+    // de bat false-match/page-jump (neu khong, text cu co the dung mai toi lan doi ke tiep).
+    m_verifyTimer = new QTimer(this);
+    m_verifyTimer->setInterval(50);
+    connect(m_verifyTimer, &QTimer::timeout, this, &AppController::verifyPendingRegions);
     qDebug() << "Setting mock regions...";
 
     initConnections();
@@ -741,6 +747,9 @@ void AppController::stopOcr()
     m_pendingHoverProbe.valid = false;
     m_hoverProbes.clear();
     m_regionOcrMailbox.clear();
+    m_regionVerifyPending.clear();
+    if (m_verifyTimer)
+        m_verifyTimer->stop();
 
     const auto stopWorker = [this](QThread*& thread, EZTranslator::OcrWorker*& worker) {
         if (worker)
@@ -1803,6 +1812,7 @@ void AppController::forgetRegion(const QString& regionId)
     m_regionDisplayProfile.remove(regionId);
     m_regionFrameProfile.remove(regionId);
     m_regionScrolledOverlay.remove(regionId);
+    m_regionVerifyPending.remove(regionId);
     m_regionLineTexts.remove(regionId);
     m_regionToken.remove(regionId);
     m_regionOcrInfo.remove(regionId);
@@ -2400,6 +2410,7 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
 
     m_ocrScheduler.beginTick();
     const qint64 now = m_clock.isValid() ? m_clock.elapsed() : 0;
+    const bool forceVerifyFrame = m_forceVerifyFrame;
 
     QSize frameSize;
     for (const EZTranslator::RegionFrame& regionFrame : regionFrames) {
@@ -2410,6 +2421,28 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
 
         // Hash nội dung vùng — dùng cho cả đường tăng dần lẫn cache box bên dưới.
         const quint64 regionHash = EZTranslator::imageDifferenceHash(regionFrame.image);
+
+        // Xac minh: scroll-tracking vua giu ban dich cu, nhung co the day la page-jump bi khop nham.
+        // OCR lai dung frame hien tai, khong doi frame/change ke tiep.
+        if (forceVerifyFrame && m_regionVerifyPending.contains(regionFrame.regionId)) {
+            const QString& verifyId = regionFrame.regionId;
+            m_regionVerifyPending.remove(verifyId);
+            const quint64 verifyToken = ++m_tokenCounter;
+            m_regionOcrToken.insert(verifyId, verifyToken);
+            m_regionOcrInfo.insert(verifyId, {regionFrame.pixelRect, regionFrame.sourceFrameSize});
+            m_regionImages.insert(verifyId, regionColorSample(regionFrame.image));
+            m_regionOcrHash.insert(verifyId, regionHash);
+            m_regionOcrAtMs.insert(verifyId, now);
+            m_regionServedProfile.insert(verifyId,
+                                         grayProfile(regionFrame.image, regionFrame.image.rect(), 8,
+                                                     /*withGradients=*/true));
+            m_regionServedHash.insert(verifyId, regionHash);
+            qInfo().noquote() << "[OCR] verify region=" << verifyId
+                              << "sinceChange=" << (now - m_regionLastChangeMs.value(verifyId, now))
+                              << "ms";
+            queueRegionOcr(verifyId, verifyToken, regionHash, regionFrame.image);
+            continue;
+        }
 
         // Lên lịch: chỉ OCR khi vùng đã settle, qua cooldown, và tối đa vài lần mỗi tick.
         const EZTranslator::OcrScheduleDecision decision =
@@ -2441,6 +2474,14 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
             }
         }
         m_regionFrameProfile.insert(regionFrame.regionId, current);
+
+        // Scroll-tracking giu ban dich cu chi la TAM THOI. Hen OCR xac minh sau khi anh dung yen;
+        // neu day la page-jump bi khop nham thi se co ban dich moi thay vi dung text cu mai.
+        if (trackedScroll && m_overlayMode) {
+            m_regionVerifyPending.insert(regionFrame.regionId);
+            if (m_verifyTimer && !m_verifyTimer->isActive())
+                m_verifyTimer->start();
+        }
 
         if (decision.changed) {
             if (now - m_overlayScrollLogAtMs >= 2000) {
@@ -2609,6 +2650,8 @@ void AppController::queueRegionOcr(const QString& regionId, quint64 requestToken
 {
     if (!m_ocrWorker || !m_ocrReady.load())
         return;
+
+    m_regionVerifyPending.remove(regionId);
 
     const EZTranslator::OcrRegionMailbox::SubmitResult result = m_regionOcrMailbox.submit(
         regionId, EZTranslator::OcrRegionMailbox::Request{
@@ -3459,6 +3502,45 @@ void AppController::refreshFloatingWindow()
         m_floatingWindow->setStatusText(QStringLiteral("Đang chờ văn bản OCR..."));
     else if (translated.isEmpty())
         m_floatingWindow->setStatusText(QStringLiteral("Đang dịch..."));
+}
+
+void AppController::verifyPendingRegions()
+{
+    if (m_regionVerifyPending.isEmpty()) {
+        if (m_verifyTimer)
+            m_verifyTimer->stop();
+        return;
+    }
+    if (m_state != EZTranslator::TranslationState::Running || !m_ocrReady.load()
+        || m_lastCapture.image.isNull())
+        return;
+
+    const qint64 now = m_clock.isValid() ? m_clock.elapsed() : 0;
+    bool stable = false;
+    for (const QString& id : m_regionVerifyPending) {
+        if (now - m_regionLastChangeMs.value(id, now) >= 150) {
+            stable = true;
+            break;
+        }
+    }
+    if (!stable)
+        return;
+
+    m_forceVerifyFrame = true;
+    onCaptureFrame(m_lastCapture);
+    m_forceVerifyFrame = false;
+
+    // Vung da bi xoa/khong con OCR info: bo pending de timer khong chay mai.
+    QSet<QString> stale;
+    for (const QString& id : m_regionVerifyPending) {
+        if (now - m_regionLastChangeMs.value(id, 0) > 5000)
+            stale.insert(id);
+    }
+    for (const QString& id : stale)
+        m_regionVerifyPending.remove(id);
+
+    if (m_regionVerifyPending.isEmpty() && m_verifyTimer)
+        m_verifyTimer->stop();
 }
 
 void AppController::tickOverlayVisibility()

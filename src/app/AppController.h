@@ -103,6 +103,8 @@ public slots:
 
     /** Nhan frame tu capture va chuyen len MainWindow preview */
     void onCaptureFrame(const EZTranslator::CapturedFrame& frame);
+    /** Xac minh lai vung bang OCR khi scroll-tracking vua giu ban dich cu (false-match/page-jump). */
+    void verifyPendingRegions();
 
     /** Nhan loi tu capture va hien thi warning */
     void onCaptureError(EZTranslator::CaptureError error, const QString& detail);
@@ -290,6 +292,8 @@ private:
     /// Timer 50ms xử lý lại FRAME CUỐI: cửa sổ tĩnh không phát frame nên settle/cooldown phải
     /// được kiểm tra theo nhịp cố định, nếu không OCR đợi tới lần vẽ lại kế tiếp (trễ 1-2s).
     QTimer* m_catchUpTimer{nullptr};
+    /// Xac minh lai bang OCR sau khi scroll-tracking giu ban dich cu (tranh false match).
+    QTimer* m_verifyTimer{nullptr};
     EZTranslator::CapturedFrame m_lastCapture;
     quintptr m_captureHandle{0};
     bool     m_gotFirstFrame{false}; ///< đã nhận frame nào từ backend capture chưa
@@ -409,6 +413,9 @@ private:
     QHash<QString, GrayProfile> m_regionDisplayProfile;
     QHash<QString, GrayProfile> m_regionFrameProfile;
     QSet<QString> m_regionScrolledOverlay;
+    /// Cac vung dang cho OCR xac minh lai sau khi overlay chi duoc "shift" theo scroll-tracking.
+    QSet<QString> m_regionVerifyPending;
+    bool m_forceVerifyFrame{false};
     qint64 m_overlayScrollLogAtMs = 0;
     /// Thời điểm trạng thái CHÍNH XÁC (dòng/nguồn) của vùng được ghi (chỉ đường full OCR / cache
     /// nội dung). Kết quả dịch chỉ được áp khi không có lần đổi nội dung nào mới hơn mốc này.
