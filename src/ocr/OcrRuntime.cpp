@@ -109,13 +109,8 @@ struct OcrRuntime::Impl
 {
     Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "ez-translator-ocr"};
     QString provider{QStringLiteral("CPU")};
-<<<<<<< HEAD
     QString preference{QStringLiteral("auto")};
     int adapterIndex{0};
-=======
-    void*   providerSymbol{nullptr};
-    int     adapterIndex{0};
->>>>>>> ba37210 (perf: CPU-first OCR with int8 recognition and progressive preview)
 };
 
 OcrRuntime::OcrRuntime()
@@ -130,16 +125,11 @@ QString OcrRuntime::providerName() const
     return m_impl ? m_impl->provider : QString();
 }
 
-<<<<<<< HEAD
 QString OcrRuntime::configure(const QString& devicePreference, int adapterIndex, QString* error)
-=======
-QString OcrRuntime::configure(bool useGpu, int adapterIndex, QString* error)
->>>>>>> ba37210 (perf: CPU-first OCR with int8 recognition and progressive preview)
 {
     if (!m_impl)
         return {};
 
-<<<<<<< HEAD
     QString preference = devicePreference.trimmed().toLower();
     if (preference != QLatin1String("cpu") && preference != QLatin1String("directml")
         && preference != QLatin1String("cuda") && preference != QLatin1String("auto")) {
@@ -162,50 +152,11 @@ QString OcrRuntime::configure(bool useGpu, int adapterIndex, QString* error)
                 || preference == QLatin1String("cuda"))) {
             if (findProviderSymbol("OrtSessionOptionsAppendExecutionProvider_DML"))
                 m_impl->provider = QStringLiteral("DirectML");
-=======
-    if (!useGpu) {
-        m_impl->provider = QStringLiteral("CPU");
-        m_impl->providerSymbol = nullptr;
-        m_impl->adapterIndex = 0;
-        return m_impl->provider;
-    }
-
-    m_impl->adapterIndex = qMax(0, adapterIndex);
-
-#if defined(_WIN32)
-    // Provider được resolve lúc chạy để một binary dùng được cho cả build
-    // CPU / DirectML / CUDA: thiếu symbol nghĩa là "không có GPU".
-    struct Candidate
-    {
-        const char* symbol;
-        const char* name;
-    };
-    static const Candidate candidates[] = {
-        {"OrtSessionOptionsAppendExecutionProvider_CUDA", "CUDA"},
-        {"OrtSessionOptionsAppendExecutionProvider_DML", "DirectML"},
-    };
-    for (const Candidate& candidate : candidates) {
-        if (void* symbol = findProviderSymbol(candidate.symbol)) {
-            m_impl->providerSymbol = symbol;
-            m_impl->provider = QString::fromLatin1(candidate.name);
-            // adapterIndex là chỉ số DXGI (chỉ có nghĩa với DirectML). CUDA dùng
-            // device index riêng, để 0 cho an toàn.
-            if (QString::fromLatin1(candidate.name) == QLatin1String("CUDA"))
-                m_impl->adapterIndex = 0;
-            return m_impl->provider;
->>>>>>> ba37210 (perf: CPU-first OCR with int8 recognition and progressive preview)
         }
     }
 #endif
-<<<<<<< HEAD
     if (error)
         error->clear();
-=======
-
-    m_impl->provider = QStringLiteral("CPU");
-    m_impl->providerSymbol = nullptr;
-    m_impl->adapterIndex = 0;
->>>>>>> ba37210 (perf: CPU-first OCR with int8 recognition and progressive preview)
     return m_impl->provider;
 }
 
@@ -241,11 +192,7 @@ std::shared_ptr<OcrSession> OcrRuntime::createSession(const QString& modelPath, 
             // GPU (DML/CUDA) thực thi kernel tuần tự; song song chỉ gây tranh chấp.
             options.SetExecutionMode(sequential ? ExecutionMode::ORT_SEQUENTIAL
                                                 : ExecutionMode::ORT_PARALLEL);
-<<<<<<< HEAD
             auto append = reinterpret_cast<AppendProviderFn>(providerSymbol);
-=======
-            auto append = reinterpret_cast<AppendProviderFn>(m_impl->providerSymbol);
->>>>>>> ba37210 (perf: CPU-first OCR with int8 recognition and progressive preview)
             if (OrtStatus* status = append(options, m_impl->adapterIndex)) {
                 const char* message = Ort::GetApi().GetErrorMessage(status);
                 const QString detail = QString::fromUtf8(message ? message : "append failed");

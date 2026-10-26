@@ -50,7 +50,6 @@ public:
 
     /**
      * @brief Chọn Execution Provider.
-<<<<<<< HEAD
      * @param devicePreference "auto" | "cpu" | "directml" | "cuda".
      *        auto/cuda: CUDA → DirectML → CPU; directml: DirectML → CPU.
      * @param adapterIndex  DXGI adapter index cho DirectML (0 = default).
@@ -65,13 +64,6 @@ public:
         return configure(useGpu ? QStringLiteral("auto") : QStringLiteral("cpu"), adapterIndex,
                          error);
     }
-=======
-     * @param useGpu  true → thử DirectML/CUDA, thất bại thì rơi về CPU.
-     * @param adapterIndex  DXGI adapter index cho DirectML (0 = default).
-     * @return Tên provider thực tế ("DirectML"/"CUDA"/"CPU").
-     */
-    [[nodiscard]] QString configure(bool useGpu, int adapterIndex = 0, QString* error = nullptr);
->>>>>>> ba37210 (perf: CPU-first OCR with int8 recognition and progressive preview)
 
     [[nodiscard]] QString providerName() const;
 

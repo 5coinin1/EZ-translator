@@ -170,11 +170,8 @@ void OcrWorker::load(const EZTranslator::OcrOptions& options)
 
     const auto applyCpuOptions = [](EZTranslator::OcrOptions& opts) {
         opts.useGpu = false;
-<<<<<<< HEAD
         opts.detDevice = QStringLiteral("cpu");
         opts.recDevice = QStringLiteral("cpu");
-=======
->>>>>>> ba37210 (perf: CPU-first OCR with int8 recognition and progressive preview)
         opts.gpuAdapterIndex = 0;
         opts.recMaxWidth = std::min(opts.recMaxWidth, 480);
         const EZTranslator::ResourceProfile profile =
@@ -190,13 +187,8 @@ void OcrWorker::load(const EZTranslator::OcrOptions& options)
     };
 
     bool ok = m_engine.load(effective, &error);
-<<<<<<< HEAD
     if (ok && effective.useGpu && m_engine.detProviderName() == QLatin1String("CPU")
         && m_engine.recProviderName() == QLatin1String("CPU")) {
-=======
-    if (ok && effective.useGpu
-        && m_engine.providerName() == QLatin1String("CPU")) {
->>>>>>> ba37210 (perf: CPU-first OCR with int8 recognition and progressive preview)
         // Session GPU đã fallback CPU bên trong OcrRuntime. Nạp lại bằng option CPU
         // (không fp16, recMaxWidth 480, budget CPU) để máy yếu không chạy 1 worker/1920.
         fallbackReason = QStringLiteral("GPU session fell back to CPU");

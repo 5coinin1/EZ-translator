@@ -31,15 +31,11 @@ struct OcrOptions
     QString recModelPath;
     QString dictionaryPath;
 
-<<<<<<< HEAD
     /// "auto" | "cpu" | "directml" | "cuda" — độc lập cho det/rec.
     /// Rỗng = suy ra từ `useGpu` (tương thích tool/test cũ).
     QString detDevice;
     QString recDevice;
     bool useGpu{true};          ///< legacy: true = auto, false = cpu
-=======
-    bool useGpu{true};
->>>>>>> ba37210 (perf: CPU-first OCR with int8 recognition and progressive preview)
     int  gpuAdapterIndex{0};   ///< DXGI adapter index (DirectML); 0 = default
     bool hoverWorker{false};   ///< worker hover (dùng budget CPU nhỏ khi fallback)
     bool lowResource{false};   ///< máy yếu: CPU fallback dùng 2 worker, cache nhỏ
