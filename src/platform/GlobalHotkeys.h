@@ -46,4 +46,5 @@ signals:
 
 private:
     QHash<int, QString> m_idByHotkeyId; ///< id số của Win32 → id nội bộ
+    quintptr m_ownerWindow{0}; ///< phải huỷ bằng đúng HWND đã RegisterHotKey
 };

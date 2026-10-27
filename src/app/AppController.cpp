@@ -24,6 +24,7 @@
 #include "translation/LanguageDetect.h"
 #include "translation/DocumentTranslator.h"
 #include "core/SettingsStore.h"
+#include "core/HotkeyBindings.h"
 #include "platform/GlobalHotkeys.h"
 #include "platform/PlatformUtils.h"
 #include "ui/FloatingTranslationWindow.h"
@@ -42,6 +43,8 @@ using namespace EZTranslator::OverlayLayout;
 #endif
 
 #include <QApplication>
+#include <QDesktopServices>
+#include <QDir>
 #include <QGuiApplication>
 #include <QPainter>
 #include <QScreen>
@@ -51,6 +54,7 @@ using namespace EZTranslator::OverlayLayout;
 #include <QShortcut>
 #include <QThread>
 #include <QTimer>
+#include <QUrl>
 #include <QDebug>
 
 #include <algorithm>
@@ -364,10 +368,12 @@ void AppController::initConnections()
         m_regionEditor->activateWindow();
     });
     connect(m_mainWindow, &MainWindow::requestOpenSettings,     this, &AppController::onOpenSettings);
-    // Section 3: "Cửa sổ nổi" và "Overlay trên màn hình" là HAI chế độ loại trừ nhau.
-    // Cửa sổ nổi = popup cạnh con trỏ (hover); Overlay = chữ dịch vẽ đè lên cửa sổ game.
+    // Hai chế độ chính loại trừ nhau; phím tắt còn có thể mở cửa sổ bản dịch phụ
+    // trong lúc overlay vẫn tiếp tục chạy.
     connect(m_mainWindow, &MainWindow::displayModeChanged, this,
             [this](MainWindow::DisplayMode mode) {
+                if (mode == MainWindow::DisplayMode::ScreenOverlay)
+                    m_overlayVisibleByHotkey = true;
                 syncOverlayMode();
                 QString label = QStringLiteral("Dịch khi chỉ chuột");
                 if (mode == MainWindow::DisplayMode::FloatingWindow)
@@ -410,8 +416,12 @@ void AppController::initConnections()
     connect(m_miniFloatBar, &MiniFloatBar::requestOpenSettings, this, &AppController::onOpenSettings);
 
     if (m_floatingWindow) {
-        connect(m_floatingWindow, &FloatingTranslationWindow::closedByUser, this,
-                &AppController::onStopTranslation);
+        connect(m_floatingWindow, &FloatingTranslationWindow::closedByUser, this, [this]() {
+            if (m_chatBoxVisibleByHotkey)
+                m_chatBoxVisibleByHotkey = false;
+            else
+                onStopTranslation();
+        });
     }
 
     // TrayIconManager signals
@@ -422,6 +432,7 @@ void AppController::initConnections()
 
     // SettingsDialog signals
     connect(m_settingsDialog, &SettingsDialog::settingsSaved, this, &AppController::onSettingsSaved);
+    connect(m_settingsDialog, &QDialog::finished, this, [this](int) { applyHotkeys(); });
 }
 
 bool AppController::startCapture(quintptr windowHandle)
@@ -1167,6 +1178,7 @@ void AppController::syncOverlayMode()
     if (m_floatingMode) {
         // Cua so noi: dung pipeline vung/OCR giong overlay nhung khong ve
         // lop phu trong suot len cua so dich.
+        m_chatBoxVisibleByHotkey = false;
         stopHover();
         if (m_hoverPopup)
             m_hoverPopup->hidePopup();
@@ -1178,15 +1190,22 @@ void AppController::syncOverlayMode()
             refreshFloatingWindow();
         }
     } else if (m_overlayMode) {
-        // Sang overlay: tat popup hover va cua so noi.
+        // Sang overlay: tắt popup hover; giữ cửa sổ bản dịch phụ khi người dùng đã bật.
         stopHover();
         if (m_hoverPopup)
             m_hoverPopup->hidePopup();
-        if (m_floatingWindow)
-            m_floatingWindow->hide();
+        if (m_floatingWindow) {
+            if (m_chatBoxVisibleByHotkey && m_state == EZTranslator::TranslationState::Running) {
+                m_floatingWindow->show();
+                refreshFloatingWindow();
+            } else {
+                m_floatingWindow->hide();
+            }
+        }
         updateOverlay(m_lastFrameSize);
     } else {
         // Sang dich khi chi chuot: tat overlay va cua so noi.
+        m_chatBoxVisibleByHotkey = false;
         if (m_textOverlay)
             m_textOverlay->hideOverlay();
         if (m_floatingWindow)
@@ -1717,6 +1736,8 @@ void AppController::onStartTranslation()
         return;
     }
 
+    m_overlayVisibleByHotkey = true;
+
     // Đồng bộ chế độ hiển thị từ UI TRƯỚC khi bật bất kỳ đường nào — đảm bảo overlay và cửa sổ
     // nổi không chạy cùng lúc (cờ có thể lệch nếu UI đổi chế độ mà signal bị lỡ).
     const MainWindow::DisplayMode activeMode = m_mainWindow->displayMode();
@@ -1730,7 +1751,7 @@ void AppController::onStartTranslation()
     if (m_floatingWindow) {
             m_floatingWindow->setSourceText(QString());
         m_floatingWindow->setTranslatedText(QString());
-        if (m_floatingMode) {
+        if (m_floatingMode || m_chatBoxVisibleByHotkey) {
             m_floatingWindow->show();
             m_floatingWindow->raise();
             m_floatingWindow->activateWindow();
@@ -1788,6 +1809,7 @@ void AppController::onStartTranslation()
 void AppController::onStopTranslation()
 {
     m_state = EZTranslator::TranslationState::Idle;
+    m_chatBoxVisibleByHotkey = false;
     m_mainWindow->onTranslationStopped();
     m_trayManager->updateState(false);
 
@@ -2034,7 +2056,7 @@ void AppController::onRegionSelected(int index)
     if (m_highlightOverlay && m_highlightOverlay->isVisible())
         m_highlightOverlay->hideOverlay();
     m_mainWindow->setShowRegionActive(false);
-    if (m_floatingMode)
+    if (m_floatingMode || m_chatBoxVisibleByHotkey)
         refreshFloatingWindow();
 }
 
@@ -2152,7 +2174,9 @@ void AppController::onShowRegion()
     }
 
     if (!m_mainWindow->hasRegion()) {
-        m_mainWindow->setStatus("Chưa chọn vùng dịch! Bấm 'Chọn vùng (F6)' để quét vùng.", QColor("#f59e0b"));
+        m_mainWindow->setStatus(
+            QStringLiteral("Chưa chọn vùng dịch! Bấm 'Chọn vùng (%1)' để quét vùng.")
+                .arg(m_settings.selectRegionHotkey), QColor("#f59e0b"));
         return;
     }
 
@@ -2313,7 +2337,17 @@ void AppController::onRegionEditorCancelled()
 
 void AppController::onOpenSettings()
 {
+    if (m_settingsDialog->isVisible()) {
+        m_settingsDialog->raise();
+        m_settingsDialog->activateWindow();
+        return;
+    }
     m_settingsDialog->setSettings(m_settings);
+    // Nhả phím toàn cục khi ghi tổ hợp mới để ô nhập nhận đủ sự kiện phím.
+    qDeleteAll(m_hotkeyFallbacks);
+    m_hotkeyFallbacks.clear();
+    if (m_hotkeys)
+        m_hotkeys->clear();
     m_settingsDialog->show();
     m_settingsDialog->raise();
     m_settingsDialog->activateWindow();
@@ -2462,12 +2496,24 @@ void AppController::applyHotkeys()
     if (!m_hotkeys || !m_mainWindow)
         return;
 
-    const QList<GlobalHotkeys::Binding> bindings = {
-        { QStringLiteral("toggle"), QKeySequence(m_settings.toggleTranslationHotkey) },
-        { QStringLiteral("selectRegion"), QKeySequence(m_settings.selectRegionHotkey) },
-        { QStringLiteral("showRegion"), QKeySequence(m_settings.showRegionHotkey) },
-        { QStringLiteral("settings"), QKeySequence(m_settings.openSettingsHotkey) },
-    };
+    if (m_settingsDialog && m_settingsDialog->isVisible()) {
+        m_hotkeys->clear();
+        return;
+    }
+
+    QList<GlobalHotkeys::Binding> bindings;
+    QSet<QString> assigned;
+    for (const auto& definition : EZTranslator::hotkeyBindings) {
+        const QKeySequence sequence(m_settings.*(definition.value), QKeySequence::PortableText);
+        const QString key = sequence.toString(QKeySequence::PortableText);
+        if (!key.isEmpty() && assigned.contains(key)) {
+            qWarning() << "[Hotkeys] duplicate key ignored:" << key << definition.id;
+            continue;
+        }
+        if (!key.isEmpty())
+            assigned.insert(key);
+        bindings.append({QString::fromLatin1(definition.id), sequence});
+    }
 
     const QStringList failed = m_hotkeys->apply(bindings, m_mainWindow->winId());
 
@@ -2504,6 +2550,47 @@ void AppController::dispatchHotkey(const QString& id)
 {
     if (id == QLatin1String("toggle")) {
         onToggleTranslation();
+    } else if (id == QLatin1String("overlay")) {
+        if (m_state != EZTranslator::TranslationState::Running) {
+            m_overlayVisibleByHotkey = true;
+            m_mainWindow->setDisplayMode(MainWindow::DisplayMode::ScreenOverlay);
+            onStartTranslation();
+        } else if (m_mainWindow->displayMode() != MainWindow::DisplayMode::ScreenOverlay) {
+            m_mainWindow->setDisplayMode(MainWindow::DisplayMode::ScreenOverlay);
+        } else {
+            m_overlayVisibleByHotkey = !m_overlayVisibleByHotkey;
+            if (!m_overlayVisibleByHotkey && m_textOverlay)
+                m_textOverlay->hideOverlay();
+            else
+                updateOverlay(m_lastFrameSize);
+            m_mainWindow->setStatus(m_overlayVisibleByHotkey
+                                        ? QStringLiteral("Đã hiện overlay")
+                                        : QStringLiteral("Đã ẩn overlay; dịch vẫn chạy"),
+                                    QColor("#38bdf8"));
+        }
+    } else if (id == QLatin1String("chatBox")) {
+        if (m_state != EZTranslator::TranslationState::Running) {
+            m_chatBoxVisibleByHotkey =
+                m_mainWindow->displayMode() != MainWindow::DisplayMode::FloatingWindow;
+            if (m_mainWindow->displayMode() == MainWindow::DisplayMode::HoverTranslate)
+                m_mainWindow->setDisplayMode(MainWindow::DisplayMode::ScreenOverlay);
+            onStartTranslation();
+        } else if (m_floatingMode) {
+            m_mainWindow->setDisplayMode(MainWindow::DisplayMode::ScreenOverlay);
+        } else {
+            if (m_mainWindow->displayMode() == MainWindow::DisplayMode::HoverTranslate)
+                m_mainWindow->setDisplayMode(MainWindow::DisplayMode::ScreenOverlay);
+            m_chatBoxVisibleByHotkey = !m_chatBoxVisibleByHotkey;
+            if (m_floatingWindow) {
+                if (m_chatBoxVisibleByHotkey) {
+                    refreshFloatingWindow();
+                    m_floatingWindow->show();
+                    m_floatingWindow->raise();
+                } else {
+                    m_floatingWindow->hide();
+                }
+            }
+        }
     } else if (id == QLatin1String("selectRegion")) {
         // Giống nút "Thêm vùng": phải chọn cửa sổ đích trước.
         if (m_mainWindow->selectedWindowHandle() == 0) {
@@ -2515,6 +2602,57 @@ void AppController::dispatchHotkey(const QString& id)
         onShowRegion();
     } else if (id == QLatin1String("settings")) {
         onOpenSettings();
+    } else if (id == QLatin1String("log")) {
+        const QString path = QDir::current().absoluteFilePath(QStringLiteral("ez_debug.log"));
+        if (!QFileInfo::exists(path) || !QDesktopServices::openUrl(QUrl::fromLocalFile(path)))
+            m_mainWindow->setStatus(QStringLiteral("Không mở được ez_debug.log"),
+                                    QColor("#f59e0b"));
+    } else if (id == QLatin1String("clearRegions")) {
+        m_mainWindow->clearRegion();
+    } else if (id == QLatin1String("clearSelectedRegion")) {
+        const int index = m_mainWindow->currentRegionIndex();
+        if (index >= 0)
+            onRequestRemoveRegion(index);
+        else
+            m_mainWindow->setStatus(QStringLiteral("Chưa có vùng dịch nào để xoá"),
+                                    QColor("#f59e0b"));
+    } else if (id == QLatin1String("swapLanguages")) {
+        const QString source = m_mainWindow->sourceLanguage();
+        const QString target = m_mainWindow->targetLanguage();
+        static const QSet<QString> supportedSources = {
+            QStringLiteral("vi"), QStringLiteral("en"), QStringLiteral("ja"),
+            QStringLiteral("ko"), QStringLiteral("zh")};
+        if (source == QLatin1String("auto") || !supportedSources.contains(target)) {
+            m_mainWindow->setStatus(QStringLiteral("Không thể đổi cặp ngôn ngữ này"),
+                                    QColor("#f59e0b"));
+        } else {
+            m_mainWindow->setLanguages(target, source);
+            onLanguagesChanged(target, source);
+        }
+    } else if (id == QLatin1String("retryTranslation")) {
+        if (m_state != EZTranslator::TranslationState::Running)
+            return;
+        if (m_translateWorker)
+            QMetaObject::invokeMethod(m_translateWorker, "clearCache", Qt::QueuedConnection);
+        clearVisualCaches();
+        m_hoverCache.clear();
+        m_hoverProbes.clear();
+        m_hoverPrefetch = HoverPrefetch();
+        m_hoverLineValid = false;
+        m_hoverPending = false;
+        m_mainWindow->setStatus(QStringLiteral("Đang đọc và dịch lại nội dung hiện tại..."),
+                                QColor("#38bdf8"));
+        // WGC có thể không phát frame mới khi ảnh đứng yên: xử lý lại frame đã giữ.
+        if (m_overlayMode && !m_lastCapture.image.isNull()) {
+            QTimer::singleShot(0, this, [this]() {
+                if (m_state != EZTranslator::TranslationState::Running
+                    || m_lastCapture.image.isNull())
+                    return;
+                m_forceVerifyFrame = true;
+                onCaptureFrame(m_lastCapture);
+                m_forceVerifyFrame = false;
+            });
+        }
     }
 }
 
@@ -3291,7 +3429,7 @@ void AppController::onRegionPlateReady(const QString& regionId, quint64 requestT
         overlay.textColor = textColor;
         overlay.coverColor = coverColor;
     }
-    if (m_floatingMode)
+    if (m_floatingMode || m_chatBoxVisibleByHotkey)
         refreshFloatingWindow();
     updateOverlay(m_lastFrameSize);
 }
@@ -3380,7 +3518,7 @@ void AppController::handleRegionBoxes(const QString& regionId,
             m_regionLines.insert(regionId, rects);
             m_regionLineTexts.insert(regionId, texts);
             m_regionSourceText.insert(regionId, texts.join(QStringLiteral("\n\n")));
-            if (m_floatingMode)
+            if (m_floatingMode || m_chatBoxVisibleByHotkey)
                 refreshFloatingWindow();
             m_regionStateAtMs.insert(
                 regionId, m_regionOcrAtMs.value(regionId, m_clock.isValid()
@@ -3500,7 +3638,7 @@ void AppController::handleRegionBoxes(const QString& regionId,
                 if (!preview)
                     m_regionScrollReuseEligible.insert(regionId);
                 m_regionSourceText.insert(regionId, novelText);
-                if (m_floatingMode)
+                if (m_floatingMode || m_chatBoxVisibleByHotkey)
                     refreshFloatingWindow();
                 m_regionStateAtMs.insert(
                     regionId, m_regionOcrAtMs.value(regionId, m_clock.isValid()
@@ -3582,7 +3720,7 @@ void AppController::handleRegionBoxes(const QString& regionId,
         }
     }
     m_regionSourceText.insert(regionId, assembled.text);
-    if (m_floatingMode)
+    if (m_floatingMode || m_chatBoxVisibleByHotkey)
         refreshFloatingWindow();
     // Mốc thời gian của trạng thái CHÍNH XÁC này: lấy thời điểm DISPATCH OCR (không phải lúc kết
     // quả về) — kết quả dịch chỉ được áp khi không có lần đổi nội dung nào mới hơn mốc này (xem
@@ -3932,7 +4070,7 @@ void AppController::onTranslationReady(const QString& regionId, quint64 token,
         }
         m_regionTranslatedText.insert(regionId,
                                       translatedParagraphs.join(QStringLiteral("\n\n")));
-        if (m_floatingMode)
+        if (m_floatingMode || m_chatBoxVisibleByHotkey)
             refreshFloatingWindow();
         m_pendingSourceBoxes.remove(regionId);
         // Bản dịch của nội dung mới đã về: gỡ treo, hiện lại overlay ở ĐÚNG vị trí mới.
@@ -3959,6 +4097,11 @@ void AppController::updateOverlay(const QSize& frameSize)
 {
     if (!m_textOverlay)
         return;
+    if (!m_overlayVisibleByHotkey) {
+        if (m_textOverlay->isShowing())
+            m_textOverlay->hideOverlay();
+        return;
+    }
 
     // Chế độ "Cửa sổ nổi": bản dịch chỉ hiện trong popup cạnh con trỏ — overlay phải ẩn
     // hẳn, nếu không người dùng thấy cùng lúc hai nơi hiển thị (điều đang bị báo lỗi).
@@ -4084,6 +4227,11 @@ void AppController::tickOverlayVisibility()
     // capture/OCR/dịch vẫn chạy nền (không dừng gì), nên quay lại không phải chờ detect.
     if (!m_textOverlay || !m_overlayMode)
         return;
+    if (!m_overlayVisibleByHotkey) {
+        if (m_textOverlay->isShowing())
+            m_textOverlay->hideOverlay();
+        return;
+    }
     if (m_floatingMode) {
         if (m_textOverlay->isShowing())
             m_textOverlay->hideOverlay();

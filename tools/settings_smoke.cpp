@@ -14,6 +14,7 @@
 #include <cstdio>
 
 #include "core/SettingsStore.h"
+#include "core/HotkeyBindings.h"
 
 using EZTranslator::AppSettings;
 
@@ -82,10 +83,9 @@ AppSettings makeSampleSettings()
     s.excludeFromCapture = false;
     s.windowOpacity = 63;
 
-    s.toggleTranslationHotkey = QStringLiteral("Ctrl+Shift+F9");
-    s.selectRegionHotkey = QStringLiteral("Alt+F10");
-    s.showRegionHotkey = QStringLiteral("Ctrl+F11");
-    s.openSettingsHotkey = QStringLiteral("Ctrl+,");
+    int hotkeyIndex = 1;
+    for (const auto& binding : EZTranslator::hotkeyBindings)
+        s.*(binding.value) = QStringLiteral("Ctrl+Alt+F%1").arg(hotkeyIndex++);
 
     return s;
 }
@@ -169,11 +169,9 @@ int main(int argc, char** argv)
         check(loaded.excludeFromCapture == original.excludeFromCapture, "excludeFromCapture");
         check(loaded.windowOpacity == original.windowOpacity, "windowOpacity");
 
-        check(sameQt(loaded.toggleTranslationHotkey, original.toggleTranslationHotkey),
-              "toggleTranslationHotkey");
-        check(sameQt(loaded.selectRegionHotkey, original.selectRegionHotkey), "selectRegionHotkey");
-        check(sameQt(loaded.showRegionHotkey, original.showRegionHotkey), "showRegionHotkey");
-        check(sameQt(loaded.openSettingsHotkey, original.openSettingsHotkey), "openSettingsHotkey");
+        for (const auto& binding : EZTranslator::hotkeyBindings)
+            check(sameQt(loaded.*(binding.value), original.*(binding.value)),
+                  binding.settingsKey);
     }
 
     // ── 3. Migrate từ nhóm "translation" của bản cũ ─────────────────────────

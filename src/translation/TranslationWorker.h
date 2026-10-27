@@ -45,6 +45,9 @@ public slots:
     /** Đặt cấu hình engine dịch (ngôn ngữ, engine, API key, system prompt). */
     void configure(const EZTranslator::TranslationConfig& config);
 
+    /** Người dùng yêu cầu dịch lại: bỏ bản dịch lưu trong phiên worker. */
+    void clearCache();
+
     /** Xếp một văn bản; mailbox tự gộp các lượt vùng trùng id. */
     void translate(const QString& id, const QString& text, quint64 token,
                    qint64 queuedAtMs = 0);

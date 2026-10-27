@@ -642,6 +642,15 @@ MainWindow::DisplayMode MainWindow::displayMode() const
     return DisplayMode::HoverTranslate;
 }
 
+void MainWindow::setDisplayMode(DisplayMode mode)
+{
+    QPushButton* button = mode == DisplayMode::ScreenOverlay ? m_cardOverlay
+                          : mode == DisplayMode::FloatingWindow ? m_cardFloat
+                                                                 : m_cardHover;
+    if (button && !button->isChecked())
+        button->setChecked(true); // idToggled đồng bộ AppController và UI
+}
+
 void MainWindow::setRegions(const QList<EZTranslator::TranslationRegion>& regions, int current)
 {
     if (!m_regionCombo)

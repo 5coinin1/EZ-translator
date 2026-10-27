@@ -1,4 +1,5 @@
 #include "SettingsDialog.h"
+#include "core/HotkeyBindings.h"
 #include "ui/theme/StyleTheme.h"
 #include "ui/components/PrimaryButton.h"
 #include "ui/components/SecondaryButton.h"
@@ -21,11 +22,13 @@
 #include <QGroupBox>
 #include <QColorDialog>
 #include <QLineEdit>
+#include <QKeySequenceEdit>
 #include <QPlainTextEdit>
 #include <QPainter>
 #include <QScrollArea>
 #include <QMouseEvent>
 #include <QMessageBox>
+#include <QSet>
 #include <QProcess>
 #include <QFileInfo>
 #include <QCoreApplication>
@@ -351,6 +354,29 @@ void SettingsDialog::buildUi()
     auto* saveBtn = new PrimaryButton("Lưu cài đặt", footer);
     saveBtn->setFixedWidth(130);
     connect(saveBtn, &QPushButton::clicked, this, [this]() {
+        EZTranslator::AppSettings updated = m_settings;
+        QSet<QString> assigned;
+        for (const auto& binding : EZTranslator::hotkeyBindings) {
+            const auto* edit = m_hotkeyEdits.value(QLatin1String(binding.id));
+            if (!edit)
+                continue;
+            const QKeySequence sequence = edit->keySequence();
+            if (sequence.count() > 1) {
+                QMessageBox::warning(this, QStringLiteral("Phím tắt"),
+                    QStringLiteral("Mỗi thao tác chỉ nhận một tổ hợp phím."));
+                return;
+            }
+            const QString key = sequence.toString(QKeySequence::PortableText);
+            if (!key.isEmpty() && assigned.contains(key)) {
+                QMessageBox::warning(this, QStringLiteral("Phím tắt"),
+                    QStringLiteral("Phím %1 đã được gán cho thao tác khác.").arg(key));
+                return;
+            }
+            if (!key.isEmpty())
+                assigned.insert(key);
+            updated.*(binding.value) = key;
+        }
+        m_settings = updated;
         emit settingsSaved(m_settings);
         accept();
     });
@@ -750,6 +776,12 @@ void SettingsDialog::setSettings(const EZTranslator::AppSettings& settings)
         m_aiModel->setText(m_settings.aiModel);
     if (m_aiPrompt)
         m_aiPrompt->setPlainText(m_settings.aiSystemPrompt);
+
+    for (const auto& binding : EZTranslator::hotkeyBindings) {
+        if (auto* edit = m_hotkeyEdits.value(QLatin1String(binding.id)))
+            edit->setKeySequence(QKeySequence(m_settings.*(binding.value),
+                                              QKeySequence::PortableText));
+    }
 
     updatePreview();
     m_loadingSettings = false;
@@ -1359,55 +1391,63 @@ QWidget* SettingsDialog::buildOcrPage()
 QWidget* SettingsDialog::buildHotkeysPage()
 {
     auto* page = makePage();
-    auto* lay  = new QVBoxLayout(page);
-    lay->setContentsMargins(28, 24, 28, 24);
-    lay->setSpacing(16);
+    auto* outer = new QVBoxLayout(page);
+    outer->setContentsMargins(28, 24, 28, 24);
+    outer->setSpacing(14);
+    outer->addWidget(makePageTitle("Phím tắt"));
+    outer->addWidget(makeDivider());
 
-    lay->addWidget(makePageTitle("Phím tắt"));
-    lay->addWidget(makeDivider());
-    lay->addSpacing(6);
+    auto* info = new QLabel(QStringLiteral(
+        "Nhấp vào ô rồi nhấn tổ hợp phím. Phím hoạt động cả khi game đang mở. "
+        "Để trống để tắt phím tắt."), page);
+    info->setWordWrap(true);
+    info->setStyleSheet(QStringLiteral("color:#94a3b8; font-size:9pt;"));
+    outer->addWidget(info);
 
-    struct HotkeyRow { QString label; QString defaultKey; };
-    const QList<HotkeyRow> rows = {
-        {"Bắt đầu / Dừng dịch",         "F8"},
-        {"Chọn vùng dịch",              "F6"},
-        {"Xem / Ẩn khung vùng dịch",    "F7"},
-        {"Mở cửa sổ Cài đặt",           "Ctrl + ,"},
-    };
+    auto* scroll = new QScrollArea(page);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    auto* content = makePage();
+    auto* lay = new QVBoxLayout(content);
+    lay->setContentsMargins(0, 0, 8, 0);
+    lay->setSpacing(8);
 
-    for (const auto& row : rows) {
+    for (const auto& binding : EZTranslator::hotkeyBindings) {
         auto* rowLay = new QHBoxLayout();
-        rowLay->setSpacing(16);
-
-        auto* keyEdit = new QComboBox(page);
-        keyEdit->setFixedWidth(180);
-        keyEdit->setFixedHeight(36);
-        keyEdit->addItems({row.defaultKey, "(Nhấn để gán phím mới)"});
-        keyEdit->setStyleSheet(R"(
-            QComboBox {
-                background-color: #0b1320;
-                border: 1px solid #334155;
-                border-radius: 6px;
-                color: #f8fafc;
-                padding: 4px 12px;
-                font-size: 10pt;
-                font-weight: bold;
-            }
-            QComboBox:hover { border-color: #38bdf8; }
-            QComboBox::drop-down { border: none; width: 24px; }
-        )");
-
-        auto* label = new QLabel(row.label, page);
+        rowLay->setSpacing(12);
+        auto* label = new QLabel(QString::fromUtf8(binding.label), content);
         label->setStyleSheet("color: #e2e8f0; font-size: 10.5pt; font-weight: 500;");
-
+        auto* keyEdit = new QKeySequenceEdit(content);
+        keyEdit->setObjectName(QStringLiteral("hotkey_%1").arg(QLatin1String(binding.id)));
+        keyEdit->setFixedSize(150, 36);
+        keyEdit->setStyleSheet(QStringLiteral(
+            "QKeySequenceEdit { background:#0b1320; border:1px solid #334155; "
+            "border-radius:6px; color:#f8fafc; padding:4px 8px; } "
+            "QKeySequenceEdit:focus { border-color:#38bdf8; }"));
+        keyEdit->setKeySequence(QKeySequence(m_settings.*(binding.value),
+                                              QKeySequence::PortableText));
+        m_hotkeyEdits.insert(QLatin1String(binding.id), keyEdit);
+        auto* clear = new QPushButton(QStringLiteral("Xoá"), content);
+        clear->setFixedWidth(44);
+        connect(clear, &QPushButton::clicked, keyEdit, &QKeySequenceEdit::clear);
+        rowLay->addWidget(label, 1);
         rowLay->addWidget(keyEdit);
-        rowLay->addWidget(label);
-        rowLay->addStretch();
-
+        rowLay->addWidget(clear);
         lay->addLayout(rowLay);
-        lay->addSpacing(2);
     }
-
     lay->addStretch();
+    scroll->setWidget(content);
+    outer->addWidget(scroll, 1);
+
+    auto* reset = new QPushButton(QStringLiteral("Khôi phục phím mặc định"), page);
+    connect(reset, &QPushButton::clicked, this, [this]() {
+        const EZTranslator::AppSettings defaults;
+        for (const auto& binding : EZTranslator::hotkeyBindings) {
+            if (auto* edit = m_hotkeyEdits.value(QLatin1String(binding.id)))
+                edit->setKeySequence(QKeySequence(defaults.*(binding.value),
+                                                  QKeySequence::PortableText));
+        }
+    });
+    outer->addWidget(reset, 0, Qt::AlignLeft);
     return page;
 }

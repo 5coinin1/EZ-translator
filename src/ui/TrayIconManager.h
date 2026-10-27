@@ -29,6 +29,6 @@ private:
     QMenu*           m_menu{nullptr};
     QAction*         m_statusAction{nullptr};
     QAction*         m_toggleAction{nullptr};
-    QString          m_hotkeyText{QStringLiteral("F8")};
+    QString          m_hotkeyText{QStringLiteral("Alt+G")};
     bool             m_running{false};
 };

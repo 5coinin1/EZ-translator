@@ -83,6 +83,7 @@ public:
         ScreenOverlay
     };
     [[nodiscard]] DisplayMode displayMode() const;
+    void setDisplayMode(DisplayMode mode);
 
 signals:
     void requestStartTranslation();
@@ -161,8 +162,8 @@ private:
     QPushButton*     m_startBtn{nullptr};
     bool             m_isTranslating{false};
 
-    QString          m_startStopHotkey{"F8"}; ///< hiển thị trên nút Bắt đầu/Dừng
-    QString          m_selectRegionHotkey{"F6"}; ///< hiển thị trong nhãn vùng dịch
+    QString          m_startStopHotkey{"Alt+G"}; ///< hiển thị trên nút Bắt đầu/Dừng
+    QString          m_selectRegionHotkey{"Alt+Q"}; ///< hiển thị trong nhãn vùng dịch
     bool             m_closeToTray{false};    ///< X = ẩn xuống khay (Cài đặt → Chung)
 
     bool                          m_updatingLanguages{false};

@@ -150,7 +150,7 @@ private:
     /** Đăng ký lại phím tắt toàn cục theo m_settings; phím bị chiếm → QShortcut dự phòng. */
     void applyHotkeys();
 
-    /** Phím tắt toàn cục vừa bấm (id: "toggle"/"selectRegion"/"showRegion"/"settings"). */
+    /** Phím tắt toàn cục vừa bấm (danh sách ở core/HotkeyBindings.h). */
     void dispatchHotkey(const QString& id);
     void queueRegionOcr(const QString& regionId, quint64 requestToken, quint64 imageHash,
                         const QImage& image);
@@ -454,6 +454,7 @@ private:
     /// Overlay đang treo vì ảnh nguồn vừa đổi (chờ bản dịch của nội dung mới). Khi treo thì không
     /// vẽ gì — không hiện bản detect nguồn như trước.
     bool m_overlaySuspended = false;
+    bool m_overlayVisibleByHotkey{true};
     qint64 m_overlaySuspendAtMs = 0;
     /// Box bản NGUỒN đã detect của từng vùng — chỉ dùng làm fallback 2s nếu bản dịch không về.
     QHash<QString, QList<EZTranslator::OverlayBox>> m_pendingSourceBoxes;
@@ -471,6 +472,7 @@ private:
     /// Chế độ hiển thị ở Section 3: false = cửa sổ nổi (popup hover), true = overlay đè lên game.
     /// Chỉ MỘT trong hai được hiển thị tại một thời điểm.
     bool m_overlayMode{false};
+    bool m_chatBoxVisibleByHotkey{false}; ///< cửa sổ bản dịch mở cùng overlay
     /// Cửa sổ nổi đang hiển thị (khác overlay và khác hover).
     bool m_floatingMode{false};
     /// Toạ độ màn hình (pixel thật) của từng vùng — cần cho "Xem vùng" theo vùng đang chọn.
