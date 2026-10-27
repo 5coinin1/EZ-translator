@@ -41,6 +41,8 @@ public:
     OcrScheduler() = default;
     explicit OcrScheduler(Options options) : m_options(options) {}
 
+    void setOptions(const Options& options) { m_options = options; }
+
     /** Bắt đầu một tick mới (reset bộ đếm cap). */
     void beginTick() noexcept { m_runsThisTick = 0; }
 

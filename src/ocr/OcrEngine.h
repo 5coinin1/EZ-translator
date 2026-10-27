@@ -24,6 +24,15 @@ class OcrRuntime;
 class OcrEngine
 {
 public:
+    /**
+     * @brief Callback nhận các box đã nhận dạng xong trong lúc full OCR còn chạy.
+     *
+     * Chỉ dùng cho CPU: recognition được chia thành nhiều cụm để lớp ứng dụng có thể
+     * dịch/hiện cụm đầu tiên sớm, thay vì chờ toàn bộ ảnh. Callback chạy trên worker
+     * thread và nhận danh sách LŨY KẾ các box đã xong (thứ tự detection).
+     */
+    using ProgressFn = std::function<void(const QList<OcrTextBox>& boxes)>;
+
     OcrEngine();
     ~OcrEngine();
 
@@ -35,12 +44,15 @@ public:
 
     [[nodiscard]] bool isLoaded() const;
 
-    /** Provider thực tế của session ("DirectML"/"CUDA"/"CPU"). */
+    /** Provider thực tế dạng "Det:.../Rec:...". */
     [[nodiscard]] QString providerName() const;
+    [[nodiscard]] QString detProviderName() const;
+    [[nodiscard]] QString recProviderName() const;
 
     /** Detection rồi Recognition; trả box có text (chưa assemble). */
     [[nodiscard]] QList<OcrTextBox> recognize(const QImage& image,
-                                              const std::function<bool()>& cancelled = {});
+                                              const std::function<bool()>& cancelled = {},
+                                              const ProgressFn& progress = {});
 
     [[nodiscard]] OcrTimings lastTimings() const;
 
@@ -49,7 +61,8 @@ public:
 
 private:
     /** Nạp model chữ của HỆ CHỮ CÒN LẠI (en ↔ zh) theo nhu cầu — xem recognize(). */
-    QList<OcrTextBox> recognizeProcessed(const QImage& image, bool allowAlt = true);
+    QList<OcrTextBox> recognizeProcessed(const QImage& image, bool allowAlt = true,
+                                         const ProgressFn& progress = {});
     /** Nhận dạng các box đã detect, dùng chung cho path thường và tile detect-once. */
     QList<OcrTextBox> recognizeBoxes(const QImage& image, const QList<OcrTextBox>& boxes,
                                      bool allowAlt);

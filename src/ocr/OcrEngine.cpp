@@ -98,7 +98,8 @@ double meanConfidence(const QList<OcrTextBox>& boxes)
 
 struct OcrEngine::Impl
 {
-    OcrRuntime runtime;
+    OcrRuntime detRuntime;
+    OcrRuntime recRuntime;
     OcrDetector detector;
     OcrRecognizer recognizer;
     /// Model chữ của HỆ CHỮ KHÁC (en ↔ zh), nạp theo nhu cầu khi model chính đọc ra rác.
@@ -138,15 +139,31 @@ bool OcrEngine::load(const OcrOptions& options, QString* error)
     if (!m_impl)
         return false;
 
-    const QString configuredProvider = m_impl->runtime.configure(options.useGpu, error);
-    Q_UNUSED(configuredProvider);
+    m_impl->loaded = false;
+    QString detError;
+    QString recError;
+    const QString fallbackDevice = options.useGpu ? QStringLiteral("auto") : QStringLiteral("cpu");
+    const QString detDevice = options.detDevice.isEmpty() ? fallbackDevice : options.detDevice;
+    const QString recDevice = options.recDevice.isEmpty() ? fallbackDevice : options.recDevice;
+    Q_UNUSED(m_impl->detRuntime.configure(detDevice, options.gpuAdapterIndex, &detError));
+    Q_UNUSED(m_impl->recRuntime.configure(recDevice, options.gpuAdapterIndex, &recError));
     m_impl->binarize = options.binarize;
     m_impl->options = options;
+    m_impl->options.detDevice = detDevice;
+    m_impl->options.recDevice = recDevice;
 
-    if (!m_impl->detector.load(m_impl->runtime, options, error))
+    if (!m_impl->detector.load(m_impl->detRuntime, options, &detError)) {
+        if (error)
+            *error = detError;
         return false;
-    if (!m_impl->recognizer.load(m_impl->runtime, options, error))
+    }
+    if (!m_impl->recognizer.load(m_impl->recRuntime, options, &recError)) {
+        if (error)
+            *error = recError;
         return false;
+    }
+    if (error)
+        *error = detError.isEmpty() ? recError : detError;
 
     m_impl->loaded = true;
     return true;
@@ -159,11 +176,25 @@ bool OcrEngine::isLoaded() const
 
 QString OcrEngine::providerName() const
 {
-    return m_impl ? m_impl->runtime.providerName() : QString();
+    if (!m_impl)
+        return {};
+    return QStringLiteral("Det:%1/Rec:%2")
+        .arg(m_impl->detRuntime.providerName(), m_impl->recRuntime.providerName());
+}
+
+QString OcrEngine::detProviderName() const
+{
+    return m_impl ? m_impl->detRuntime.providerName() : QString();
+}
+
+QString OcrEngine::recProviderName() const
+{
+    return m_impl ? m_impl->recRuntime.providerName() : QString();
 }
 
 QList<OcrTextBox> OcrEngine::recognize(const QImage& image,
-                                      const std::function<bool()>& cancelled)
+                                      const std::function<bool()>& cancelled,
+                                      const ProgressFn& progress)
 {
     m_cancelled = cancelled;
     if (!isLoaded() || image.isNull())
@@ -182,7 +213,7 @@ QList<OcrTextBox> OcrEngine::recognize(const QImage& image,
                       && input.width() >= 1600 && input.height() >= 900
                       && area >= 1500000;
     if (!tile) {
-        const QList<OcrTextBox> result = recognizeProcessed(input);
+        const QList<OcrTextBox> result = recognizeProcessed(input, true, progress);
         m_impl->lastTiming.boxes = result.size();
         m_impl->lastTiming.totalMs = double(ocrMonotonicMs() - startedAt);
         return result;
@@ -326,7 +357,8 @@ QList<OcrTextBox> OcrEngine::recognize(const QImage& image,
     return result;
 }
 
-QList<OcrTextBox> OcrEngine::recognizeProcessed(const QImage& input, bool allowAlt)
+QList<OcrTextBox> OcrEngine::recognizeProcessed(const QImage& input, bool allowAlt,
+                                               const ProgressFn& progress)
 {
     if (!isLoaded() || input.isNull() || (m_cancelled && m_cancelled()))
         return {};
@@ -338,6 +370,38 @@ QList<OcrTextBox> OcrEngine::recognizeProcessed(const QImage& input, bool allowA
     m_impl->lastBoxes = boxes.size();
     if (boxes.isEmpty() || (m_cancelled && m_cancelled()))
         return {};
+
+    // CPU full-page: nhận dạng theo cụm để lớp ứng dụng có thể dịch/hiện cụm đầu
+    // tiên trong lúc các dòng còn lại vẫn đang chạy. GPU đã batch cả trang nên
+    // không cần chia; chia thêm chỉ làm tăng dispatch.
+    const bool progressive = progress
+                             && m_impl->recRuntime.providerName() == QLatin1String("CPU")
+                             && boxes.size() >= 8
+                             && qEnvironmentVariable("EZ_OCR_PROGRESSIVE", QStringLiteral("1"))
+                                    != QLatin1String("0");
+    if (progressive) {
+        int chunk = qEnvironmentVariableIntValue("EZ_OCR_PROGRESSIVE_CHUNK");
+        if (chunk <= 0) {
+            // Cụm đầu bằng số worker: máy yếu (2 worker) có kết quả sớm hơn,
+            // máy nhiều core (6 worker) ít lần chia lại hơn.
+            const int workers = qMax(2, m_impl->options.recWorkers);
+            chunk = qBound(2, workers, 6);
+        }
+        chunk = qBound(2, chunk, 12);
+
+        QList<OcrTextBox> all;
+        all.reserve(boxes.size());
+        for (int start = 0; start < boxes.size(); start += chunk) {
+            if (m_cancelled && m_cancelled())
+                return {};
+            const QList<OcrTextBox> part =
+                recognizeBoxes(input, boxes.mid(start, chunk), allowAlt);
+            all.append(part);
+            if (progress && !all.isEmpty())
+                progress(all);
+        }
+        return all;
+    }
 
     return recognizeBoxes(input, boxes, allowAlt);
 }
@@ -407,7 +471,7 @@ bool OcrEngine::ensureAltRecognizer()
     if (!QFile::exists(alt.recModelPath) || !QFile::exists(alt.dictionaryPath))
         return false;
     QString error;
-    if (!m_impl->altRecognizer.load(m_impl->runtime, alt, &error)) {
+    if (!m_impl->altRecognizer.load(m_impl->recRuntime, alt, &error)) {
         qWarning() << "[OCR] model chữ dự phòng nạp thất bại:" << error;
         return false;
     }

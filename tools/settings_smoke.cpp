@@ -60,6 +60,9 @@ AppSettings makeSampleSettings()
 
     s.ocrEngine = QStringLiteral("paddleocr");
     s.ocrUseGpu = false;
+    s.ocrDetDevice = QStringLiteral("directml");
+    s.ocrRecDevice = QStringLiteral("cpu");
+    s.translateDevice = QStringLiteral("cuda");
     s.ocrBinarize = true;
     s.cacheCapacityLines = 12345;
 
@@ -141,6 +144,9 @@ int main(int argc, char** argv)
 
         check(sameQt(loaded.ocrEngine, original.ocrEngine), "ocrEngine");
         check(loaded.ocrUseGpu == original.ocrUseGpu, "ocrUseGpu");
+        check(loaded.ocrDetDevice == original.ocrDetDevice, "ocrDetDevice");
+        check(loaded.ocrRecDevice == original.ocrRecDevice, "ocrRecDevice");
+        check(loaded.translateDevice == original.translateDevice, "translateDevice");
         check(loaded.ocrBinarize == original.ocrBinarize, "ocrBinarize");
         check(loaded.cacheCapacityLines == original.cacheCapacityLines, "cacheCapacityLines");
 

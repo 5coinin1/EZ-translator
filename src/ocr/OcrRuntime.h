@@ -50,10 +50,20 @@ public:
 
     /**
      * @brief Chọn Execution Provider.
-     * @param useGpu  true → thử DirectML/CUDA, thất bại thì rơi về CPU.
-     * @return Tên provider thực tế ("DirectML"/"CUDA"/"CPU").
+     * @param devicePreference "auto" | "cpu" | "directml" | "cuda".
+     *        auto/cuda: CUDA → DirectML → CPU; directml: DirectML → CPU.
+     * @param adapterIndex  DXGI adapter index cho DirectML (0 = default).
+     * @return Provider thực tế sau khi tạo session ("DirectML"/"CUDA"/"CPU").
      */
-    [[nodiscard]] QString configure(bool useGpu, QString* error = nullptr);
+    [[nodiscard]] QString configure(const QString& devicePreference, int adapterIndex = 0,
+                                    QString* error = nullptr);
+
+    /** Tương thích code cũ: true = auto, false = cpu. */
+    [[nodiscard]] QString configure(bool useGpu, int adapterIndex = 0, QString* error = nullptr)
+    {
+        return configure(useGpu ? QStringLiteral("auto") : QStringLiteral("cpu"), adapterIndex,
+                         error);
+    }
 
     [[nodiscard]] QString providerName() const;
 

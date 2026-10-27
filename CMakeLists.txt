@@ -23,6 +23,8 @@ set(SOURCES
     src/core/WindowEnumerator.cpp
     src/core/SettingsStore.h
     src/core/SettingsStore.cpp
+    src/core/CudaOcrPack.h
+    src/core/CudaOcrPack.cpp
 
     # Platform – tiện ích Windows (loại khỏi capture, autostart, phím tắt toàn cục)
     src/platform/PlatformUtils.h
@@ -266,7 +268,10 @@ endif()
 add_custom_command(TARGET EZTranslator POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/tools/ct2_server.py"
-        "$<TARGET_FILE_DIR:EZTranslator>/ct2_server.py")
+        "$<TARGET_FILE_DIR:EZTranslator>/ct2_server.py"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/scripts/install_cuda_ocr.ps1"
+        "$<TARGET_FILE_DIR:EZTranslator>/install_cuda_ocr.ps1")
 
 # Win32 libs (cho platform layer sau này)
 if(WIN32)
@@ -355,6 +360,8 @@ add_executable(settings_preview
     src/core/Types.h
     src/core/SettingsStore.h
     src/core/SettingsStore.cpp
+    src/core/CudaOcrPack.h
+    src/core/CudaOcrPack.cpp
 )
 target_include_directories(settings_preview PRIVATE src)
 target_link_libraries(settings_preview PRIVATE ez_translate Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Concurrent)

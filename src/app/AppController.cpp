@@ -59,22 +59,29 @@ using namespace EZTranslator::OverlayLayout;
 
 namespace {
 
+struct OcrGpuProbe
+{
+    bool available{false};
+    int adapterIndex{0};
+    int vramMb{0};
+    QString name;
+};
+
 /**
  * DirectML tren iGPU dung RAM he thong nhu VRAM va co the cham hon CPU voi OCR.
  * Chi chon GPU khi DXGI tim thay adapter phan cung co bo nho rieng du dung.
  */
-bool hasDiscreteGpuForOcr()
+OcrGpuProbe probeDiscreteGpuForOcr()
 {
+    OcrGpuProbe probe;
 #ifdef _WIN32
     IDXGIFactory1* factory = nullptr;
     const HRESULT factoryResult = CreateDXGIFactory1(
         __uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory));
     if (FAILED(factoryResult) || !factory)
-        return false;
+        return probe;
 
     constexpr SIZE_T minimumDedicatedVram = SIZE_T(512) * 1024 * 1024;
-    bool found = false;
-
     for (UINT index = 0; ; ++index) {
         IDXGIAdapter1* adapter = nullptr;
         const HRESULT enumResult = factory->EnumAdapters1(index, &adapter);
@@ -95,18 +102,19 @@ bool hasDiscreteGpuForOcr()
                                      && !name.contains(QStringLiteral("Arc"),
                                                        Qt::CaseInsensitive);
         if (!integratedIntel && desc.DedicatedVideoMemory >= minimumDedicatedVram) {
-            qInfo() << "[OCR] GPU rời được chọn:" << name
-                    << "| VRAM MB =" << (desc.DedicatedVideoMemory / 1024 / 1024);
-            found = true;
+            probe.available = true;
+            probe.adapterIndex = int(index);
+            probe.vramMb = int(desc.DedicatedVideoMemory / 1024 / 1024);
+            probe.name = name;
+            qInfo() << "[OCR] GPU rời được chọn:" << name << "| adapter=" << probe.adapterIndex
+                    << "| VRAM MB =" << probe.vramMb;
             break;
         }
     }
 
     factory->Release();
-    return found;
-#else
-    return false;
 #endif
+    return probe;
 }
 
 /** Tên hiển thị ngắn của mã ngôn ngữ (dùng cho status bar). */
@@ -155,6 +163,41 @@ AppController::AppController(QObject* parent)
     // Nạp TOÀN BỘ cài đặt đã lưu (mọi nhóm, không chỉ nhóm Dịch thuật) qua SettingsStore.
     EZTranslator::SettingsStore::load(m_settings);
     m_clock.start();
+
+    // Phân loại máy một lần: GPU rời/VRAM, RAM, số core. Mọi budget OCR/cache/fps
+    // bên dưới lấy từ plan này để máy yếu không bị ép chạy như máy khoẻ.
+    const OcrGpuProbe gpu = probeDiscreteGpuForOcr();
+    m_gpuAvailable = gpu.available;
+    m_gpuAdapterIndex = gpu.adapterIndex;
+    bool adapterOverrideOk = false;
+    const int adapterOverride =
+        qEnvironmentVariableIntValue("EZ_OCR_GPU_ADAPTER", &adapterOverrideOk);
+    if (m_gpuAvailable && adapterOverrideOk && adapterOverride >= 0)
+        m_gpuAdapterIndex = adapterOverride; // A/B hoặc test fallback
+    m_gpuVramMb = gpu.vramMb;
+    m_gpuName = gpu.name;
+    m_resourcePlan = EZTranslator::detectOcrResourcePlan(m_gpuVramMb);
+    m_motionWindowMs = m_resourcePlan.motionWindowMs;
+
+    EZTranslator::OcrScheduler::Options schedule;
+    schedule.settleMs = m_resourcePlan.ocrSettleMs;
+    schedule.minRunIntervalMs = m_resourcePlan.ocrCooldownMs;
+    m_ocrScheduler.setOptions(schedule);
+
+    const char* profileName = m_resourcePlan.profile == EZTranslator::ResourceProfile::Low
+                                  ? "low"
+                                  : m_resourcePlan.profile == EZTranslator::ResourceProfile::High
+                                        ? "high"
+                                        : "balanced";
+    qInfo().noquote() << "[RESOURCE] profile=" << profileName
+                      << "| cores=" << m_resourcePlan.logicalThreads
+                      << "| RAM MB=" << m_resourcePlan.totalRamMb
+                      << "| GPU=" << (m_gpuAvailable ? m_gpuName : QStringLiteral("none"))
+                      << "| VRAM MB=" << m_gpuVramMb
+                      << "| settle=" << m_resourcePlan.ocrSettleMs
+                      << "| cooldown=" << m_resourcePlan.ocrCooldownMs
+                      << "| motion=" << m_motionWindowMs;
+
     qDebug() << "Creating MainWindow...";
     m_mainWindow = new MainWindow();
     m_mainWindow->setLanguages(m_settings.sourceLanguage, m_settings.targetLanguage);
@@ -645,24 +688,47 @@ EZTranslator::OcrOptions AppController::ocrOptions(bool hoverWorker) const
         options.recModelPath = dir + QStringLiteral("/ch_PP-OCRv4_rec_infer.onnx");
         options.dictionaryPath = dir + QStringLiteral("/ppocr_keys_v1.txt");
     }
-    static const bool discreteGpuAvailable = hasDiscreteGpuForOcr();
-    options.useGpu = m_settings.ocrUseGpu && discreteGpuAvailable;
-    if (m_settings.ocrUseGpu && !discreteGpuAvailable) {
-        qInfo() << "[OCR] Không phát hiện GPU rời đủ VRAM; chuyển OCR sang CPU.";
+    const auto normalizeDevice = [](QString device) {
+        device = device.trimmed().toLower();
+        if (device != QLatin1String("cpu") && device != QLatin1String("directml")
+            && device != QLatin1String("cuda")) {
+            device = QStringLiteral("auto");
+        }
+        return device;
+    };
+    const QString detDevice = normalizeDevice(m_settings.ocrDetDevice);
+    const QString recDevice = normalizeDevice(m_settings.ocrRecDevice);
+    const bool detGpu = detDevice != QLatin1String("cpu");
+    const bool recGpu = recDevice != QLatin1String("cpu");
+
+    options.detDevice = detDevice;
+    options.recDevice = recDevice;
+    options.useGpu = detGpu || recGpu; // legacy + worker fallback
+    options.gpuAdapterIndex = m_gpuAdapterIndex;
+    options.hoverWorker = hoverWorker;
+    options.lowResource = m_resourcePlan.profile == EZTranslator::ResourceProfile::Low;
+    if (options.useGpu && !m_gpuAvailable) {
+        qInfo() << "[OCR] Không phát hiện GPU rời đủ VRAM; OCR sẽ fallback CPU.";
     }
-    const EZTranslator::OcrThreadBudget budget =
-        EZTranslator::chooseOcrThreadBudget(options.useGpu, hoverWorker);
-    options.threads = budget.detectorIntraOp;
-    options.recThreads = budget.recognizerIntraOp;
-    options.recWorkers = budget.recognizerWorkers;
-    options.interOpThreads = budget.interOp;
+
+    // Det và Rec có budget riêng: det CPU có thể 1-2 thread trong khi rec GPU
+    // chỉ 1 session; ngược lại rec CPU dùng nhiều worker.
+    const EZTranslator::OcrThreadBudget cpuBudget =
+        EZTranslator::chooseOcrThreadBudget(false, hoverWorker, m_resourcePlan.profile);
+    const EZTranslator::OcrThreadBudget gpuBudget =
+        EZTranslator::chooseOcrThreadBudget(true, hoverWorker, m_resourcePlan.profile);
+    options.threads = detGpu ? gpuBudget.detectorIntraOp : cpuBudget.detectorIntraOp;
+    options.recThreads = recGpu ? gpuBudget.recognizerIntraOp : cpuBudget.recognizerIntraOp;
+    options.recWorkers = recGpu ? gpuBudget.recognizerWorkers : cpuBudget.recognizerWorkers;
+    options.interOpThreads = 1;
     options.binarize = m_settings.ocrBinarize;
+    options.lineCacheLimit = m_resourcePlan.lineCacheLimit;
 
     // Rec head của PP-OCR tăng chi phí rất mạnh theo chiều rộng. Trên CPU, chia
     // dòng dài thành các mảnh chồng lấn 480 px rồi ghép text nhanh hơn 2-3 lần
     // so với đưa nguyên dòng 1000-1900 px vào model. GPU giữ ảnh rộng để giảm
     // số lần dispatch; biến môi trường phục vụ A/B trên máy người dùng.
-    options.recMaxWidth = options.useGpu ? 1920 : 480;
+    options.recMaxWidth = EZTranslator::chooseOcrRecMaxWidth(recGpu, m_gpuVramMb);
     bool recWidthOk = false;
     const int requestedRecWidth =
         qEnvironmentVariableIntValue("EZ_OCR_REC_MAX_WIDTH", &recWidthOk);
@@ -726,6 +792,8 @@ void AppController::spawnOcrWorker(QThread*& thread, EZTranslator::OcrWorker*& w
         connect(worker, &EZTranslator::OcrWorker::hoverProbed,
                 this, &AppController::onHoverProbed, Qt::QueuedConnection);
     } else {
+        connect(worker, &EZTranslator::OcrWorker::regionRecognizedPartial,
+                this, &AppController::onRegionRecognizedPartial, Qt::QueuedConnection);
         connect(worker, &EZTranslator::OcrWorker::regionRecognized,
                 this, &AppController::onRegionRecognized, Qt::QueuedConnection);
         connect(worker, &EZTranslator::OcrWorker::regionScrollMatched,
@@ -847,11 +915,20 @@ void AppController::onOcrLoaded(int generation, bool hoverWorker, bool ok, const
         return;
 
     m_ocrProvider = provider;
-    if (m_ocrProvider == QLatin1String("CPU"))
-        m_mainWindow->setStatus(QStringLiteral("OCR: CPU (không có GPU DX12/DirectML)"),
-                                QColor("#f59e0b"));
-    else
+    const bool anyCpu = m_ocrProvider.contains(QStringLiteral("CPU"));
+    const bool anyGpu = m_ocrProvider.contains(QStringLiteral("DirectML"))
+                        || m_ocrProvider.contains(QStringLiteral("CUDA"));
+    if (anyCpu) {
+        const QString detail = error.left(90);
+        m_mainWindow->setStatus(QStringLiteral("OCR: ") + m_ocrProvider
+                                    + (detail.isEmpty() ? QString() : QStringLiteral(" (")
+                                                                     + detail + ')'),
+                                anyGpu ? QColor("#f59e0b") : QColor("#38bdf8"));
+        if (!detail.isEmpty())
+            qInfo() << "[OCR] fallback detail:" << detail;
+    } else {
         m_mainWindow->setStatus(QStringLiteral("OCR: ") + m_ocrProvider, QColor("#22c55e"));
+    }
 
     qInfo() << "[OCR] ready (worker vùng), provider =" << m_ocrProvider;
     m_ocrReady.store(true);
@@ -882,7 +959,10 @@ EZTranslator::TranslationConfig AppController::translationConfig(const QString& 
     config.aiApiKey = m_settings.aiApiKey;
     config.aiModel = m_settings.aiModel;
     config.aiSystemPrompt = m_settings.aiSystemPrompt;
-    config.cacheCapacity = m_settings.cacheCapacityLines;
+    config.cacheCapacity = qMin(m_settings.cacheCapacityLines, m_resourcePlan.translationCacheLines);
+    config.device = m_settings.translateDevice.trimmed().toLower();
+    if (config.device != QLatin1String("cpu") && config.device != QLatin1String("cuda"))
+        config.device = QStringLiteral("auto");
     return config;
 }
 
@@ -2104,6 +2184,8 @@ void AppController::onSettingsSaved(const EZTranslator::AppSettings& settings)
     // Đổi engine/đường dẫn model OCR cần nạp lại model (nặng) — chỉ khi app đã từng nạp.
     const bool ocrReloadNeeded = updated.ocrEngine != m_settings.ocrEngine
                                  || updated.ocrUseGpu != m_settings.ocrUseGpu
+                                 || updated.ocrDetDevice != m_settings.ocrDetDevice
+                                 || updated.ocrRecDevice != m_settings.ocrRecDevice
                                  || updated.ocrBinarize != m_settings.ocrBinarize;
     const bool novelModeChanged = updated.novelMode != m_settings.novelMode;
     const bool gameDialogModeChanged = updated.gameDialogMode != m_settings.gameDialogMode;
@@ -2198,10 +2280,13 @@ void AppController::applySettings(bool initial)
                                                        m_settings.excludeFromCapture);
 
     // ── Hiệu suất capture ────────────────────────────────────────────────────
+    int captureFps = m_settings.captureFps;
+    if (m_resourcePlan.profile == EZTranslator::ResourceProfile::Low)
+        captureFps = qMin(captureFps, m_resourcePlan.captureFpsCap);
     if (m_wgcCapture)
-        m_wgcCapture->setFps(m_settings.captureFps);
+        m_wgcCapture->setFps(captureFps);
     if (m_gdiCapture)
-        m_gdiCapture->setFps(m_settings.captureFps);
+        m_gdiCapture->setFps(captureFps);
 
     // ── Khởi động cùng Windows (idempotent; cập nhật lại đường dẫn exe hiện tại) ──
     EZTranslator::Platform::setAutoStart(QStringLiteral("EZ-Translator"),
@@ -2763,11 +2848,12 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
         // (b) gửi yêu cầu dịch mỗi khung làm hàng đợi worker dịch nghẽn ~200ms (log thật: "dịch"
         // của lượt cache-hit cũng 200ms). Bộ máy dịch giờ: cache dịch theo CÂU + 2 phát emit.)
 
-        // Chờ 200 ms yên sau frame cuối cùng thay đổi trước khi phát OCR vùng.
-        // CPU cần nhiều giây cho ROI đầy đủ; bắt đầu ở giữa burst cuộn sẽ làm lượt
-        // nhận diện bị vô hiệu ngay ở frame kế tiếp và tiêu tốn một phần inference.
+        // CỬA SỔ CHUYỂN ĐỘNG: ảnh còn đổi trong motion window thì không chạy OCR full
+        // (chặn churn giữa lúc cuộn). Máy yếu dùng cửa sổ dài hơn để giảm tải.
+        // GameDialog vẫn được probe định kỳ khi chưa có box chữ, kể cả nền đang chuyển động.
         if (!initialGameProbe
-            && now - m_regionLastChangeMs.value(regionFrame.regionId, qint64(-1000000)) < 200)
+            && now - m_regionLastChangeMs.value(regionFrame.regionId, qint64(-1000000))
+                   < m_motionWindowMs)
             continue;
 
         // CACHE BOX THEO NỘI DUNG: nội dung này đã từng OCR thì dùng lại box ngay - KHÔNG OCR lại.
@@ -2888,6 +2974,22 @@ void AppController::dispatchNextRegionOcr()
         m_regionOcrMailbox.finish(regionId);
         qWarning() << "[OCR] Không xếp được region request:" << regionId;
     }
+}
+
+void AppController::onRegionRecognizedPartial(const QString& regionId, quint64 requestToken,
+                                              quint64 imageHash,
+                                              const QList<EZTranslator::OcrTextBox>& boxes)
+{
+    if (m_regionOcrToken.value(regionId, 0) != requestToken
+        || m_regionOcrHash.value(regionId, 0) != imageHash) {
+        qInfo() << "[OCR] Bỏ kết quả partial cũ" << regionId << requestToken << imageHash;
+        return;
+    }
+
+    // Preview: hiện/dịch cụm dòng đầu ngay, nhưng KHÔNG ghim line pitch, KHÔNG
+    // cache box và KHÔNG dựng plate. Kết quả full ngay sau đó sẽ thay thế.
+    handleRegionBoxes(regionId, boxes, /*buildPlate=*/false, /*approximate=*/false,
+                      /*preview=*/true);
 }
 
 void AppController::onRegionRecognized(const QString& regionId, quint64 requestToken,
@@ -3058,13 +3160,18 @@ QImage AppController::findRegionPlate(const QString& regionId, quint64 imageHash
 
 void AppController::handleRegionBoxes(const QString& regionId,
                                       const QList<EZTranslator::OcrTextBox>& boxesIn,
-                                      bool buildPlate, bool approximate)
+                                      bool buildPlate, bool approximate, bool preview)
 {
     // BẢN SAO ngay đầu hàm: đường cache-hit truyền vào CHÍNH list đang nằm trong m_ocrBoxCache,
     // mà cuối hàm này lại insert/clear cache đó — rehash/clear giải phóng node và mọi tham chiếu
     // tới `boxesIn` thành dangling (use-after-free → crash 0xc0000005 trong Qt6Core sau một lúc
     // dùng overlay, khi cache đủ 8 nội dung và bị clear).
     const QList<EZTranslator::OcrTextBox> boxes = boxesIn;
+
+    // Preview của full OCR CPU không phải kết quả cuối: tuyệt đối không cache box
+    // dưới hash của cả ảnh, không dựng plate và không ghim line pitch/paragraph.
+    if (preview)
+        buildPlate = false;
 
     const auto info = m_regionOcrInfo.constFind(regionId);
     if (info == m_regionOcrInfo.constEnd())
@@ -3128,7 +3235,7 @@ void AppController::handleRegionBoxes(const QString& regionId,
                 if (hash != 0) {
                     QHash<quint64, QList<EZTranslator::OcrTextBox>>& regionCache =
                         m_ocrBoxCache[regionId];
-                    if (regionCache.size() >= 8)
+                    if (regionCache.size() >= m_resourcePlan.ocrBoxCachePerRegion)
                         regionCache.clear();
                     regionCache.insert(hash, boxes);
                 }
@@ -3151,7 +3258,8 @@ void AppController::handleRegionBoxes(const QString& regionId,
     // nháy khi box rung, và cache dịch không bị trượt mỗi frame.
     // Box XẤP XỈ (đường tăng dần) không được ghim: ước lượng cuộn làm nhịp đo sai, ghim vào là
     // đầu độc cả những lượt CHÍNH XÁC sau (assembly chia dòng khác đi ⇒ vị trí đoạn lệch).
-    if (!approximate) {
+    // Preview (cụm dòng đầu của CPU progressive) cũng không được ghim vì mới thấy một phần trang.
+    if (!approximate && !preview) {
         const int measuredPitch = EZTranslator::OcrTextAssembler::estimateLinePitch(boxes);
         if (measuredPitch > 0) {
             const int previous = m_regionLinePitch.value(regionId, 0);
@@ -3185,7 +3293,7 @@ void AppController::handleRegionBoxes(const QString& regionId,
                 if (staleHash != 0) {
                     QHash<quint64, QList<EZTranslator::OcrTextBox>>& regionCache =
                         m_ocrBoxCache[regionId];
-                    if (regionCache.size() >= 8)
+                    if (regionCache.size() >= m_resourcePlan.ocrBoxCachePerRegion)
                         regionCache.clear();
                     regionCache.insert(staleHash, boxes);
                 }
@@ -3232,7 +3340,8 @@ void AppController::handleRegionBoxes(const QString& regionId,
             const QString novelText = paragraphTexts.join(QStringLiteral("\n\n"));
             if (!novelText.trimmed().isEmpty()) {
                 m_regionNovelParagraphs.insert(regionId, paragraphs);
-                m_regionScrollReuseEligible.insert(regionId);
+                if (!preview)
+                    m_regionScrollReuseEligible.insert(regionId);
                 m_regionSourceText.insert(regionId, novelText);
                 if (m_floatingMode)
                     refreshFloatingWindow();
@@ -3280,7 +3389,7 @@ void AppController::handleRegionBoxes(const QString& regionId,
                     if (hash != 0) {
                         QHash<quint64, QList<EZTranslator::OcrTextBox>>& regionCache =
                             m_ocrBoxCache[regionId];
-                        if (regionCache.size() >= 8)
+                        if (regionCache.size() >= m_resourcePlan.ocrBoxCachePerRegion)
                             regionCache.clear();
                         regionCache.insert(hash, boxes);
                     }
@@ -3331,7 +3440,7 @@ void AppController::handleRegionBoxes(const QString& regionId,
         const quint64 hash = m_regionOcrHash.value(regionId);
         if (hash != 0) {
             QHash<quint64, QList<EZTranslator::OcrTextBox>>& regionCache = m_ocrBoxCache[regionId];
-            if (regionCache.size() >= 8)
+            if (regionCache.size() >= m_resourcePlan.ocrBoxCachePerRegion)
                 regionCache.clear(); // bounded: giữ các nội dung mới nhất
             regionCache.insert(hash, boxes);
         }
@@ -3654,7 +3763,7 @@ void AppController::onTranslationReady(const QString& regionId, quint64 token,
                 && !known.value().trimmed().isEmpty()) {
                 translatedParagraphs[i] = known.value();
             } else if (!fresh.isEmpty()) {
-                if (m_paragraphTranslations.size() >= 5000)
+                if (m_paragraphTranslations.size() >= m_resourcePlan.paragraphCacheLines)
                     m_paragraphTranslations.clear();
                 m_paragraphTranslations.insert(key, fresh);
             }

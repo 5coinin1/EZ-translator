@@ -27,6 +27,9 @@ struct TranslationConfig
     QString aiModel;
     QString aiSystemPrompt;
 
+    /// Thiết bị CTranslate2: "auto" (CUDA→CPU) | "cpu" | "cuda".
+    QString device{"auto"};
+
     /// Sức chứa cache bản dịch (số dòng) — Cài đặt → Dịch thuật.
     int cacheCapacity{5000};
 };

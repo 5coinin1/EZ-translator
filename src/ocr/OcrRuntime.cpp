@@ -1,11 +1,17 @@
 #include "ocr/OcrRuntime.h"
 
+#include <QList>
+#include <QStringLiteral>
+
 #include <stdexcept>
 #include <string>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
 #endif
 #include <windows.h>
 #endif
@@ -103,7 +109,8 @@ struct OcrRuntime::Impl
 {
     Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "ez-translator-ocr"};
     QString provider{QStringLiteral("CPU")};
-    void*   providerSymbol{nullptr};
+    QString preference{QStringLiteral("auto")};
+    int adapterIndex{0};
 };
 
 OcrRuntime::OcrRuntime()
@@ -118,45 +125,38 @@ QString OcrRuntime::providerName() const
     return m_impl ? m_impl->provider : QString();
 }
 
-QString OcrRuntime::configure(bool useGpu, QString* error)
+QString OcrRuntime::configure(const QString& devicePreference, int adapterIndex, QString* error)
 {
     if (!m_impl)
         return {};
 
-    if (!useGpu) {
-        m_impl->provider = QStringLiteral("CPU");
-        m_impl->providerSymbol = nullptr;
-        return m_impl->provider;
+    QString preference = devicePreference.trimmed().toLower();
+    if (preference != QLatin1String("cpu") && preference != QLatin1String("directml")
+        && preference != QLatin1String("cuda") && preference != QLatin1String("auto")) {
+        preference = QStringLiteral("auto");
     }
-
+    m_impl->preference = preference;
+    m_impl->adapterIndex = qMax(0, adapterIndex);
+    m_impl->provider = QStringLiteral("CPU");
 #if defined(_WIN32)
-    // Provider được resolve lúc chạy để một binary dùng được cho cả build
-    // CPU / DirectML / CUDA: thiếu symbol nghĩa là "không có GPU".
-    struct Candidate
-    {
-        const char* symbol;
-        const char* name;
-    };
-    static const Candidate candidates[] = {
-        {"OrtSessionOptionsAppendExecutionProvider_CUDA", "CUDA"},
-        {"OrtSessionOptionsAppendExecutionProvider_DML", "DirectML"},
-    };
-    for (const Candidate& candidate : candidates) {
-        if (void* symbol = findProviderSymbol(candidate.symbol)) {
-            m_impl->providerSymbol = symbol;
-            m_impl->provider = QString::fromLatin1(candidate.name);
-            return m_impl->provider;
+    if (preference != QLatin1String("cpu")) {
+        // Đặt provider ưu tiên TRƯỚC khi tạo session để OcrRecognizer chọn đúng
+        // model fp16/int8 theo GPU. Nếu session lỗi, createSession sẽ fallback.
+        if (preference != QLatin1String("directml")) {
+            if (findProviderSymbol("OrtSessionOptionsAppendExecutionProvider_CUDA"))
+                m_impl->provider = QStringLiteral("CUDA");
+        }
+        if (m_impl->provider == QLatin1String("CPU")
+            && (preference == QLatin1String("auto")
+                || preference == QLatin1String("directml")
+                || preference == QLatin1String("cuda"))) {
+            if (findProviderSymbol("OrtSessionOptionsAppendExecutionProvider_DML"))
+                m_impl->provider = QStringLiteral("DirectML");
         }
     }
-    if (error)
-        *error = QStringLiteral("ONNX Runtime build không có GPU provider");
-#else
-    if (error)
-        *error = QStringLiteral("unsupported platform");
 #endif
-
-    m_impl->provider = QStringLiteral("CPU");
-    m_impl->providerSymbol = nullptr;
+    if (error)
+        error->clear();
     return m_impl->provider;
 }
 
@@ -167,19 +167,33 @@ std::shared_ptr<OcrSession> OcrRuntime::createSession(const QString& modelPath, 
     if (!m_impl)
         return nullptr;
 
-    const auto buildOptions = [&](bool useProvider) {
+    struct Candidate
+    {
+        const char* symbol;
+        const char* name;
+    };
+    QList<Candidate> candidates;
+    if (m_impl->preference == QLatin1String("directml")) {
+        candidates.append(Candidate{"OrtSessionOptionsAppendExecutionProvider_DML", "DirectML"});
+    } else if (m_impl->preference != QLatin1String("cpu")) {
+        // auto/cuda: CUDA trước, DirectML là fallback kế tiếp.
+        candidates.append(Candidate{"OrtSessionOptionsAppendExecutionProvider_CUDA", "CUDA"});
+        candidates.append(Candidate{"OrtSessionOptionsAppendExecutionProvider_DML", "DirectML"});
+    }
+
+    const auto buildOptions = [&](void* providerSymbol) {
         Ort::SessionOptions options;
         options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         if (intraThreads > 0)
             options.SetIntraOpNumThreads(intraThreads);
         if (interThreads > 0)
             options.SetInterOpNumThreads(interThreads);
-        if (useProvider) {
+        if (providerSymbol) {
             // GPU (DML/CUDA) thực thi kernel tuần tự; song song chỉ gây tranh chấp.
             options.SetExecutionMode(sequential ? ExecutionMode::ORT_SEQUENTIAL
                                                 : ExecutionMode::ORT_PARALLEL);
-            auto append = reinterpret_cast<AppendProviderFn>(m_impl->providerSymbol);
-            if (OrtStatus* status = append(options, 0)) {
+            auto append = reinterpret_cast<AppendProviderFn>(providerSymbol);
+            if (OrtStatus* status = append(options, m_impl->adapterIndex)) {
                 const char* message = Ort::GetApi().GetErrorMessage(status);
                 const QString detail = QString::fromUtf8(message ? message : "append failed");
                 Ort::GetApi().ReleaseStatus(status);
@@ -189,29 +203,39 @@ std::shared_ptr<OcrSession> OcrRuntime::createSession(const QString& modelPath, 
         return options;
     };
 
-    const auto makeSession = [&](bool useProvider) -> std::shared_ptr<OcrSession> {
-        auto session = std::make_unique<Ort::Session>(m_impl->env, modelPath.toStdWString().c_str(),
-                                                      buildOptions(useProvider));
+    const auto makeSession = [&](void* providerSymbol) -> std::shared_ptr<OcrSession> {
+        auto session = std::make_unique<Ort::Session>(
+            m_impl->env, modelPath.toStdWString().c_str(), buildOptions(providerSymbol));
         return std::make_shared<OrtSessionAdapter>(std::move(session));
     };
 
-    if (m_impl->providerSymbol) {
+    QString lastGpuError;
+#if defined(_WIN32)
+    for (const Candidate& candidate : candidates) {
+        void* symbol = findProviderSymbol(candidate.symbol);
+        if (!symbol)
+            continue;
         try {
-            if (auto session = makeSession(true))
+            if (auto session = makeSession(symbol)) {
+                m_impl->provider = QString::fromLatin1(candidate.name);
+                if (error)
+                    error->clear();
                 return session;
+            }
         } catch (const std::exception& exception) {
-            // Provider lỗi (thiếu dependency, driver…) → tắt và rơi về CPU.
-            if (error)
-                *error = QString::fromUtf8(exception.what());
-            m_impl->providerSymbol = nullptr;
-            m_impl->provider = QStringLiteral("CPU");
+            lastGpuError = QString::fromUtf8(exception.what());
         }
     }
+#endif
 
     try {
-        if (auto session = makeSession(false)) {
-            if (error)
-                error->clear();
+        if (auto session = makeSession(nullptr)) {
+            m_impl->provider = QStringLiteral("CPU");
+            if (error) {
+                // Giữ lý do GPU lỗi để tầng trên hiển thị fallback; không coi là
+                // lỗi load vì CPU session đã thành công.
+                *error = lastGpuError;
+            }
             return session;
         }
     } catch (const std::exception& exception) {

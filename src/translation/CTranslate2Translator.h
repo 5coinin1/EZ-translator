@@ -36,7 +36,7 @@ public:
      */
     bool start(const QString& pythonExe, const QString& scriptPath, const QString& modelDir,
                const QString& computeType, const QString& sourceLang, const QString& targetLang,
-               QString* error = nullptr);
+               QString* error = nullptr, const QString& device = QStringLiteral("auto"));
 
     void stop();
 
@@ -68,6 +68,7 @@ private:
     QString m_computeType{QStringLiteral("int8")};
     QString m_sourceLang;
     QString m_targetLang;
+    QString m_device{QStringLiteral("auto")};
     bool m_ready{false};
     QElapsedTimer m_clock;
     qint64 m_lastStartAttemptMs{-1000000}; ///< giãn cách giữa các lần thử khởi động lại

@@ -62,6 +62,14 @@ public slots:
 
 signals:
     void loaded(bool ok, const QString& provider, const QString& error);
+    /**
+     * @brief Kết quả recognition MỘT PHẦN của full OCR CPU (cụm dòng đầu).
+     *
+     * Cùng token/hash với `regionRecognized` cuối; lớp ứng dụng dùng để dịch/hiện
+     * sớm rồi cập nhật bằng kết quả đầy đủ. Không phát cho scroll-band/GPU.
+     */
+    void regionRecognizedPartial(const QString& id, quint64 requestToken, quint64 imageHash,
+                                 const QList<EZTranslator::OcrTextBox>& boxes);
     void regionRecognized(const QString& id, quint64 requestToken, quint64 imageHash,
                           const QList<EZTranslator::OcrTextBox>& boxes);
     void regionScrollMatched(const QString& id, quint64 requestToken, quint64 imageHash,

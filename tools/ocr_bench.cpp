@@ -18,6 +18,7 @@
 #include "ocr/OcrEngine.h"
 #include "ocr/OcrRecognizer.h"
 #include "ocr/OcrThreadBudget.h"
+#include "ocr/OcrWorker.h"
 
 using namespace EZTranslator;
 
@@ -111,6 +112,53 @@ int main(int argc, char** argv)
         return 1;
     }
     qInfo() << "provider:" << engine.providerName();
+
+    if (app.arguments().contains(QStringLiteral("--worker-progress"))) {
+        QList<OcrTextBox> boxes;
+        const QImage image = makeManyLines(&boxes);
+        OcrWorker worker;
+        int partialCount = 0;
+        int fullCount = 0;
+        QElapsedTimer workerTimer;
+        workerTimer.start();
+        QObject::connect(&worker, &OcrWorker::regionRecognizedPartial,
+                         [&](const QString&, quint64, quint64,
+                             const QList<OcrTextBox>& partial) {
+                             ++partialCount;
+                             qInfo("worker partial boxes=%d at=%lldms",
+                                   int(partial.size()), workerTimer.elapsed());
+                         });
+        QObject::connect(&worker, &OcrWorker::regionRecognized,
+                         [&](const QString&, quint64, quint64,
+                             const QList<OcrTextBox>& full) {
+                             ++fullCount;
+                             qInfo("worker full boxes=%d at=%lldms", int(full.size()),
+                                   workerTimer.elapsed());
+                         });
+        worker.load(options);
+        worker.noteRegionRequest(QStringLiteral("bench"), 1);
+        worker.noteRequestQueued();
+        worker.recognizeRegion(QStringLiteral("bench"), 1, 0x1234, 0, image, false);
+        qInfo("worker signals partial=%d full=%d", partialCount, fullCount);
+        return (partialCount == 1 && fullCount == 1) ? 0 : 3;
+    }
+
+    if (app.arguments().contains(QStringLiteral("--progress"))) {
+        QList<OcrTextBox> boxes;
+        const QImage image = makeManyLines(&boxes);
+        QElapsedTimer progressTimer;
+        progressTimer.start();
+        const QList<OcrTextBox> result = engine.recognize(
+            image, {}, [&](const QList<OcrTextBox>& partial) {
+                qInfo("progress boxes=%d at=%lldms", int(partial.size()),
+                      progressTimer.elapsed());
+            });
+        const OcrTimings timings = engine.lastTimings();
+        qInfo("progress final boxes=%d total=%lldms det=%.1f rec=%.1f calls=%d",
+              int(result.size()), progressTimer.elapsed(), timings.detMs, timings.recMs,
+              timings.recCalls);
+        return 0;
+    }
 
     if (app.arguments().contains(QStringLiteral("--rec-heavy"))) {
         QList<OcrTextBox> boxes;

@@ -98,6 +98,18 @@ void load(AppSettings& settings)
     // ── OCR ──────────────────────────────────────────────────────────────────
     settings.ocrEngine = str("ocrEngine", settings.ocrEngine);
     settings.ocrUseGpu = store.value("ocrUseGpu", settings.ocrUseGpu).toBool();
+    const QString legacyOcrDevice =
+        settings.ocrUseGpu ? QStringLiteral("auto") : QStringLiteral("cpu");
+    settings.ocrDetDevice =
+        store.contains("ocrDetDevice")
+            ? store.value("ocrDetDevice", legacyOcrDevice).toString()
+            : legacyOcrDevice;
+    settings.ocrRecDevice =
+        store.contains("ocrRecDevice")
+            ? store.value("ocrRecDevice", legacyOcrDevice).toString()
+            : legacyOcrDevice;
+    settings.translateDevice =
+        store.value("translateDevice", settings.translateDevice).toString();
     settings.ocrBinarize = store.value("ocrBinarize", settings.ocrBinarize).toBool();
     settings.gameDialogMode = store.value("gameDialogMode", settings.gameDialogMode).toBool();
     settings.cacheCapacityLines =
@@ -171,6 +183,9 @@ void save(const AppSettings& settings)
     // ── OCR ──────────────────────────────────────────────────────────────────
     store.setValue("ocrEngine", settings.ocrEngine);
     store.setValue("ocrUseGpu", settings.ocrUseGpu);
+    store.setValue("ocrDetDevice", settings.ocrDetDevice);
+    store.setValue("ocrRecDevice", settings.ocrRecDevice);
+    store.setValue("translateDevice", settings.translateDevice);
     store.setValue("ocrBinarize", settings.ocrBinarize);
     store.setValue("gameDialogMode", settings.gameDialogMode);
     store.setValue("cacheCapacityLines", settings.cacheCapacityLines);

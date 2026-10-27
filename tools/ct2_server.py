@@ -37,9 +37,70 @@ import re
 import sys
 import time
 from collections import OrderedDict
+from pathlib import Path
 
 import ctranslate2
 import sentencepiece as spm
+
+# ── CUDA DLL discovery ─────────────────────────────────────────────────────
+# CTranslate2 wheel không kèm cuBLAS/cuDNN. Trên máy dev, PyTorch đã cài sẵn
+# CUDA 12 runtime trong torch/lib; các bản pip khác có thể nằm ở nvidia/*/bin.
+# Thêm các thư mục này trước khi tạo Translator để GPU dùng được mà không cần
+# cài CUDA Toolkit toàn hệ thống.
+def _add_dll_dir(path):
+    path = str(path or "")
+    if not path or not os.path.isdir(path):
+        return
+    try:
+        os.add_dll_directory(path)
+    except (AttributeError, OSError):
+        pass
+    os.environ["PATH"] = path + os.pathsep + os.environ.get("PATH", "")
+
+
+def _prepare_cuda_dlls():
+    if os.name != "nt":
+        return
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("torch")
+        if spec and spec.origin:
+            _add_dll_dir(Path(spec.origin).parent / "lib")
+    except Exception:
+        pass
+
+    try:
+        import site
+        import sysconfig
+
+        roots = set()
+        try:
+            roots.add(sysconfig.get_paths().get("purelib", ""))
+        except Exception:
+            pass
+        try:
+            roots.update(site.getsitepackages())
+        except Exception:
+            pass
+        try:
+            roots.add(site.getusersitepackages())
+        except Exception:
+            pass
+        for root in roots:
+            if not root:
+                continue
+            base = Path(root)
+            for sub in ("nvidia/cublas/bin", "nvidia/cudnn/bin",
+                        "nvidia/cuda_runtime/bin", "nvidia/cuda_nvrtc/bin"):
+                _add_dll_dir(base / sub)
+    except Exception:
+        pass
+
+    for env_name in ("CUDA_PATH", "CUDA_HOME"):
+        root = os.environ.get(env_name)
+        if root:
+            _add_dll_dir(Path(root) / "bin")
 
 # Marian mã hoá vị trí dừng ở 512 token; giữ biên an toàn và chặn luôn độ trễ.
 MAX_SRC_TOKENS = 400
@@ -80,6 +141,10 @@ class Engine:
     def __init__(self, model_dir, compute_type, intra_threads, src_lang, tgt_lang):
         self.src_lang = src_lang
         self.tgt_lang = tgt_lang
+        self.model_dir = model_dir
+        self.intra_threads = max(1, intra_threads)
+        self.requested_device = os.environ.get("EZ_CT2_DEVICE", "auto").strip().lower()
+        self.requested_compute = os.environ.get("EZ_CT2_COMPUTE", "").strip()
 
         nllb_spm = os.path.join(model_dir, "sentencepiece.bpe.model")
         if os.path.exists(nllb_spm):
@@ -90,17 +155,82 @@ class Engine:
             self.sp_src = load_spm(os.path.join(model_dir, "source.spm"))
             self.sp_tgt = load_spm(os.path.join(model_dir, "target.spm"))
 
-        self.translator = ctranslate2.Translator(
-            model_dir,
-            device="cpu",
-            compute_type=compute_type,
-            inter_threads=1,
-            intra_threads=max(1, intra_threads),
-        )
+        self.translator = None
+        self.device = "cpu"
+        self.compute_type = compute_type or "int8"
+        self._load_translator()
+        # GPU xử lý batch lớn tốt hơn nhiều: 20 câu thường ~70 ms thay vì
+        # ~120-180 ms nếu chia batch 8. CPU giữ 8 để tránh padding.
+        self.max_batch_size = int(os.environ.get(
+            "EZ_CT2_FAST_BATCH", "32" if self.device == "cuda" else str(FAST_MAX_BATCH)))
 
         # Cache chỉ sống trong phiên worker (giống bản yuh). C++ vẫn có
         # TranslationCache riêng cho các lượt lặp giữa những lần gọi.
         self._cache = OrderedDict()
+
+    def _make_translator(self, device, compute_type):
+        return ctranslate2.Translator(
+            self.model_dir,
+            device=device,
+            compute_type=compute_type,
+            inter_threads=1,
+            intra_threads=1 if device == "cuda" else self.intra_threads,
+        )
+
+    def _fallback_to_cpu(self):
+        if self.device != "cuda":
+            return False
+        try:
+            self.translator = self._make_translator("cpu", "int8")
+            self.device = "cpu"
+            self.compute_type = "int8"
+            self.max_batch_size = FAST_MAX_BATCH
+            print("[ct2] CUDA runtime failed -> fallback CPU int8",
+                  file=sys.stderr, flush=True)
+            return True
+        except Exception as exc:
+            print(f"[ct2] CPU fallback failed: {exc}", file=sys.stderr, flush=True)
+            return False
+
+    def _load_translator(self):
+        want = self.requested_device
+        if want not in ("cpu", "cuda", "gpu", "auto"):
+            want = "auto"
+        if want == "gpu":
+            want = "cuda"
+
+        if want in ("cuda", "auto"):
+            _prepare_cuda_dlls()
+            candidates = []
+            if self.requested_compute:
+                candidates.append(self.requested_compute)
+            # float16 nhanh nhất trên RTX; int8_* là fallback cho GPU cũ.
+            candidates.extend(["float16", "int8_float32", "float32"])
+            last_error = None
+            for compute_type in dict.fromkeys(candidates):
+                try:
+                    translator = self._make_translator("cuda", compute_type)
+                    self.translator = translator
+                    self.device = "cuda"
+                    self.compute_type = compute_type
+                    print(f"[ct2] device=cuda compute={compute_type}", file=sys.stderr, flush=True)
+                    return
+                except Exception as exc:
+                    last_error = exc
+            if want == "cuda":
+                print(f"[ct2] CUDA không dùng được: {last_error}", file=sys.stderr, flush=True)
+
+        # CPU fallback / explicit CPU.
+        cpu_compute = self.requested_compute or "int8"
+        try:
+            self.translator = self._make_translator("cpu", cpu_compute)
+            self.device = "cpu"
+            self.compute_type = cpu_compute
+        except Exception:
+            self.translator = self._make_translator("cpu", "int8")
+            self.device = "cpu"
+            self.compute_type = "int8"
+        print(f"[ct2] device=cpu compute={self.compute_type}", file=sys.stderr, flush=True)
 
     # ── Tokenize / detokenize ────────────────────────────────────────────────
     def _encode(self, text):
@@ -210,11 +340,23 @@ class Engine:
                     FAST_BEAM,
                     no_repeat=FAST_NO_REPEAT,
                     rep_penalty=FAST_REP_PENALTY,
-                    max_batch_size=FAST_MAX_BATCH,
+                    max_batch_size=self.max_batch_size,
                 )
             except Exception as exc:
                 print(json.dumps({"error": str(exc)}), file=sys.stderr, flush=True)
                 fresh = [""] * len(keys)
+                if self._fallback_to_cpu():
+                    try:
+                        fresh = self._translate_tokens(
+                            [list(key) for key in keys],
+                            FAST_BEAM,
+                            no_repeat=FAST_NO_REPEAT,
+                            rep_penalty=FAST_REP_PENALTY,
+                            max_batch_size=self.max_batch_size,
+                        )
+                    except Exception as retry_exc:
+                        print(json.dumps({"error": str(retry_exc)}), file=sys.stderr,
+                              flush=True)
 
             for key, output in zip(keys, fresh):
                 # Câu rỗng: thử lại bằng cách chẻ đôi (giống worker của yuh).
@@ -348,7 +490,29 @@ def main():
         print(json.dumps({"error": str(exc)}), file=sys.stderr, flush=True)
         return 1
 
+    # Warm-up bằng một batch nhỏ trước khi báo ready: GPU/CUDA kernel và
+    # shape batch 8 được biên dịch sẵn, tránh 200-300 ms cho lượt dịch đầu.
+    try:
+        engine.translate_many([
+            "Hello.", "Good morning.", "Open the door.", "Where is the key?",
+            "Thank you very much.", "I am ready.", "See you tomorrow.",
+            "The night is quiet.",
+        ])
+        print("[ct2] warmup done", file=sys.stderr, flush=True)
+    except Exception as exc:
+        print(f"[ct2] warmup skipped: {exc}", file=sys.stderr, flush=True)
+        if engine._fallback_to_cpu():
+            try:
+                engine.translate_many([
+                    "Hello.", "Good morning.", "Open the door.", "Where is the key?",
+                    "Thank you very much.", "I am ready.", "See you tomorrow.",
+                    "The night is quiet.",
+                ])
+            except Exception as retry_exc:
+                print(f"[ct2] CPU warmup skipped: {retry_exc}", file=sys.stderr, flush=True)
+
     print(json.dumps({"ready": True, "kind": engine.kind,
+                      "device": engine.device, "compute": engine.compute_type,
                       "mode": "fast" if (FAST_MODE and engine.kind == "marian") else "quality"}),
           flush=True)
 
