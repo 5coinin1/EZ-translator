@@ -9,8 +9,14 @@ namespace EZTranslator {
 OcrScheduleDecision OcrScheduler::process(const QString& regionId, const QImage& image,
                                           qint64 nowMs)
 {
+    return process(regionId, image, nowMs, imageDifferenceHash(image));
+}
+
+OcrScheduleDecision OcrScheduler::process(const QString& regionId, const QImage& image,
+                                          qint64 nowMs, quint64 contentHash)
+{
     OcrScheduleDecision decision;
-    const quint64 hash = imageDifferenceHash(image);
+    const quint64 hash = contentHash;
 
     Region& region = m_regions[regionId];
 

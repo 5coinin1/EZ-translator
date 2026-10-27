@@ -82,6 +82,7 @@ private:
 
     // Appearance preview widgets
     ToggleSwitch*    m_novelModeSwitch{nullptr};
+    ToggleSwitch*    m_gameDialogModeSwitch{nullptr};
     QComboBox*       m_fontFamilyCombo{nullptr};
     QComboBox*       m_textWindowStyleCombo{nullptr};
     ToggleSwitch*    m_showSourceSwitch{nullptr};

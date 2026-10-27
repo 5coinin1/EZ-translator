@@ -8,6 +8,7 @@
 #include <QPainterPath>
 #include <QRadialGradient>
 #include <QResizeEvent>
+#include <QRegion>
 #include <QTextLayout>
 #include <QTextOption>
 
@@ -216,25 +217,33 @@ void TextOverlay::paintEvent(QPaintEvent*)
             const QRectF plateTarget(box.plateRect.x() * scaleX, box.plateRect.y() * scaleY,
                                      box.plateRect.width() * scaleX,
                                      box.plateRect.height() * scaleY);
+            // The plate is a whole-region image. Painting it for every paragraph
+            // erases neighbouring source text and makes a page-sized mask.
+            QRegion sourceLines;
+            for (const QRect& coverRect : box.coverRects) {
+                sourceLines += QRectF(coverRect.x() * scaleX, coverRect.y() * scaleY,
+                                      coverRect.width() * scaleX,
+                                      coverRect.height() * scaleY).adjusted(-2, -1, 2, 1).toAlignedRect();
+            }
+            if (sourceLines.isEmpty())
+                sourceLines = target.toAlignedRect();
+            painter.save();
+            painter.setClipRegion(sourceLines);
             painter.drawImage(plateTarget, box.plate);
-        } else if (box.fitToBox) {
-            // Novel paper mode: cover the whole paragraph slot in one pass.
-            // Covering each OCR line separately leaves visible horizontal bars
-            // and cannot hide lines the detector missed inside the slot.
-            // Keep the paper opaque even if the user lowered text opacity.
-            const qreal previousOpacity = painter.opacity();
-            painter.setOpacity(1.0);
-            painter.fillRect(target, cover);
-            painter.setOpacity(previousOpacity);
+            painter.restore();
         } else if (box.coverRects.isEmpty()) {
             painter.fillRect(target, cover);
         } else {
+            const qreal previousOpacity = painter.opacity();
+            if (box.fitToBox)
+                painter.setOpacity(1.0);
             for (const QRect& coverRect : box.coverRects) {
                 const QRectF coverTarget(coverRect.x() * scaleX, coverRect.y() * scaleY,
                                          coverRect.width() * scaleX,
                                          coverRect.height() * scaleY);
-                painter.fillRect(coverTarget, cover);
+                painter.fillRect(coverTarget.adjusted(-2, -1, 2, 1), cover);
             }
+            painter.setOpacity(previousOpacity);
         }
     }
 
@@ -647,7 +656,7 @@ void TextOverlay::paintGlass(QPainter& painter, const OverlayBox& box, const QRe
                          box.rect.width() * scaleX, box.rect.height() * scaleY);
     // Panel phu TOAN BO box nguon (paragraph/line), khong chi vung text fit;
     // neu chi phu text fit thi cac dong goc con lai se lo ra ngoai.
-    QRectF panel = boxRect.adjusted(-6.0, -4.0, 6.0, 4.0)
+    QRectF panel = boxRect.adjusted(-2.0, -2.0, 2.0, 2.0)
                        .intersected(QRectF(0.0, 0.0, double(width()), double(height())));
     if (panel.width() < 8.0 || panel.height() < 8.0)
         return;

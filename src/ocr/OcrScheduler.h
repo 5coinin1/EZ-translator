@@ -51,6 +51,8 @@ public:
     /** Gọi cho từng vùng một lần mỗi tick. */
     [[nodiscard]] OcrScheduleDecision process(const QString& regionId, const QImage& image,
                                               qint64 nowMs);
+    [[nodiscard]] OcrScheduleDecision process(const QString& regionId, const QImage& image,
+                                              qint64 nowMs, quint64 contentHash);
 
     /**
      * Đánh dấu vùng vừa được phục vụ từ CACHE BOX (nội dung đã từng OCR, không chạy lại OCR).

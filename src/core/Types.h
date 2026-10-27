@@ -121,6 +121,7 @@ struct AppSettings {
     QString targetLanguage{"vi"};         // ngôn ngữ đích của bản dịch
     bool ocrUseGpu{true};                 // true = thử GPU (DirectML), tự fallback CPU
     bool ocrBinarize{false};              // thử nghiệm: nhị phân hoá ảnh vùng trước khi OCR
+    bool gameDialogMode{false};           // dùng hash vùng chữ để bỏ qua nền game chuyển động
     int cacheCapacityLines{5000};         // số dòng tối đa giữ trong cache bản dịch
 
     // Nhóm Hiển thị & Hiệu suất

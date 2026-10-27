@@ -624,6 +624,8 @@ void SettingsDialog::setSettings(const EZTranslator::AppSettings& settings)
 
     if (m_novelModeSwitch)
         m_novelModeSwitch->setChecked(m_settings.novelMode);
+    if (m_gameDialogModeSwitch)
+        m_gameDialogModeSwitch->setChecked(m_settings.gameDialogMode);
     if (m_fontFamilyCombo) {
         const int index = m_fontFamilyCombo->findText(m_settings.fontFamily);
         if (index >= 0)
@@ -935,6 +937,21 @@ QWidget* SettingsDialog::buildOverlayPage()
 
     connect(m_novelModeSwitch, &QAbstractButton::toggled, this, [this](bool enabled) {
         m_settings.novelMode = enabled;
+    });
+
+    auto* gameDialogRow = new QHBoxLayout();
+    gameDialogRow->setSpacing(12);
+    m_gameDialogModeSwitch = new ToggleSwitch(scrollContent);
+    m_gameDialogModeSwitch->setObjectName(QStringLiteral("gameDialogModeSwitch"));
+    m_gameDialogModeSwitch->setChecked(m_settings.gameDialogMode);
+    m_gameDialogModeSwitch->setToolTip(
+        "So sánh vùng chữ đã nhận diện để bỏ qua nền game chuyển động. Hãy chọn ROI gọn quanh hộp thoại.");
+    gameDialogRow->addWidget(m_gameDialogModeSwitch);
+    gameDialogRow->addWidget(makeItemLabel("Game dialogue mode"));
+    gameDialogRow->addStretch();
+    lay->addLayout(gameDialogRow);
+    connect(m_gameDialogModeSwitch, &QAbstractButton::toggled, this, [this](bool enabled) {
+        m_settings.gameDialogMode = enabled;
     });
 
     // ── Row 6: Exclude from capture ───────────────────────────────────────────

@@ -244,6 +244,7 @@ void OcrWorker::recognizeRegion(const QString& id, quint64 requestToken, quint64
                       << (incremental ? "scroll-band" : "full") << "queueMs="
                       << qMax<qint64>(0, startedAtMs - queuedAtMs) << "totalMs="
                       << qMax<qint64>(0, EZTranslator::ocrMonotonicMs() - computeStartedAtMs)
+                      << "sourceSize=" << image.size()
                       << "scrollReuse=" << scrollReuse
                       << "scrollReference=" << hadScrollReference << "detMs=" << timings.detMs
                       << "recMs="
@@ -252,7 +253,8 @@ void OcrWorker::recognizeRegion(const QString& id, quint64 requestToken, quint64
                       << timings.boxes << "recCalls=" << timings.recCalls << "recCached="
                       << timings.recCached;
     if (cancelled()) {
-        qInfo() << "[OCR_METRIC] path=region action=cancelled request=" << requestToken;
+        qInfo() << "[OCR_METRIC] path=region action=cancelled request=" << requestToken
+                << "elapsedMs=" << qMax<qint64>(0, EZTranslator::ocrMonotonicMs() - startedAtMs);
         emit regionFinished(id, requestToken);
         return;
     }

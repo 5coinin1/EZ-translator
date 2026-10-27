@@ -13,6 +13,7 @@
 #include "overlay/OverlayLayout.h"
 #include "overlay/TextOverlay.h"
 #include "scroll/ScrollEstimator.h"
+#include "scroll/ScrollTracker.h"
 #include "translation/DocumentTranslator.h"
 #include "translation/TranslationConfig.h"
 
@@ -397,6 +398,8 @@ private:
     QHash<QString, QHash<quint64, QList<EZTranslator::OcrTextBox>>> m_ocrBoxCache;
     /// Hash của ảnh đã gửi OCR cho từng vùng — khoá để lưu box vào cache khi worker trả về.
     QHash<QString, quint64> m_regionOcrHash;
+    QHash<QString, quint64> m_regionOcrContentHash;
+    QHash<QString, quint64> m_regionServedContentHash;
     /// Thời điểm nội dung vùng đổi lần cuối — cửa sổ "đang chuyển động" 320ms chặn OCR full giữa
     /// lúc cuộn (kiến trúc translator).
     QHash<QString, qint64> m_regionLastChangeMs;
@@ -412,11 +415,15 @@ private:
     QHash<QString, GrayProfile> m_regionObservedProfile;
     QHash<QString, GrayProfile> m_regionDisplayProfile;
     QHash<QString, GrayProfile> m_regionFrameProfile;
+    QHash<QString, ScrollTracker> m_regionOverlayTrackers;
+    QHash<QString, qint64> m_regionLastScrollMatchMs;
     QSet<QString> m_regionScrolledOverlay;
     /// Cac vung dang cho OCR xac minh lai sau khi overlay chi duoc "shift" theo scroll-tracking.
     QSet<QString> m_regionVerifyPending;
     bool m_forceVerifyFrame{false};
     qint64 m_overlayScrollLogAtMs = 0;
+    qint64 m_gameDialogSkipLogAtMs{-1000000};
+    quint64 m_gameDialogFramesSkipped{0};
     /// Thời điểm trạng thái CHÍNH XÁC (dòng/nguồn) của vùng được ghi (chỉ đường full OCR / cache
     /// nội dung). Kết quả dịch chỉ được áp khi không có lần đổi nội dung nào mới hơn mốc này.
     QHash<QString, qint64> m_regionStateAtMs;

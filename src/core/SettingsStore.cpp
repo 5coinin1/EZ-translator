@@ -99,6 +99,7 @@ void load(AppSettings& settings)
     settings.ocrEngine = str("ocrEngine", settings.ocrEngine);
     settings.ocrUseGpu = store.value("ocrUseGpu", settings.ocrUseGpu).toBool();
     settings.ocrBinarize = store.value("ocrBinarize", settings.ocrBinarize).toBool();
+    settings.gameDialogMode = store.value("gameDialogMode", settings.gameDialogMode).toBool();
     settings.cacheCapacityLines =
         store.value("cacheCapacityLines", settings.cacheCapacityLines).toInt();
 
@@ -171,6 +172,7 @@ void save(const AppSettings& settings)
     store.setValue("ocrEngine", settings.ocrEngine);
     store.setValue("ocrUseGpu", settings.ocrUseGpu);
     store.setValue("ocrBinarize", settings.ocrBinarize);
+    store.setValue("gameDialogMode", settings.gameDialogMode);
     store.setValue("cacheCapacityLines", settings.cacheCapacityLines);
 
     // ── Hiển thị & Hiệu suất ────────────────────────────────────────────────

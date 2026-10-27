@@ -22,6 +22,33 @@ private:
     }
 
 private slots:
+    void textColumnTracksScrollBesideFixedContent()
+    {
+        QImage previous(1920, 320, QImage::Format_Grayscale8);
+        for (int y = 0; y < previous.height(); ++y) {
+            uchar* row = previous.scanLine(y);
+            for (int x = 0; x < previous.width(); ++x)
+                row[x] = x < 240 ? uchar((y * 37 + y * y * 11) % 256)
+                                 : uchar((y * 71 + y * y * 23) % 256);
+        }
+        QImage current = previous.copy();
+        for (int y = 0; y < 280; ++y)
+            std::memcpy(current.scanLine(y), previous.constScanLine(y + 40), 240);
+
+        const auto whole = matchProfile(grayProfile(previous, previous.rect(), 8, true),
+                                        grayProfile(current, current.rect(), 8, true),
+                                        100, 0.92, 0.0, false);
+        QVERIFY(whole.valid);
+        QCOMPARE(whole.dy, 0);
+
+        const QRect textColumn(0, 0, 240, 320);
+        const auto local = matchProfile(grayProfile(previous, textColumn, 8, true),
+                                        grayProfile(current, textColumn, 8, true),
+                                        100, 0.92, 0.0, false);
+        QVERIFY(local.valid);
+        QCOMPARE(local.dy, -40);
+    }
+
     void bootstrapDoesNotPreferZeroAlias()
     {
         GrayProfile reference;

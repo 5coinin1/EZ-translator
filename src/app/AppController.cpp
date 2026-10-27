@@ -284,10 +284,14 @@ void AppController::initConnections()
         m_regionStateAtMs.clear();
         m_regionScrollReuseEligible.clear();
         m_regionServedHash.clear();
+        m_regionOcrContentHash.clear();
+        m_regionServedContentHash.clear();
         m_regionServedProfile.clear();
         m_regionObservedProfile.clear();
         m_regionDisplayProfile.clear();
         m_regionFrameProfile.clear();
+        m_regionOverlayTrackers.clear();
+        m_regionLastScrollMatchMs.clear();
         m_regionScrolledOverlay.clear();
         m_regionLineTexts.clear();
         m_regionToken.clear();
@@ -791,10 +795,14 @@ void AppController::reloadOcr()
     m_regionStateAtMs.clear();
     m_regionScrollReuseEligible.clear();
     m_regionServedHash.clear();
+    m_regionOcrContentHash.clear();
+    m_regionServedContentHash.clear();
     m_regionServedProfile.clear();
     m_regionObservedProfile.clear();
     m_regionDisplayProfile.clear();
     m_regionFrameProfile.clear();
+    m_regionOverlayTrackers.clear();
+    m_regionLastScrollMatchMs.clear();
     m_regionScrolledOverlay.clear();
     m_regionToken.clear();
     m_ocrScheduler.reset();
@@ -1045,6 +1053,22 @@ void AppController::syncOverlayMode()
         return;
     m_overlayMode = regionMode;
     m_floatingMode = floating;
+
+    if (!m_overlayMode) {
+        // Hover dùng pipeline riêng. Hủy các ROI đang chờ và đánh dấu request đang
+        // chạy là stale để worker dừng sau inference hiện tại, không làm thêm OCR ROI.
+        m_regionOcrMailbox.clearPending();
+        for (auto it = m_regionOcrToken.begin(); it != m_regionOcrToken.end(); ++it) {
+            it.value() = 0;
+            if (m_ocrWorker)
+                m_ocrWorker->noteRegionRequest(it.key(), 0);
+            m_regionOcrMailbox.remove(it.key());
+        }
+        m_regionVerifyPending.clear();
+        m_forceVerifyFrame = false;
+        m_ocrScheduler.reset();
+        qInfo() << "[OCR_MODE] region OCR paused; display mode is hover";
+    }
 
     if (m_floatingMode) {
         // Cua so noi: dung pipeline vung/OCR giong overlay nhung khong ve
@@ -1557,6 +1581,8 @@ void AppController::onStopTranslation()
             forgetRegion(region.id);
         m_ocrBoxCache.clear();
         m_regionOcrHash.clear();
+        m_regionOcrContentHash.clear();
+        m_regionServedContentHash.clear();
         m_regionRequestSource.clear();
         m_pendingSourceBoxes.clear();
         m_overlaySuspended = false;
@@ -1807,10 +1833,14 @@ void AppController::forgetRegion(const QString& regionId)
     m_regionScrollReuseEligible.remove(regionId);
     m_regionStateAtMs.remove(regionId);
     m_regionServedHash.remove(regionId);
+    m_regionOcrContentHash.remove(regionId);
+    m_regionServedContentHash.remove(regionId);
     m_regionServedProfile.remove(regionId);
     m_regionObservedProfile.remove(regionId);
     m_regionDisplayProfile.remove(regionId);
     m_regionFrameProfile.remove(regionId);
+    m_regionOverlayTrackers.remove(regionId);
+    m_regionLastScrollMatchMs.remove(regionId);
     m_regionScrolledOverlay.remove(regionId);
     m_regionVerifyPending.remove(regionId);
     m_regionLineTexts.remove(regionId);
@@ -1849,6 +1879,8 @@ void AppController::clearVisualCaches()
     m_regionRequestSource.clear();
     m_regionToken.clear();
     m_regionOcrHash.clear();
+    m_regionOcrContentHash.clear();
+    m_regionServedContentHash.clear();
     m_regionOcrInfo.clear();
     m_regionOcrToken.clear();
     m_regionOcrMailbox.clearPending();
@@ -1860,6 +1892,8 @@ void AppController::clearVisualCaches()
     m_regionObservedProfile.clear();
     m_regionDisplayProfile.clear();
     m_regionFrameProfile.clear();
+    m_regionOverlayTrackers.clear();
+    m_regionLastScrollMatchMs.clear();
     m_regionScrolledOverlay.clear();
     m_regionLinePitch.clear();
     m_regionParagraphRatio.clear();
@@ -2072,10 +2106,28 @@ void AppController::onSettingsSaved(const EZTranslator::AppSettings& settings)
                                  || updated.ocrUseGpu != m_settings.ocrUseGpu
                                  || updated.ocrBinarize != m_settings.ocrBinarize;
     const bool novelModeChanged = updated.novelMode != m_settings.novelMode;
+    const bool gameDialogModeChanged = updated.gameDialogMode != m_settings.gameDialogMode;
+    const bool translationEngineChanged =
+        updated.translationEngine != m_settings.translationEngine;
 
     m_settings = updated;
     EZTranslator::SettingsStore::save(m_settings);
     m_hoverCache.clear(); // engine/prompt có thể đổi → không dùng bản dịch hover cũ
+    if (translationEngineChanged)
+        m_paragraphTranslations.clear();
+
+    if (gameDialogModeChanged) {
+        m_ocrScheduler.reset();
+        m_regionServedContentHash.clear();
+        m_regionOcrMailbox.clearPending();
+        for (auto it = m_regionOcrToken.begin(); it != m_regionOcrToken.end(); ++it) {
+            it.value() = 0;
+            if (m_ocrWorker)
+                m_ocrWorker->noteRegionRequest(it.key(), 0);
+            m_regionOcrMailbox.remove(it.key());
+        }
+        qInfo() << "[OCR_MODE] gameDialog=" << m_settings.gameDialogMode;
+    }
 
     applySettings(/*initial=*/false);
 
@@ -2088,6 +2140,8 @@ void AppController::onSettingsSaved(const EZTranslator::AppSettings& settings)
         m_regionBoxes.clear();
         m_regionDisplayProfile.clear();
         m_regionFrameProfile.clear();
+        m_regionOverlayTrackers.clear();
+        m_regionLastScrollMatchMs.clear();
         m_regionScrolledOverlay.clear();
         m_regionNovelParagraphs.clear();
         m_regionScrollReuseEligible.clear();
@@ -2098,6 +2152,8 @@ void AppController::onSettingsSaved(const EZTranslator::AppSettings& settings)
         m_regionTranslatedText.clear();
     m_paragraphTranslations.clear();
         m_regionServedHash.clear();
+        m_regionOcrContentHash.clear();
+        m_regionServedContentHash.clear();
         m_ocrScheduler.reset();
         if (m_textOverlay)
             m_textOverlay->clear();
@@ -2264,10 +2320,14 @@ void AppController::onLanguagesChanged(const QString& source, const QString& tar
     m_regionStateAtMs.clear();
     m_regionScrollReuseEligible.clear();
     m_regionServedHash.clear();
+    m_regionOcrContentHash.clear();
+    m_regionServedContentHash.clear();
     m_regionServedProfile.clear();
     m_regionObservedProfile.clear();
     m_regionDisplayProfile.clear();
     m_regionFrameProfile.clear();
+    m_regionOverlayTrackers.clear();
+    m_regionLastScrollMatchMs.clear();
     m_regionScrolledOverlay.clear();
     m_regionToken.clear();
     m_ocrScheduler.reset();
@@ -2352,6 +2412,7 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
                           << "bytes=" << frame.image.sizeInBytes()
                           << "fpsConfigured=" << (m_capture ? m_capture->fps() : 0);
     }
+    const QImage previousCaptureImage = m_lastCapture.image;
     m_lastCapture = frame; // giữ lại cho timer đuổi kịp (cửa sổ tĩnh không phát frame mới)
 
     // Lưu frame mới nhất cho chế độ "dịch khi chỉ chuột" (dò dòng dưới con trỏ).
@@ -2376,6 +2437,14 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
 
     // Model OCR đang được nạp ở background → chưa xử lý gì (overlay để trống).
     if (!m_ocrReady.load()) {
+        if (m_textOverlay && m_textOverlay->isShowing())
+            m_textOverlay->hideOverlay();
+        return;
+    }
+
+    // Cập nhật hoverFrame ở trên để probe con trỏ luôn có frame mới nhất, nhưng
+    // không trích ROI, tính hash hoặc lập lịch OCR vùng trong chế độ hover.
+    if (m_mainWindow->displayMode() == MainWindow::DisplayMode::HoverTranslate) {
         if (m_textOverlay && m_textOverlay->isShowing())
             m_textOverlay->hideOverlay();
         return;
@@ -2421,6 +2490,30 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
 
         // Hash nội dung vùng — dùng cho cả đường tăng dần lẫn cache box bên dưới.
         const quint64 regionHash = EZTranslator::imageDifferenceHash(regionFrame.image);
+        QList<QRect> gameTextRects;
+        if (m_settings.gameDialogMode) {
+            for (const QRect& line : m_regionLines.value(regionFrame.regionId))
+                gameTextRects.append(line.translated(-regionFrame.pixelRect.topLeft()));
+            if (gameTextRects.isEmpty()) {
+                for (const EZTranslator::OcrTextBox& box : m_regionUiBoxes.value(regionFrame.regionId))
+                    gameTextRects.append(box.rect);
+            }
+        }
+        const quint64 contentHash =
+            m_settings.gameDialogMode
+                ? EZTranslator::imageTextDifferenceHash(regionFrame.image, gameTextRects)
+                : regionHash;
+        if (m_settings.gameDialogMode && !forceVerifyFrame && !gameTextRects.isEmpty()
+            && m_regionServedContentHash.value(regionFrame.regionId, 0) == contentHash) {
+            ++m_gameDialogFramesSkipped;
+            if (now - m_gameDialogSkipLogAtMs >= 2000) {
+                m_gameDialogSkipLogAtMs = now;
+                qInfo().noquote() << "[GAME_DIALOG] unchanged text; OCR skipped region="
+                                  << regionFrame.regionId << "frames="
+                                  << m_gameDialogFramesSkipped << "boxes=" << gameTextRects.size();
+            }
+            continue;
+        }
 
         // Xac minh: scroll-tracking vua giu ban dich cu, nhung co the day la page-jump bi khop nham.
         // OCR lai dung frame hien tai, khong doi frame/change ke tiep.
@@ -2432,11 +2525,15 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
             m_regionOcrInfo.insert(verifyId, {regionFrame.pixelRect, regionFrame.sourceFrameSize});
             m_regionImages.insert(verifyId, regionColorSample(regionFrame.image));
             m_regionOcrHash.insert(verifyId, regionHash);
+            m_regionOcrContentHash.insert(verifyId, contentHash);
             m_regionOcrAtMs.insert(verifyId, now);
             m_regionServedProfile.insert(verifyId,
                                          grayProfile(regionFrame.image, regionFrame.image.rect(), 8,
                                                      /*withGradients=*/true));
             m_regionServedHash.insert(verifyId, regionHash);
+            m_regionFrameProfile.insert(verifyId,
+                                        grayProfile(regionFrame.image, regionFrame.image.rect(),
+                                                    8, /*withGradients=*/true));
             qInfo().noquote() << "[OCR] verify region=" << verifyId
                               << "sinceChange=" << (now - m_regionLastChangeMs.value(verifyId, now))
                               << "ms";
@@ -2445,33 +2542,117 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
         }
 
         // Lên lịch: chỉ OCR khi vùng đã settle, qua cooldown, và tối đa vài lần mỗi tick.
-        const EZTranslator::OcrScheduleDecision decision =
-            m_ocrScheduler.process(regionFrame.regionId, regionFrame.image, now);
+        EZTranslator::OcrScheduleDecision decision =
+            m_ocrScheduler.process(regionFrame.regionId, regionFrame.image, now, contentHash);
+        const bool initialGameProbe =
+            m_settings.gameDialogMode && gameTextRects.isEmpty()
+            && !m_regionSourceText.contains(regionFrame.regionId)
+            && now - m_regionOcrAtMs.value(regionFrame.regionId, qint64(-1000000)) >= 1000
+            && !m_regionOcrMailbox.isActive(regionFrame.regionId);
+        if (initialGameProbe)
+            decision.run = true;
 
         bool trackedScroll = false;
+        bool columnScrollMatch = false;
         ScrollOffset overlayScroll;
         const GrayProfile current = grayProfile(regionFrame.image, regionFrame.image.rect(),
                                                 8, /*withGradients=*/true);
         const auto previousFrame = m_regionFrameProfile.constFind(regionFrame.regionId);
-        if (m_regionBoxes.contains(regionFrame.regionId)
-            && previousFrame != m_regionFrameProfile.constEnd()) {
-            const ScrollOffset scroll = matchProfile(
-                *previousFrame, current, qMax(24, regionFrame.image.height() / 3),
-                0.98, 0.0, false);
+        if (!m_settings.gameDialogMode && m_regionBoxes.contains(regionFrame.regionId)
+            && previousFrame != m_regionFrameProfile.constEnd()
+            && previousFrame->rows.size() == current.rows.size()
+            && previousFrame->cols.size() == current.cols.size()) {
+            ScrollTracker& tracker = m_regionOverlayTrackers[regionFrame.regionId];
+            const int maxShift = tracker.hasState()
+                                     ? qMin(regionFrame.image.height() / 3,
+                                            qMax(48, int(std::abs(tracker.predictedStep()) + 36)))
+                                     : qMax(24, regionFrame.image.height() / 3);
+            ScrollOffset scroll = matchProfile(
+                *previousFrame, current, maxShift, 0.92,
+                tracker.predictedStep(), tracker.hasState());
+            // A wide ROI may contain mostly blank page or a fixed UI column. Its
+            // full-width row average can lose the text motion even though the text
+            // itself still aligns. Retry on narrow columns where translated text
+            // was last seen, using the actual previous capture (not a stale OCR
+            // image). Never treat an unverified prediction as a match.
+            if ((!scroll.valid || scroll.dy == 0)
+                && !previousCaptureImage.isNull()
+                && previousCaptureImage.size() == frame.image.size()
+                && regionFrame.image.height() >= 64) {
+                const auto& visibleBoxes = m_regionBoxes.value(regionFrame.regionId);
+                int tried = 0;
+                QList<int> triedStripes;
+                for (const auto& box : visibleBoxes) {
+                    const QRect localBox = box.rect.translated(-regionFrame.pixelRect.topLeft());
+                    if (localBox.center().y() < 0
+                        || localBox.center().y() >= regionFrame.image.height())
+                        continue;
+                    const int stripeWidth = qMin(240, regionFrame.image.width());
+                    const int stripeLeft = qBound(0, localBox.center().x() - stripeWidth / 2,
+                                                  regionFrame.image.width() - stripeWidth);
+                    bool duplicate = false;
+                    for (int usedLeft : triedStripes)
+                        duplicate |= std::abs(usedLeft - stripeLeft) < 60;
+                    if (duplicate)
+                        continue;
+                    triedStripes.append(stripeLeft);
+                    const QRect localStripe(stripeLeft, 0, stripeWidth,
+                                            regionFrame.image.height());
+                    const QRect priorStripe = localStripe.translated(regionFrame.pixelRect.topLeft());
+                    if (!previousCaptureImage.rect().contains(priorStripe))
+                        continue;
+                    const GrayProfile prior = grayProfile(previousCaptureImage, priorStripe, 8,
+                                                          /*withGradients=*/true);
+                    const GrayProfile next = grayProfile(regionFrame.image, localStripe, 8,
+                                                         /*withGradients=*/true);
+                    const ScrollOffset candidate = matchProfile(
+                        prior, next, qMax(maxShift, regionFrame.image.height() / 3), 0.92,
+                        tracker.predictedStep(), tracker.hasState());
+                    if (candidate.valid && candidate.dy != 0
+                        && std::abs(candidate.dx) <= 2
+                        && (scroll.dy == 0 || candidate.score > scroll.score)) {
+                        scroll = candidate;
+                        columnScrollMatch = true;
+                    }
+                    if (++tried >= 3)
+                        break;
+                }
+            }
             overlayScroll = scroll;
-            if (scroll.valid && std::abs(scroll.dx) <= 2 && scroll.dy != 0
-                && std::abs(scroll.dy) < regionFrame.image.height() / 3) {
+            const bool measured = scroll.valid && std::abs(scroll.dx) <= 2
+                                  && scroll.dy != 0
+                                  && (std::abs(scroll.dy) > 2 || scroll.score >= 0.96)
+                                  && std::abs(scroll.dy) < regionFrame.image.height() / 3;
+            ScrollTracker::Step step;
+            if (measured) {
+                step = tracker.update(scroll.dyExact, true,
+                                      regionFrame.image.height() / 3.0);
+                m_regionLastScrollMatchMs.insert(regionFrame.regionId, now);
+            } else if (decision.changed && tracker.hasState()
+                       && now - m_regionLastScrollMatchMs.value(regionFrame.regionId, -1000000)
+                              < 250
+                       && std::abs(tracker.predictedStep()) >= 2.0
+                       && std::abs(tracker.predictedStep()) <= 64.0) {
+                // Bridge only a brief missing frame; OCR will validate the settled image.
+                step = tracker.update(0.0, false, regionFrame.image.height() / 3.0);
+            } else if (decision.changed) {
+                tracker.reset();
+            }
+            if (step.valid && step.dy != 0) {
                 const QList<EZTranslator::OverlayBox> shifted =
                     EZTranslator::shiftOverlayBoxes(m_regionBoxes.value(regionFrame.regionId),
-                                                    scroll.dy, regionFrame.pixelRect);
+                                                    step.dy, regionFrame.pixelRect);
                 m_regionBoxes.insert(regionFrame.regionId, shifted);
-                m_regionScrolledOverlay.insert(regionFrame.regionId);
                 trackedScroll = !shifted.isEmpty();
                 if (trackedScroll) {
+                    m_regionScrolledOverlay.insert(regionFrame.regionId);
                     m_overlaySuspended = false;
                     updateOverlay(regionFrame.sourceFrameSize);
                 }
             }
+        } else if (previousFrame != m_regionFrameProfile.constEnd()) {
+            m_regionOverlayTrackers.remove(regionFrame.regionId);
+            m_regionLastScrollMatchMs.remove(regionFrame.regionId);
         }
         m_regionFrameProfile.insert(regionFrame.regionId, current);
 
@@ -2479,6 +2660,7 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
         // neu day la page-jump bi khop nham thi se co ban dich moi thay vi dung text cu mai.
         if (trackedScroll && m_overlayMode) {
             m_regionVerifyPending.insert(regionFrame.regionId);
+            m_regionLastChangeMs.insert(regionFrame.regionId, now);
             if (m_verifyTimer && !m_verifyTimer->isActive())
                 m_verifyTimer->start();
         }
@@ -2492,6 +2674,7 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
                                   << "dx=" << overlayScroll.dx
                                   << "score=" << overlayScroll.score
                                   << "valid=" << overlayScroll.valid
+                                  << "column=" << columnScrollMatch
                                   << "boxes=" << m_regionBoxes.value(regionFrame.regionId).size();
             }
             // Nội dung vùng vừa ĐỔI (đang cuộn / đổi màn hình): ẩn overlay NGAY. Chỉ hiện lại khi
@@ -2499,13 +2682,16 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
             // tắt khi ảnh nguồn đổi, hiện lại đúng vị trí mới khi neo xong).
             m_regionLastChangeMs.insert(regionFrame.regionId, now);
             m_regionObservedProfile.remove(regionFrame.regionId);
-            if (m_ocrWorker && m_regionOcrMailbox.isActive(regionFrame.regionId)
+            if (!(m_settings.gameDialogMode && gameTextRects.isEmpty())
+                && m_ocrWorker && m_regionOcrMailbox.isActive(regionFrame.regionId)
                 && m_regionOcrToken.value(regionFrame.regionId) != 0) {
                 m_regionOcrToken.insert(regionFrame.regionId, 0);
                 m_ocrWorker->noteRegionRequest(regionFrame.regionId, 0);
             }
             m_regionOcrMailbox.remove(regionFrame.regionId);
             if (!trackedScroll) {
+                m_regionOverlayTrackers.remove(regionFrame.regionId);
+                m_regionLastScrollMatchMs.remove(regionFrame.regionId);
                 m_regionBoxes.remove(regionFrame.regionId);
                 m_regionScrolledOverlay.remove(regionFrame.regionId);
                 m_pendingSourceBoxes.remove(regionFrame.regionId);
@@ -2559,6 +2745,8 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
                     }
                     m_regionOcrMailbox.remove(regionFrame.regionId);
                     if (!trackedScroll) {
+                        m_regionOverlayTrackers.remove(regionFrame.regionId);
+                        m_regionLastScrollMatchMs.remove(regionFrame.regionId);
                         m_regionBoxes.remove(regionFrame.regionId);
                         m_regionScrolledOverlay.remove(regionFrame.regionId);
                         m_pendingSourceBoxes.remove(regionFrame.regionId);
@@ -2575,9 +2763,11 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
         // (b) gửi yêu cầu dịch mỗi khung làm hàng đợi worker dịch nghẽn ~200ms (log thật: "dịch"
         // của lượt cache-hit cũng 200ms). Bộ máy dịch giờ: cache dịch theo CÂU + 2 phát emit.)
 
-        // CỬA SỔ CHUYỂN ĐỘNG 80ms: ảnh còn đổi trong 80ms thì không chạy OCR full (chặn churn giữa
-        // lúc cuộn) — nhưng ngắn thôi, vì mỗi ms ở đây là độ trễ người dùng thấy sau khi dừng.
-        if (now - m_regionLastChangeMs.value(regionFrame.regionId, qint64(-1000000)) < 80)
+        // Chờ 200 ms yên sau frame cuối cùng thay đổi trước khi phát OCR vùng.
+        // CPU cần nhiều giây cho ROI đầy đủ; bắt đầu ở giữa burst cuộn sẽ làm lượt
+        // nhận diện bị vô hiệu ngay ở frame kế tiếp và tiêu tốn một phần inference.
+        if (!initialGameProbe
+            && now - m_regionLastChangeMs.value(regionFrame.regionId, qint64(-1000000)) < 200)
             continue;
 
         // CACHE BOX THEO NỘI DUNG: nội dung này đã từng OCR thì dùng lại box ngay - KHÔNG OCR lại.
@@ -2586,8 +2776,9 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
         // (bài học OcrRegionCache của bản translator).
         // forceOcr (nội dung dịch nhẹ nhưng THẬT): KHÔNG dùng cache box — cache so hash thô có thể
         // trả box của nội dung CŨ (lệch ≤4 bit) ⇒ vị trí vẫn sai; phải OCR lại chính ảnh hiện tại.
-        const auto cachedRegion = forceOcr ? m_ocrBoxCache.constEnd()
-                                           : m_ocrBoxCache.constFind(regionFrame.regionId);
+        const auto cachedRegion = (forceOcr || m_settings.gameDialogMode)
+                                      ? m_ocrBoxCache.constEnd()
+                                      : m_ocrBoxCache.constFind(regionFrame.regionId);
         if (cachedRegion != m_ocrBoxCache.constEnd()) {
             const QList<EZTranslator::OcrTextBox>* hitBoxes = nullptr;
             int bestDistance = m_ocrScheduler.maxDistance() + 1;
@@ -2606,6 +2797,8 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
                                        {regionFrame.pixelRect, regionFrame.sourceFrameSize});
                 m_regionImages.insert(regionFrame.regionId, regionColorSample(regionFrame.image));
                 m_regionOcrHash.insert(regionFrame.regionId, regionHash);
+                m_regionOcrContentHash.insert(regionFrame.regionId, contentHash);
+                m_regionServedContentHash.insert(regionFrame.regionId, contentHash);
                 m_regionOcrAtMs.insert(regionFrame.regionId, now);
                 m_regionServedProfile.insert(
                     regionFrame.regionId,
@@ -2629,6 +2822,7 @@ void AppController::onCaptureFrame(const EZTranslator::CapturedFrame& frame)
         // với các box mà worker trả về (không bao giờ dán nền cũ lên nội dung mới).
         m_regionImages.insert(regionFrame.regionId, regionColorSample(regionFrame.image));
         m_regionOcrHash.insert(regionFrame.regionId, regionHash);
+        m_regionOcrContentHash.insert(regionFrame.regionId, contentHash);
         m_regionOcrAtMs.insert(regionFrame.regionId, now);
         m_regionServedProfile.insert(
             regionFrame.regionId,
@@ -2705,6 +2899,41 @@ void AppController::onRegionRecognized(const QString& regionId, quint64 requestT
         qInfo() << "[OCR] Bỏ kết quả region cũ" << regionId << requestToken << imageHash;
         return;
     }
+    const qint64 dispatchMs = m_regionOcrAtMs.value(regionId, 0);
+    if (m_settings.gameDialogMode && m_regionSourceText.value(regionId).isEmpty()
+        && m_regionLastChangeMs.value(regionId, -1) > dispatchMs) {
+        // Lượt dò ban đầu có thể chụp đúng hộp thoại nhưng nền vẫn động. Chỉ giữ
+        // geometry làm mask nhận diện cho frame sau; không dịch hay vẽ text stale.
+        const QRect regionRect = m_regionOcrInfo.value(regionId).pixelRect;
+        QList<QRect> lines;
+        QStringList texts;
+        for (const EZTranslator::OcrTextBox& box : boxes) {
+            if (box.text.trimmed().isEmpty())
+                continue;
+            lines.append(box.rect.translated(regionRect.topLeft()));
+            texts.append(box.text.simplified());
+        }
+        if (!lines.isEmpty()) {
+            m_regionLines.insert(regionId, lines);
+            m_regionLineTexts.insert(regionId, texts);
+            qInfo() << "[GAME_DIALOG] initial text boxes harvested from moving frame region="
+                    << regionId << "boxes=" << lines.size();
+        }
+        return;
+    }
+    quint64 servedContentHash = m_regionOcrContentHash.value(regionId, 0);
+    if (m_settings.gameDialogMode && !boxes.isEmpty()) {
+        const RegionFrameInfo info = m_regionOcrInfo.value(regionId);
+        if (!m_lastCapture.image.isNull() && m_lastCapture.image.rect().contains(info.pixelRect)) {
+            const QImage currentRegion = m_lastCapture.image.copy(info.pixelRect);
+            QList<QRect> currentTextRects;
+            currentTextRects.reserve(boxes.size());
+            for (const EZTranslator::OcrTextBox& box : boxes)
+                currentTextRects.append(box.rect);
+            servedContentHash = EZTranslator::imageTextDifferenceHash(currentRegion, currentTextRects);
+        }
+    }
+    m_regionServedContentHash.insert(regionId, servedContentHash);
     handleRegionBoxes(regionId, boxes, /*buildPlate=*/true);
 }
 
@@ -3011,6 +3240,41 @@ void AppController::handleRegionBoxes(const QString& regionId,
                     regionId, m_regionOcrAtMs.value(regionId, m_clock.isValid()
                                                                    ? m_clock.elapsed()
                                                                    : 0));
+                // OCR has now located the settled paragraphs. Re-anchor translations
+                // already seen on an earlier scroll immediately; leave only newly
+                // exposed paragraphs for the translation worker.
+                EZTranslator::TranslatedDocument cachedDoc;
+                cachedDoc.paragraphs.reserve(paragraphs.size());
+                bool hasCachedParagraph = false;
+                for (const auto& paragraph : paragraphs) {
+                    const QString cached =
+                        m_paragraphTranslations.value(paragraphCacheKey(paragraph.text));
+                    cachedDoc.paragraphs.append(cached);
+                    hasCachedParagraph |= !cached.trimmed().isEmpty();
+                }
+                if (m_regionScrolledOverlay.contains(regionId)) {
+                    if (hasCachedParagraph) {
+                        auto cachedBoxes = EZTranslator::OverlayLayout::buildNovelBoxes(
+                            cachedDoc, paragraphs, pixelRect);
+                        const QImage regionImage = m_regionImages.value(regionId);
+                        const QImage plate =
+                            findRegionPlate(regionId, m_regionOcrHash.value(regionId));
+                        for (auto& overlay : cachedBoxes) {
+                            overlay.textColor = contrastTextColor(regionImage);
+                            overlay.coverColor = regionPaperColor(regionImage);
+                            if (!plate.isNull()) {
+                                overlay.plate = plate;
+                                overlay.plateRect = pixelRect;
+                            }
+                        }
+                        m_regionBoxes.insert(regionId, cachedBoxes);
+                    } else {
+                        m_regionBoxes.remove(regionId);
+                    }
+                    m_regionScrolledOverlay.remove(regionId);
+                    m_overlaySuspended = false;
+                    updateOverlay(m_lastFrameSize);
+                }
                 if (buildPlate) {
                     const quint64 hash = m_regionOcrHash.value(regionId);
                     if (hash != 0) {
@@ -3413,12 +3677,11 @@ void AppController::onTranslationReady(const QString& regionId, quint64 token,
 
 void AppController::suspendOverlayForChange(qint64 nowMs)
 {
-    // Ảnh nguồn vừa đổi: ẩn overlay ngay (không hiện bản detect nguồn), hẹn giờ fallback để nếu
-    // bản dịch không về trong 2s thì hiện tạm bản nguồn đã detect (xem tickOverlayVisibility).
+    // Ảnh nguồn vừa đổi: giữ bản dịch đang có trên màn hình trong lúc OCR/dịch nội dung mới
+    // chạy nền. Khi kết quả mới về, onTranslationReady thay toàn bộ box bằng vị trí mới.
+    // Xóa overlay tại đây làm chữ gốc lộ ra trong suốt thời gian OCR CPU chạy vài giây.
     m_overlaySuspended = true;
     m_overlaySuspendAtMs = nowMs;
-    if (m_textOverlay && m_textOverlay->isShowing())
-        m_textOverlay->hideOverlay();
 }
 
 void AppController::updateOverlay(const QSize& frameSize)
@@ -3440,8 +3703,9 @@ void AppController::updateOverlay(const QSize& frameSize)
         return;
     }
 
-    // Đang treo vì ảnh nguồn vừa đổi: không vẽ gì (chờ bản dịch của nội dung mới).
-    if (m_overlaySuspended) {
+    // Đang chờ nội dung mới nhưng vẫn còn bản dịch cũ: tiếp tục vẽ bản dịch cũ.
+    // Chỉ ẩn khi không còn box nào để vẽ.
+    if (m_overlaySuspended && m_regionBoxes.isEmpty()) {
         if (m_textOverlay->isShowing())
             m_textOverlay->hideOverlay();
         return;
@@ -3558,15 +3822,18 @@ void AppController::tickOverlayVisibility()
         return;
 
     // A shifted translation is provisional until OCR confirms the new frame.
-    // Drop it if recognition stalls, instead of pinning old words to new text.
+    // CPU recognition of a full reading region can take 8-9 seconds; expiring
+    // it after 2.5 seconds reintroduced the very flicker scroll tracking avoids.
     if (m_clock.isValid()) {
         QStringList expired;
         for (const QString& regionId : m_regionScrolledOverlay) {
-            if (m_clock.elapsed() - m_regionLastChangeMs.value(regionId, 0) > 2500)
+            if (m_clock.elapsed() - m_regionLastChangeMs.value(regionId, 0) > 10000)
                 expired.append(regionId);
         }
         for (const QString& regionId : expired) {
             m_regionBoxes.remove(regionId);
+            m_regionOverlayTrackers.remove(regionId);
+            m_regionLastScrollMatchMs.remove(regionId);
             m_regionScrolledOverlay.remove(regionId);
         }
         if (!expired.isEmpty())
