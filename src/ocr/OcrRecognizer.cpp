@@ -1,7 +1,9 @@
 #include "ocr/OcrRecognizer.h"
 #include "ocr/OcrRuntime.h"
 
+#include <QDebug>
 #include <QFile>
+#include <QFileInfo>
 #include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -15,6 +17,16 @@
 #include <cmath>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace EZTranslator {
 
@@ -153,13 +165,32 @@ bool OcrRecognizer::load(OcrRuntime& runtime, const OcrOptions& options, QString
     m_impl->lineCache.limit = std::max(0, options.lineCacheLimit);
 
     // fp16 chỉ áp cho rec: nhanh hơn ~15% trên GPU, và box không bị ảnh hưởng.
-    if (options.useGpu) {
+    // Dùng provider THỰC TẾ (CPU fallback thì tuyệt đối không lấy model fp16).
+    const bool gpuProvider = runtime.providerName() == QLatin1String("DirectML")
+                             || runtime.providerName() == QLatin1String("CUDA");
+    if (gpuProvider) {
         QString base = options.recModelPath;
         if (base.endsWith(QStringLiteral(".onnx"), Qt::CaseInsensitive))
             base.chop(5);
         const QString fp16 = base + QStringLiteral("_fp16.onnx");
         if (QFile::exists(fp16))
             m_impl->options.recModelPath = fp16;
+    } else if (qEnvironmentVariable("EZ_OCR_REC_INT8", QStringLiteral("1"))
+               != QLatin1String("0")) {
+        // CPU: model Conv int8 (QDQ) đi kèm model fp32. Chỉ quantize Conv nên
+        // classifier/Softmax vẫn fp32 — nhanh ~2.5-3x, ít RAM hơn, lỗi chữ nhỏ
+        // hơn kiểu int8 toàn mạng. Tắt bằng EZ_OCR_REC_INT8=0 để quay lại fp32.
+        QString base = m_impl->options.recModelPath;
+        if (base.endsWith(QStringLiteral(".onnx"), Qt::CaseInsensitive))
+            base.chop(5);
+        if (!base.endsWith(QStringLiteral("_int8conv"))) {
+            const QString int8 = base + QStringLiteral("_int8conv.onnx");
+            if (QFile::exists(int8)) {
+                m_impl->options.recModelPath = int8;
+                qInfo() << "[OCR] rec CPU dùng model int8 Conv:"
+                        << QFileInfo(int8).fileName();
+            }
+        }
     }
 
     QFile dictFile(m_impl->options.dictionaryPath);
@@ -178,7 +209,8 @@ bool OcrRecognizer::load(OcrRuntime& runtime, const OcrOptions& options, QString
     }
 
     m_impl->session = runtime.createSession(m_impl->options.recModelPath,
-                                            m_impl->options.recThreads, true, error);
+                                            m_impl->options.recThreads,
+                                            m_impl->options.interOpThreads, true, error);
     if (!m_impl->session)
         return false;
 
@@ -187,13 +219,17 @@ bool OcrRecognizer::load(OcrRuntime& runtime, const OcrOptions& options, QString
     return true;
 }
 
-QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrTextBox>& boxes)
+QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrTextBox>& boxes,
+                                           const std::function<bool()>& cancelled)
 {
     QList<OcrTextBox> result;
     if (!isLoaded() || image.isNull() || boxes.isEmpty())
         return result;
 
     Impl& impl = *m_impl;
+    // Timings are per recognize() request; cumulative counters make tile/queue
+    // telemetry impossible to interpret and grow without bound over a session.
+    impl.timings = OcrTimings();
     const QImage rgb = image.convertToFormat(QImage::Format_RGB32);
 
     struct RecItem
@@ -212,6 +248,8 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
     std::vector<RecItem> items;
     items.reserve(size_t(boxes.size()));
     for (int boxIndex = 0; boxIndex < boxes.size(); ++boxIndex) {
+        if (cancelled && cancelled())
+            return {};
         const OcrTextBox& box = boxes[boxIndex];
         const QRect cropRect = box.rect.adjusted(-2, -2, 2, 2).intersected(rgb.rect());
         if (cropRect.width() < 2 || cropRect.height() < 2)
@@ -252,6 +290,8 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
     std::vector<OcrTextBox> outputs(items.size());
     std::vector<char> have(items.size(), 0);
     std::vector<size_t> pending;
+    std::vector<size_t> duplicateOf(items.size(), items.size());
+    QHash<quint64, size_t> firstPending;
     for (size_t i = 0; i < items.size(); ++i) {
         outputs[i] = items[i].box;
         keys[i] = imageContentHash(items[i].image);
@@ -261,7 +301,14 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
             have[i] = 1;
             ++impl.timings.recCached;
         } else {
-            pending.push_back(i);
+            const auto first = firstPending.constFind(keys[i]);
+            if (first != firstPending.constEnd()) {
+                duplicateOf[i] = first.value();
+                ++impl.timings.recCached;
+            } else {
+                firstPending.insert(keys[i], i);
+                pending.push_back(i);
+            }
         }
     }
 
@@ -343,6 +390,13 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
     };
 
     const auto assembleResult = [&]() {
+        for (size_t i = 0; i < items.size(); ++i) {
+            if (duplicateOf[i] < items.size() && have[duplicateOf[i]]) {
+                outputs[i].text = outputs[duplicateOf[i]].text;
+                outputs[i].confidence = outputs[duplicateOf[i]].confidence;
+                have[i] = 1;
+            }
+        }
         QList<OcrTextBox> out;
         int currentBox = -1;
         QString text;
@@ -377,19 +431,26 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
     };
 
     // Recognition MỘT dòng (đường song song trên CPU).
+    std::atomic<double> cpuRecRunMs{0.0};
+    std::atomic<double> cpuRecDecodeMs{0.0};
     const auto recOne = [&](const RecItem& item, QString* text, float* confidence) -> bool {
         const int width = item.width;
         const size_t plane = size_t(kRecHeight) * size_t(width);
         std::vector<float> data(size_t(3) * plane, 0.0f);
         fillSample(data, 0, plane, width, width, item.image);
         const std::vector<int64_t> shape = {1, 3, kRecHeight, width};
-        return impl.session->run(
+        const auto runStart = Clock::now();
+        const bool ok = impl.session->run(
             data.data(), shape, [&](const float* logits, const std::vector<int64_t>& outShape) {
                 if (outShape.size() != 3)
                     return;
+                const auto decodeStart = Clock::now();
                 *text = decodeLogits(logits, int(outShape[1]), int(outShape[2]), impl.dictionary,
                                      confidence);
+                cpuRecDecodeMs.fetch_add(msSince(decodeStart), std::memory_order_relaxed);
             });
+        cpuRecRunMs.fetch_add(msSince(runStart), std::memory_order_relaxed);
+        return ok;
     };
 
     const auto recStart = Clock::now();
@@ -398,34 +459,59 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
     // đồng thời trên CPU). GPU: đi đường batch phía dưới (DirectML không cho Run song song).
     int recWorkers = 0;
     if (!gpuProvider) {
-        const unsigned hw = std::thread::hardware_concurrency();
-        recWorkers = int(std::max(2u, std::min(6u, hw / 2)));
+        if (impl.options.recWorkers > 0) {
+            recWorkers = impl.options.recWorkers;
+        } else {
+            const unsigned hw = std::thread::hardware_concurrency();
+            recWorkers = hw <= 2 ? 1 : int(std::clamp(hw / 2, 2u, 4u));
+        }
     }
     if (!batch && recWorkers > 1 && pending.size() >= 2) {
         std::atomic<size_t> cursor{0};
+        std::atomic<int> calls{0};
         std::vector<std::thread> pool;
         pool.reserve(size_t(recWorkers));
         for (int worker = 0; worker < recWorkers; ++worker) {
             pool.emplace_back([&]() {
+#if defined(_WIN32)
+                // CPU OCR là burst ngắn; trên máy đang cuộn Chrome/game, worker
+                // normal dễ bị đẩy sang E-core. Cho phép A/B bằng env; mặc định
+                // giữ normal để không tranh CPU với UI.
+                if (qEnvironmentVariable("EZ_OCR_REC_HIGHPRIORITY", QStringLiteral("0"))
+                    == QLatin1String("1")) {
+                    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+                }
+#endif
                 for (;;) {
+                    if (cancelled && cancelled())
+                        break;
                     const size_t j = cursor.fetch_add(1, std::memory_order_relaxed);
                     if (j >= pending.size())
                         break;
                     const size_t index = pending[j];
+                    ++calls;
                     QString text;
                     float confidence = 0.0f;
                     if (recOne(items[index], &text, &confidence)) {
                         outputs[index].text = text;
                         outputs[index].confidence = confidence;
                         have[index] = 1;
-                        impl.lineCache.insert(keys[index], outputs[index]);
                     }
                 }
             });
         }
         for (std::thread& worker : pool)
             worker.join();
-        impl.timings.recCalls += int(pending.size());
+
+        // QHash/QQueue trong LineCache không hỗ trợ concurrent writes. Chỉ cập nhật
+        // cache sau khi toàn bộ worker đã join; outputs/have vẫn được ghi theo index riêng.
+        for (const size_t index : pending) {
+            if (have[index])
+                impl.lineCache.insert(keys[index], outputs[index]);
+        }
+        impl.timings.recCalls += calls.load();
+        impl.timings.recRunMs += cpuRecRunMs.load(std::memory_order_relaxed);
+        impl.timings.recDecodeMs += cpuRecDecodeMs.load(std::memory_order_relaxed);
         impl.timings.recMs = msSince(recStart);
         return assembleResult();
     }
@@ -438,6 +524,8 @@ QList<OcrTextBox> OcrRecognizer::recognize(const QImage& image, const QList<OcrT
         });
     }
     for (size_t start = 0; start < pending.size();) {
+        if (cancelled && cancelled())
+            break;
         size_t end = start + 1;
         if (batch) {
             const int baseWidth = items[pending[start]].width;

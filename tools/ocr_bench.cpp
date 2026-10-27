@@ -1,0 +1,307 @@
+// Bench OCR cho chế độ hover: đo det/rec, và kiểm tra DML có biên dịch lại khi
+// kích thước input thay đổi không.
+//
+//   ocr_bench.exe            (dùng model trong EZ_DEFAULT_MODELS_DIR)
+//   EZ_OCR_USE_GPU=0 ocr_bench.exe
+#include <QElapsedTimer>
+#include <QFont>
+#include <QGuiApplication>
+#include <QImage>
+#include <QPainter>
+#include <QRect>
+#include <QString>
+#include <QStringList>
+#include <QDebug>
+#include <QTextStream>
+
+#include "ocr/OcrDetector.h"
+#include "ocr/OcrEngine.h"
+#include "ocr/OcrRecognizer.h"
+#include "ocr/OcrThreadBudget.h"
+#include "ocr/OcrWorker.h"
+
+using namespace EZTranslator;
+
+namespace {
+
+QImage makeScreen(const QSize& size = QSize(1280, 720))
+{
+    QImage screen(size, QImage::Format_RGB32);
+    screen.fill(QColor(210, 214, 220));
+    QPainter painter(&screen);
+    painter.setPen(Qt::black);
+    painter.setFont(QFont(QStringLiteral("Arial"), 20));
+    const QStringList lines = {
+        QStringLiteral("Chapter one the beginning of the story"),
+        QStringLiteral("The quick brown fox jumps over the lazy dog"),
+        QStringLiteral("Real time translation for games and novels"),
+        QStringLiteral("Performance of detection and recognition stage"),
+        QStringLiteral("Hover translate probe line number five"),
+        QStringLiteral("End of the sample text for the benchmark"),
+    };
+    for (int i = 0; i < lines.size(); ++i)
+        painter.drawText(QRect(40, 60 + i * (size.height() / 7), size.width() - 80, 60),
+                         Qt::AlignLeft | Qt::AlignVCenter,
+                         lines.at(i));
+    return screen;
+}
+
+QImage makeManyLines(QList<OcrTextBox>* boxes)
+{
+    QImage screen(1200, 1500, QImage::Format_RGB32);
+    screen.fill(Qt::white);
+    QPainter painter(&screen);
+    painter.setPen(Qt::black);
+    painter.setFont(QFont(QStringLiteral("Arial"), 19));
+    for (int i = 0; i < 25; ++i) {
+        const QRect rect(30, 20 + i * 58, 1120, 48);
+        painter.drawText(rect, Qt::AlignLeft | Qt::AlignVCenter,
+                         QStringLiteral("The player found item %1 near the village gate").arg(i));
+        OcrTextBox box;
+        box.rect = rect;
+        boxes->append(box);
+    }
+    return screen;
+}
+
+double msSince(const QElapsedTimer& timer)
+{
+    return double(timer.nsecsElapsed()) / 1e6;
+}
+
+} // namespace
+
+int main(int argc, char** argv)
+{
+    QGuiApplication app(argc, argv);
+    const bool csv = app.arguments().contains(QStringLiteral("--csv"));
+    QTextStream csvOut(stdout);
+    if (csv) {
+        csvOut << "path,iteration,provider,totalMs,detMs,recMs,detCalls,tileCount,altCalls,"
+                   "boxes,recCalls,recCached\n";
+    }
+
+    const QString dir =
+        qEnvironmentVariable("EZ_MODELS_DIR", QStringLiteral(EZ_DEFAULT_MODELS_DIR));
+
+    OcrOptions options;
+    options.detModelPath = dir + QStringLiteral("/ch_PP-OCRv4_det_infer.onnx");
+    options.recModelPath = dir + QStringLiteral("/en_PP-OCRv4_rec_mobile.onnx");
+    options.dictionaryPath = dir + QStringLiteral("/en_dict.txt");
+    options.lineCacheLimit = 0; // đo rec THẬT (không lấy từ cache nội dung dòng)
+    const QByteArray gpuEnv = qgetenv("EZ_OCR_USE_GPU");
+    options.useGpu = gpuEnv.isEmpty() ? true : (gpuEnv != "0");
+    const OcrThreadBudget budget = chooseOcrThreadBudget(options.useGpu, false);
+    options.threads = budget.detectorIntraOp;
+    options.recThreads = budget.recognizerIntraOp;
+    options.recWorkers = budget.recognizerWorkers;
+    options.interOpThreads = budget.interOp;
+    bool recWidthOk = false;
+    const int requestedRecWidth = qEnvironmentVariableIntValue("EZ_OCR_REC_MAX_WIDTH", &recWidthOk);
+    if (recWidthOk && requestedRecWidth >= 128)
+        options.recMaxWidth = requestedRecWidth;
+    options.disableRecBatch = !app.arguments().contains(QStringLiteral("--cpu-batch"));
+    qInfo() << "thread budget: det=" << options.threads << "rec=" << options.recThreads
+            << "workers=" << options.recWorkers << "inter=" << options.interOpThreads
+            << "recMaxWidth=" << options.recMaxWidth;
+
+    OcrEngine engine;
+    QString error;
+    if (!engine.load(options, &error)) {
+        qWarning() << "load failed:" << error;
+        return 1;
+    }
+    qInfo() << "provider:" << engine.providerName();
+
+    if (app.arguments().contains(QStringLiteral("--worker-progress"))) {
+        QList<OcrTextBox> boxes;
+        const QImage image = makeManyLines(&boxes);
+        OcrWorker worker;
+        int partialCount = 0;
+        int fullCount = 0;
+        QElapsedTimer workerTimer;
+        workerTimer.start();
+        QObject::connect(&worker, &OcrWorker::regionRecognizedPartial,
+                         [&](const QString&, quint64, quint64,
+                             const QList<OcrTextBox>& partial) {
+                             ++partialCount;
+                             qInfo("worker partial boxes=%d at=%lldms",
+                                   int(partial.size()), workerTimer.elapsed());
+                         });
+        QObject::connect(&worker, &OcrWorker::regionRecognized,
+                         [&](const QString&, quint64, quint64,
+                             const QList<OcrTextBox>& full) {
+                             ++fullCount;
+                             qInfo("worker full boxes=%d at=%lldms", int(full.size()),
+                                   workerTimer.elapsed());
+                         });
+        worker.load(options);
+        worker.noteRegionRequest(QStringLiteral("bench"), 1);
+        worker.noteRequestQueued();
+        worker.recognizeRegion(QStringLiteral("bench"), 1, 0x1234, 0, image, false);
+        qInfo("worker signals partial=%d full=%d", partialCount, fullCount);
+        return (partialCount == 1 && fullCount == 1) ? 0 : 3;
+    }
+
+    if (app.arguments().contains(QStringLiteral("--progress"))) {
+        QList<OcrTextBox> boxes;
+        const QImage image = makeManyLines(&boxes);
+        QElapsedTimer progressTimer;
+        progressTimer.start();
+        const QList<OcrTextBox> result = engine.recognize(
+            image, {}, [&](const QList<OcrTextBox>& partial) {
+                qInfo("progress boxes=%d at=%lldms", int(partial.size()),
+                      progressTimer.elapsed());
+            });
+        const OcrTimings timings = engine.lastTimings();
+        qInfo("progress final boxes=%d total=%lldms det=%.1f rec=%.1f calls=%d",
+              int(result.size()), progressTimer.elapsed(), timings.detMs, timings.recMs,
+              timings.recCalls);
+        return 0;
+    }
+
+    if (app.arguments().contains(QStringLiteral("--rec-heavy"))) {
+        QList<OcrTextBox> boxes;
+        const QImage image = makeManyLines(&boxes);
+        for (int i = 0; i < 4; ++i) {
+            QElapsedTimer recTimer;
+            recTimer.start();
+            const QList<OcrTextBox> result = engine.recognizer().recognize(image, boxes);
+            const OcrTimings timings = engine.recognizer().lastTimings();
+            if (csv) {
+                csvOut << "rec-heavy," << (i + 1) << "," << engine.providerName() << ","
+                       << msSince(recTimer) << ",0," << timings.recMs << ",0,0,0,"
+                       << result.size() << "," << timings.recCalls << ","
+                       << timings.recCached << "\n";
+                csvOut.flush();
+            }
+            qInfo("rec-heavy #%d: total=%.1f ms rec=%.1f ms boxes=%d calls=%d batch=%d",
+                  i + 1, msSince(recTimer), timings.recMs, int(result.size()),
+                  timings.recCalls, int(timings.recBatched));
+        }
+        return 0;
+    }
+
+    const QImage screen = makeScreen();
+    QElapsedTimer timer;
+
+    // 1) det trên CÙNG một dải (đo ấm dần).
+    const QRect fixedBand(40, 260, 1200, 90);
+    const QImage fixedImage = screen.copy(fixedBand);
+    for (int i = 0; i < 5; ++i) {
+        timer.restart();
+        const QList<OcrTextBox> rows = engine.detector().detect(fixedImage);
+        if (csv) {
+            csvOut << "det-same," << (i + 1) << "," << engine.providerName() << ","
+                   << msSince(timer) << "," << engine.detector().lastMs()
+                   << ",0,1,1,0," << rows.size() << ",0,0\n";
+        }
+        qInfo("det same #%d: %.1f ms rows=%d", i + 1, msSince(timer), int(rows.size()));
+    }
+
+    // 2) det CÙNG kích thước, KHÁC vị trí (như hover mới: shape luôn cố định).
+    const QList<QRect> bands = {QRect(40, 60, 1200, 96),  QRect(40, 160, 1200, 96),
+                                QRect(40, 260, 1200, 96), QRect(40, 360, 1200, 96),
+                                QRect(40, 460, 1200, 96), QRect(40, 560, 1200, 96)};
+    for (int i = 0; i < bands.size(); ++i) {
+        const QImage image = screen.copy(bands.at(i));
+        timer.restart();
+        const QList<OcrTextBox> rows = engine.detector().detect(image);
+        if (csv) {
+            csvOut << "det-same-size," << (i + 1) << "," << engine.providerName() << ","
+                   << msSince(timer) << "," << engine.detector().lastMs()
+                   << ",0,1,1,0," << rows.size() << ",0,0\n";
+        }
+        qInfo("det same-size #%d: %.1f ms y=%d rows=%d", i + 1, msSince(timer), bands.at(i).y(),
+              int(rows.size()));
+    }
+
+    // 3) rec THẬT: mỗi lần một dòng khác (không cache).
+    for (int i = 0; i < 6; ++i) {
+        const QRect band(40, 60 + i * 100 - 20, 1200, 90);
+        const QImage image = screen.copy(band);
+        const QList<OcrTextBox> rows = engine.detector().detect(image);
+        if (rows.isEmpty()) {
+            qInfo("rec #%d: (no row)", i + 1);
+            continue;
+        }
+        const OcrTextBox row = rows.first();
+        timer.restart();
+        const QList<OcrTextBox> rec = engine.recognizer().recognize(image, QList<OcrTextBox>{row});
+        const OcrTimings recTiming = engine.recognizer().lastTimings();
+        if (csv) {
+            csvOut << "rec," << (i + 1) << "," << engine.providerName() << ","
+                   << msSince(timer) << ",0," << recTiming.recMs << ",0,1,0,"
+                   << rec.size() << "," << recTiming.recCalls << "," << recTiming.recCached
+                   << "\n";
+        }
+        qInfo("rec #%d: %.1f ms  text=%s", i + 1, msSince(timer),
+              qUtf8Printable(rec.isEmpty() ? QString() : rec.first().text));
+    }
+
+    // End-to-end detector → recognizer baseline for the same hover-sized input.
+    for (int i = 0; i < 3; ++i) {
+        const QElapsedTimer pipelineTimer = [] {
+            QElapsedTimer value;
+            value.start();
+            return value;
+        }();
+        const QList<OcrTextBox> result = engine.recognize(fixedImage);
+        const OcrTimings timings = engine.lastTimings();
+        if (csv) {
+            csvOut << "pipeline-hover," << (i + 1) << "," << engine.providerName() << ","
+                   << msSince(pipelineTimer) << "," << timings.detMs << "," << timings.recMs
+                   << "," << timings.detCalls << "," << timings.tileCount << ","
+                   << timings.altCalls << "," << result.size() << "," << timings.recCalls
+                   << "," << timings.recCached << "\n";
+        }
+        qInfo("pipeline hover #%d: total=%.1f det=%.1f rec=%.1f boxes=%d calls=%d cached=%d",
+              i + 1, timings.totalMs, timings.detMs, timings.recMs, int(result.size()),
+              timings.recCalls, timings.recCached);
+    }
+
+    // End-to-end ROI nhiều dòng: workload này mới kích hoạt recWorkers CPU.
+    for (int i = 0; i < 3; ++i) {
+        const QElapsedTimer pipelineTimer = [] {
+            QElapsedTimer value;
+            value.start();
+            return value;
+        }();
+        const QList<OcrTextBox> result = engine.recognize(screen);
+        const OcrTimings timings = engine.lastTimings();
+        if (csv) {
+            csvOut << "pipeline-roi," << (i + 1) << "," << engine.providerName() << ","
+                   << msSince(pipelineTimer) << "," << timings.detMs << "," << timings.recMs
+                   << "," << timings.detCalls << "," << timings.tileCount << ","
+                   << timings.altCalls << "," << result.size() << "," << timings.recCalls
+                   << "," << timings.recCached << "\n";
+        }
+        qInfo("pipeline ROI #%d: total=%.1f det=%.1f rec=%.1f boxes=%d calls=%d cached=%d",
+              i + 1, timings.totalMs, timings.detMs, timings.recMs, int(result.size()),
+              timings.recCalls, timings.recCached);
+    }
+
+    // Full-window workload kích hoạt tiled path trên ảnh >=1600x900.
+    const QImage largeScreen = makeScreen(QSize(1920, 1080));
+    for (int i = 0; i < 3; ++i) {
+        const QElapsedTimer pipelineTimer = [] {
+            QElapsedTimer value;
+            value.start();
+            return value;
+        }();
+        const QList<OcrTextBox> result = engine.recognize(largeScreen);
+        const OcrTimings timings = engine.lastTimings();
+        if (csv) {
+            csvOut << "pipeline-large," << (i + 1) << "," << engine.providerName() << ","
+                   << msSince(pipelineTimer) << "," << timings.detMs << "," << timings.recMs
+                   << "," << timings.detCalls << "," << timings.tileCount << ","
+                   << timings.altCalls << "," << result.size() << "," << timings.recCalls
+                   << "," << timings.recCached << "\n";
+        }
+        qInfo("pipeline large #%d: total=%.1f det=%.1f rec=%.1f boxes=%d calls=%d cached=%d",
+              i + 1, timings.totalMs, timings.detMs, timings.recMs, int(result.size()),
+              timings.recCalls, timings.recCached);
+    }
+
+    return 0;
+}

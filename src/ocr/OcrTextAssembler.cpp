@@ -29,6 +29,12 @@ struct Line
     int count{0};
 };
 
+/** Ngưỡng khe NGANG coi là ĐỔI CỘT — dùng chung cho ghép dòng và ngắt đoạn. */
+int columnGapFor(int median)
+{
+    return std::max(24, int(median * 2.5));
+}
+
 /** Nhóm box thành dòng (tâm y gần nhau trong dung sai theo chiều cao trung vị). */
 QList<Line> groupLines(const QList<OcrTextBox>& boxes)
 {
@@ -38,6 +44,11 @@ QList<Line> groupLines(const QList<OcrTextBox>& boxes)
 
     const int median = std::max(1, medianHeight(boxes));
     const double lineTolerance = median * 0.6;
+    // KHE NGANG LỚN = CỘT KHÁC: UI có sidebar + panel, các box cùng hàng y nhưng cách xa nhau
+    // hàng trăm px. Gộp chúng vào một dòng làm chữ DÍNH nhau và đoạn trải ngang cả cửa sổ ⇒ đặt
+    // bản dịch sai chỗ (ca image7/WeGame: nhiều box nhỏ ở nhiều cột). Box cách xa dòng hiện tại
+    // quá ngưỡng thì mở DÒNG MỚI.
+    const int columnGap = columnGapFor(median);
 
     QList<OcrTextBox> sorted = boxes;
     std::sort(sorted.begin(), sorted.end(), [](const OcrTextBox& a, const OcrTextBox& b) {
@@ -50,7 +61,19 @@ QList<Line> groupLines(const QList<OcrTextBox>& boxes)
         const double centerY = box.rect.center().y();
         int match = -1;
         for (int i = 0; i < lines.size(); ++i) {
-            if (std::abs(lines[i].centerY - centerY) <= lineTolerance) {
+            if (std::abs(lines[i].centerY - centerY) > lineTolerance)
+                continue;
+            // Khe ngang tới mép gần nhất của dòng: box nằm ngoài dòng thì đo từ mép tương ứng.
+            int lineLeft = lines[i].boxes.first().rect.left();
+            int lineRight = lines[i].boxes.first().rect.right();
+            for (const OcrTextBox& other : lines[i].boxes) {
+                lineLeft = std::min(lineLeft, other.rect.left());
+                lineRight = std::max(lineRight, other.rect.right());
+            }
+            const int gap = box.rect.left() > lineRight
+                                ? box.rect.left() - lineRight
+                                : (lineLeft > box.rect.right() ? lineLeft - box.rect.right() : 0);
+            if (gap <= columnGap) {
                 match = i;
                 break;
             }
@@ -96,6 +119,14 @@ int lineLeftOf(const Line& line)
     for (const OcrTextBox& box : line.boxes)
         left = std::min(left, box.rect.left());
     return left;
+}
+
+int lineRightOf(const Line& line)
+{
+    int right = line.boxes.first().rect.right();
+    for (const OcrTextBox& box : line.boxes)
+        right = std::max(right, box.rect.right());
+    return right;
 }
 
 QList<int> linePitches(const QList<Line>& lines)
@@ -168,6 +199,7 @@ BuiltDocument buildDocument(const QList<OcrTextBox>& boxes, int basePitchHint,
 
     const int median = std::max(1, medianHeight(boxes));
     const double spaceFactor = 0.4;
+    const int columnGap = columnGapFor(median);
 
     QList<Line> lines = groupLines(boxes);
 
@@ -225,6 +257,11 @@ BuiltDocument buildDocument(const QList<OcrTextBox>& boxes, int basePitchHint,
             const bool prevAtMargin = prevLeft <= margin + indentThreshold / 2;
             const bool currIndented = currLeft >= margin + indentThreshold;
             if (!paragraph && prevAtMargin && currIndented)
+                paragraph = true;
+
+            // Đổi CỘT (khe ngang lớn giữa hai dòng liền nhau) cũng là ngắt đoạn: sidebar ↔ panel
+            // của UI không được dính thành một đoạn — mỗi phần tử là một đoạn riêng, đặt đúng chỗ.
+            if (!paragraph && currLeft - lineRightOf(lines.at(i - 1)) > columnGap)
                 paragraph = true;
         }
         paragraphBreaks.append(paragraph);
@@ -363,6 +400,122 @@ Assembled assembleDocument(const QList<OcrTextBox>& boxes, int basePitchHint,
     return assembled;
 }
 
+QList<QList<int>> clusterRow(const QList<QRect>& rects, int gapThreshold)
+{
+    QList<QList<int>> clusters;
+    if (rects.isEmpty())
+        return clusters;
+
+    // Trái→phải, bất kể thứ tự caller gom hàng.
+    QList<int> order;
+    order.reserve(rects.size());
+    for (int i = 0; i < rects.size(); ++i)
+        order.append(i);
+    std::sort(order.begin(), order.end(), [&rects](int a, int b) {
+        if (rects.at(a).left() != rects.at(b).left())
+            return rects.at(a).left() < rects.at(b).left();
+        return rects.at(a).top() < rects.at(b).top();
+    });
+
+    const int threshold = qMax(0, gapThreshold);
+    int clusterRight = 0; // mép phải của cụm đang dựng
+    for (const int index : order) {
+        const QRect& rect = rects.at(index);
+        // QRect::right() là pixel CUỐI nằm trong box (x + width - 1) nên khe tới box sau
+        // bắt đầu từ right()+1; đo từ `right` thôi sẽ thổi mọi khe thêm 1px.
+        const bool startsNew = clusters.isEmpty() || rect.left() - (clusterRight + 1) > threshold;
+        if (startsNew) {
+            clusters.append(QList<int>());
+            clusterRight = rect.right();
+        } else {
+            // Box cao chồng lên box thấp không được kéo mép phải cụm về bên trái.
+            clusterRight = qMax(clusterRight, rect.right());
+        }
+        clusters.last().append(index);
+    }
+    return clusters;
+}
+
+int hitRegionIndex(const QList<QRect>& rects, const QPoint& point, bool vertical)
+{
+    for (int i = 0; i < rects.size(); ++i) {
+        const QRect& box = rects.at(i);
+        int low = vertical ? box.top() : box.left();
+        int high = vertical ? box.bottom() : box.right();
+
+        // Nới ra tới GIỮA khoảng đệm với box kề (nếu chồng nhau thì giữ biên rộng hơn).
+        if (i > 0) {
+            const QRect& before = rects.at(i - 1);
+            const int beforeEdge = vertical ? before.bottom() : before.right();
+            low = beforeEdge <= low ? (beforeEdge + low) / 2 : qMin(low, beforeEdge);
+        }
+        if (i + 1 < rects.size()) {
+            const QRect& after = rects.at(i + 1);
+            const int afterEdge = vertical ? after.top() : after.left();
+            high = afterEdge >= high ? (high + afterEdge + 1) / 2 : qMax(high, afterEdge);
+        }
+
+        const int crossLow = vertical ? box.left() : box.top();
+        const int crossHigh = vertical ? box.right() : box.bottom();
+        const int along = vertical ? point.y() : point.x();
+        const int cross = vertical ? point.x() : point.y();
+
+        if (along >= low && along <= high && cross >= crossLow && cross <= crossHigh)
+            return i;
+    }
+    return -1;
+}
+
+namespace {
+
+/** Hai DÒNG có thuộc cùng một đoạn không (port `_are_lines_adjacent` của meikipop). */
+bool linesAdjacent(const QRect& a, const QRect& b)
+{
+    const int overlapX = qMin(a.right(), b.right()) - qMax(a.left(), b.left());
+    const int minWidth = qMin(a.width(), b.width());
+    const int centerDelta = qAbs(a.center().y() - b.center().y());
+    const int maxHeight = qMax(a.height(), b.height());
+    // overlap > 0.5 × min(width)  và  Δcenter < 1.9 × max(height)  (tránh chia số thực)
+    return overlapX * 2 > minWidth && centerDelta * 10 < maxHeight * 19;
+}
+
+} // namespace
+
+QList<QList<int>> groupParagraphs(const QList<QRect>& rects)
+{
+    QList<QList<int>> paragraphs;
+    QList<int> pending;
+    pending.reserve(rects.size());
+    for (int i = 0; i < rects.size(); ++i)
+        pending.append(i);
+
+    while (!pending.isEmpty()) {
+        QList<int> group{pending.takeFirst()};
+        bool grew = true;
+        while (grew) {
+            grew = false;
+            for (int i = 0; i < pending.size(); ++i) {
+                const QRect& candidate = rects.at(pending.at(i));
+                for (int member : group) {
+                    if (!linesAdjacent(rects.at(member), candidate))
+                        continue;
+                    group.append(pending.takeAt(i));
+                    grew = true;
+                    break;
+                }
+            }
+        }
+
+        std::sort(group.begin(), group.end(), [&rects](int a, int b) {
+            if (rects.at(a).top() != rects.at(b).top())
+                return rects.at(a).top() < rects.at(b).top();
+            return rects.at(a).left() < rects.at(b).left();
+        });
+        paragraphs.append(group);
+    }
+    return paragraphs;
+}
+
 QString repairApostropheSpacing(const QString& text)
 {
     QList<int> convertible;
@@ -379,6 +532,23 @@ QString repairApostropheSpacing(const QString& text)
     for (const int index : convertible)
         repaired[index] = QLatin1Char(' ');
     return repaired;
+}
+
+bool endsWithSentenceEnd(const QString& text)
+{
+    QString trimmed = text.trimmed();
+    static const QString closers = QStringLiteral("\"')]}\u201d\u2019\u00bb\u300d\u300f>\u300b\u3011");
+    while (!trimmed.isEmpty() && closers.contains(trimmed.back()))
+        trimmed.chop(1);
+    if (trimmed.isEmpty())
+        return false;
+
+    const QChar last = trimmed.back();
+    return last == QLatin1Char('.') || last == QLatin1Char('!') || last == QLatin1Char('?')
+           || last == QChar(0x2026) || last == QChar(0x3002) || last == QChar(0xFF01)
+           || last == QChar(0xFF1F) || last == QChar(0x0964) || last == QChar(0x061F)
+           || last == QChar(0x1362) || last == QChar(0x104B) || last == QChar(0x17D4)
+           || last == QChar(0x0F0D);
 }
 
 } // namespace OcrTextAssembler

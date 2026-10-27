@@ -8,6 +8,7 @@ set "CONFIG=Release"
 rem ---------- 0. Tai dependency nhi phan (ONNX Runtime + model) neu thieu ----------
 set "NEED_DEPS="
 if not exist "%ROOT%third_party\onnxruntime\bin\onnxruntime.dll" set "NEED_DEPS=1"
+if not exist "%ROOT%third_party\onnxruntime\bin\DirectML.dll" set "NEED_DEPS=1"
 if not exist "%ROOT%models\ch_PP-OCRv4_det_infer.onnx" set "NEED_DEPS=1"
 if defined NEED_DEPS (
     echo [build] Thieu dependency - dang tai ^(ONNX Runtime + model^)...

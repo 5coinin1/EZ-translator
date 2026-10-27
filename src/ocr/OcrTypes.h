@@ -4,6 +4,8 @@
 #include <QString>
 #include <QtTypes>
 
+#include <chrono>
+
 namespace EZTranslator {
 
 /**
@@ -29,9 +31,19 @@ struct OcrOptions
     QString recModelPath;
     QString dictionaryPath;
 
-    bool useGpu{true};
+    /// "auto" | "cpu" | "directml" | "cuda" — độc lập cho det/rec.
+    /// Rỗng = suy ra từ `useGpu` (tương thích tool/test cũ).
+    QString detDevice;
+    QString recDevice;
+    bool useGpu{true};          ///< legacy: true = auto, false = cpu
+    int  gpuAdapterIndex{0};   ///< DXGI adapter index (DirectML); 0 = default
+    bool hoverWorker{false};   ///< worker hover (dùng budget CPU nhỏ khi fallback)
+    bool lowResource{false};   ///< máy yếu: CPU fallback dùng 2 worker, cache nhỏ
+    bool binarize{false}; ///< thử nghiệm: nhị phân hoá (Otsu) ảnh vùng trước khi detect/rec
     int  threads{0};      ///< intra-op cho detector (0 = ORT tự chọn)
     int  recThreads{1};   ///< intra-op cho recognition (song song nằm ở batch)
+    int  recWorkers{0};   ///< số worker recognition CPU (0 = theo budget phần cứng)
+    int  interOpThreads{1}; ///< inter-op của detector/recognizer (1 = không tranh task)
 
     // ── Detection ────────────────────────────────────────────────────────────
     float detThreshold{0.3f};  ///< ngưỡng xác suất "là chữ"
@@ -47,9 +59,13 @@ struct OcrOptions
 /** Thời gian/chi phí của lần recognize() gần nhất. */
 struct OcrTimings
 {
+    double totalMs{0.0};  ///< toàn bộ OcrEngine::recognize(), gồm preprocess/merge/tile
     double detMs{0.0};
     double recMs{0.0};
     int    boxes{0};
+    int    detCalls{0};   ///< số lần detector forward trong request
+    int    tileCount{0};  ///< số tile/đường detect đã chạy
+    int    altCalls{0};   ///< số lần gọi recognizer model dự phòng
     int    recCalls{0};    ///< số forward pass (một batch gộp nhiều dòng)
     int    recCached{0};   ///< số dòng lấy từ cache (không chạy model)
     bool   recBatched{false};
@@ -57,5 +73,14 @@ struct OcrTimings
     double recDecodeMs{0.0}; ///< phần CTC decode trên CPU
     qint64 recOutputBytes{0};
 };
+
+/** Đồng hồ monotonic dùng chung giữa UI thread và OCR worker để đo queue wait. */
+inline qint64 ocrMonotonicMs()
+{
+    using Clock = std::chrono::steady_clock;
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               Clock::now().time_since_epoch())
+        .count();
+}
 
 } // namespace EZTranslator

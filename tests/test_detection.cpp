@@ -21,6 +21,7 @@
 #include "detection/ChangeDetector.h"
 #include "detection/HeuristicTextDetector.h"
 #include "detection/RecursiveXYCut.h"
+#include "ocr/OcrScheduler.h"
 
 using namespace EZTranslator;
 
@@ -150,6 +151,133 @@ private slots:
     {
         QCOMPARE(RecursiveXYCut::cut({ QRect(0, 0, 10, 10) }).size(), 1);
         QCOMPARE(RecursiveXYCut::cut({}).size(), 0);
+    }
+
+    // ── D9: scheduler defer frame đầu, chạy sau settle, tôn trọng cooldown ────
+    void scheduler_settleAndCooldown()
+    {
+        OcrScheduler::Options options;
+        options.settleMs = 100;
+        options.minRunIntervalMs = 500;
+        options.maxRunsPerTick = 1;
+        OcrScheduler scheduler(options);
+
+        const QImage a = makeImageWithSquare(64, 64, QRect(4, 4, 16, 16));
+
+        scheduler.beginTick();
+        OcrScheduleDecision decision = scheduler.process("r", a, 0);
+        QVERIFY(!decision.run);
+        QVERIFY(decision.changed); // lần đầu → chờ settle
+
+        scheduler.beginTick();
+        decision = scheduler.process("r", a, 150); // đã settle
+        QVERIFY(decision.run);
+
+        scheduler.beginTick();
+        decision = scheduler.process("r", a, 200); // trong cooldown
+        QVERIFY(!decision.run);
+        QVERIFY(decision.deferred);
+
+        scheduler.beginTick();
+        decision = scheduler.process("r", a, 700); // qua cooldown
+        QVERIFY(decision.run);
+    }
+
+    // ── D10: đổi nội dung reset settle ───────────────────────────────────────
+    void scheduler_changeResetsSettle()
+    {
+        // Đặt settle TƯỜNG MINH (không phụ thuộc giá trị mặc định — mặc định đã đổi nhiều lần để
+        // tối ưu độ trễ).
+        OcrScheduler::Options options;
+        options.settleMs = 130;
+        options.minRunIntervalMs = 600;
+        OcrScheduler scheduler(options);
+        const QImage a = makeImageWithSquare(64, 64, QRect(4, 4, 16, 16));
+        const QImage b = makeImageWithSquare(64, 64, QRect(40, 40, 16, 16));
+
+        scheduler.beginTick();
+        scheduler.process("r", a, 0);
+
+        scheduler.beginTick();
+        OcrScheduleDecision decision = scheduler.process("r", b, 1000);
+        QVERIFY(decision.changed);
+        QVERIFY(!decision.run);
+
+        scheduler.beginTick();
+        QVERIFY(!scheduler.process("r", b, 1050).run); // < settle
+
+        scheduler.beginTick();
+        QVERIFY(scheduler.process("r", b, 1200).run);
+    }
+
+    // ── D11: cap số lần chạy mỗi tick ────────────────────────────────────────
+    void scheduler_capPerTick()
+    {
+        OcrScheduler::Options options;
+        options.settleMs = 0;
+        options.minRunIntervalMs = 0;
+        options.maxRunsPerTick = 1;
+        OcrScheduler scheduler(options);
+
+        const QImage a = makeImageWithSquare(64, 64, QRect(4, 4, 16, 16));
+
+        scheduler.beginTick();
+        scheduler.process("r1", a, 0); // lần đầu → deferred
+        scheduler.beginTick();
+        scheduler.process("r2", a, 0); // lần đầu → deferred
+
+        scheduler.beginTick();
+        QVERIFY(scheduler.process("r1", a, 100).run);
+        QVERIFY(!scheduler.process("r2", a, 100).run); // đã đạt cap
+
+        scheduler.beginTick();
+        QVERIFY(scheduler.process("r2", a, 100).run); // tick mới
+    }
+
+    // ── D12: reset xóa trạng thái ────────────────────────────────────────────
+    void scheduler_reset()
+    {
+        OcrScheduler::Options options;
+        options.settleMs = 0;
+        options.minRunIntervalMs = 0;
+        OcrScheduler scheduler(options);
+        const QImage a = makeImageWithSquare(64, 64, QRect(4, 4, 16, 16));
+
+        scheduler.beginTick();
+        scheduler.process("r", a, 0);
+        scheduler.beginTick();
+        QVERIFY(scheduler.process("r", a, 100).run);
+
+        scheduler.reset();
+        scheduler.beginTick();
+        QVERIFY(!scheduler.process("r", a, 200).run); // như mới gặp lại
+    }
+
+    // ── D13: phục vụ từ cache box cũng đặt cooldown (không thúc OCR lại) ─────
+    void scheduler_cacheServedUpdatesCooldown()
+    {
+        OcrScheduler::Options options;
+        options.settleMs = 0;
+        options.minRunIntervalMs = 600;
+        OcrScheduler scheduler(options);
+        const QImage a = makeImageWithSquare(64, 64, QRect(4, 4, 16, 16));
+
+        scheduler.beginTick();
+        scheduler.process("r", a, 0); // gặp lần đầu
+        scheduler.beginTick();
+        QVERIFY(scheduler.process("r", a, 100).run); // settle xong → chạy
+
+        scheduler.beginTick();
+        QVERIFY(!scheduler.process("r", a, 200).run); // cooldown chặn
+
+        // Vùng vừa được phục vụ từ cache box: cooldown được đặt lại ⇒ tick kế vẫn không chạy OCR.
+        scheduler.noteServedFromCache("r", 300);
+        scheduler.beginTick();
+        QVERIFY(!scheduler.process("r", a, 400).run);
+
+        // Qua cooldown mới cho chạy lại.
+        scheduler.beginTick();
+        QVERIFY(scheduler.process("r", a, 300 + 700).run);
     }
 };
 

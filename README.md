@@ -45,14 +45,19 @@ rồi dịch sang tiếng Việt và hiện lên **ngay tại chỗ**, để ng�
 ## 4. Ứng dụng gồm những phần nào
 
 - **Chọn cửa sổ cần dịch**: liệt kê các cửa sổ đang mở để người dùng chọn một cái.
+- **Chọn ngôn ngữ**: ngay trên màn hình chính, có nút hoán đổi nguồn ↔ đích; đổi ngôn
+  ngữ sẽ áp dụng cho cả OCR lẫn engine dịch và được lưu lại cho lần chạy sau.
 - **Khung vẽ vùng dịch**: trên ảnh chụp cửa sổ đã chọn, người dùng khoanh các vùng cần dịch
   (hình chữ nhật hoặc hình bất kỳ), đặt tên và chọn kiểu cho từng vùng.
 - **Tự tìm vùng chữ**: gợi ý sẵn các vùng có chữ để người dùng giữ/bỏ, đỡ phải vẽ tay hoàn toàn.
 - **Đọc chữ (nhận dạng chữ)**: nhận ra chữ trong từng vùng.
 - **Che chữ gốc**: tô kín vùng cần dịch bằng màu nền để chữ gốc không còn nhìn thấy.
-- **Dịch**: hai lựa chọn
-  - *Dịch ngay trên máy* (không cần mạng).
-  - *Dịch qua Google* (cần mạng) — dùng làm phương án phụ.
+- **Dịch**: chọn engine trong *Cài đặt → Dịch thuật*
+  - *Tự động*: dùng model trên máy nếu có, không thì Google.
+  - *Google*: endpoint miễn phí, hoặc Cloud Translation API khi nhập API key.
+  - *AI / LLM*: endpoint OpenAI-compatible (OpenAI, OpenRouter, DeepSeek, Ollama…),
+    model, API key và **system prompt** để AI hiểu ngữ cảnh game/truyện.
+  - *Offline*: chỉ dịch trên máy, không gửi dữ liệu ra mạng.
 - **Hiện chữ dịch**: lớp phủ trong suốt, hiện đúng vị trí, đúng bố cục, có thể chỉnh chữ.
 - **Nhớ nội dung đã dịch**: lưu lại câu đã dịch để dùng lại, tránh dịch trùng.
 - **Quản lý nhiều màn hình**: lưu theo hồ sơ để lần sau mở lên dùng tiếp.
@@ -91,57 +96,61 @@ Nhờ vậy dù việc dịch mất một chút thời gian, người dùng vẫ
 
 ---
 
-## 7. Requirements
+## 7. Yêu cầu (Windows 10/11 x64)
 
-- CMake >= 3.24
-- C++20 compiler (GCC 12+, Clang 15+, or MSVC 2019/2022 v16.10+)
-- Qt 6.4+ (`Core`, `Gui`, `Widgets`)
-- MSYS2 / MinGW-w64 (Windows)
-
-| Platform | Install |
+| Thành phần | Ghi chú |
 |---|---|
-| Windows (MSYS2 / MinGW-w64) | `pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-qt6-base` |
+| **Visual Studio 2022/2026 Build Tools** (MSVC, Desktop C++) | hoặc VS bản đầy đủ |
+| **Qt 6.11.2 msvc2022_64** (Core, Gui, Widgets, Network, Concurrent, Test) | tự dò `C:\Qt\6.*\msvc*`; hoặc set `QTDIR` |
+| **CMake ≥ 3.24** | có sẵn trong VS, hoặc `winget install Kitware.CMake` |
+| **PowerShell 7 (`pwsh`)** | để chạy script tải dependency (Win11 có sẵn; Win10: `winget install Microsoft.PowerShell`) |
+| **Python 3.10+** (tuỳ chọn) | cho engine dịch offline CT2; thiếu thì app vẫn chạy, dịch qua Google |
 
 ---
 
-## 8. Build
+## 8. Chạy lần đầu (một lệnh)
 
-Lần đầu cần tải dependency nhị phân (ONNX Runtime + model OCR). `build.bat` tự
-gọi script này khi thiếu, hoặc chạy tay:
+```cmd
+setup.bat
+```
+
+`setup.bat` làm đủ 3 việc: tải dependency (ONNX Runtime + model OCR + model dịch CT2), cài
+gói Python cho sidecar (`ctranslate2`, `sentencepiece`), rồi build Release. Sau đó:
+
+```cmd
+run.bat
+```
+
+Từng bước thủ công:
 
 ```powershell
-pwsh -File scripts/fetch_deps.ps1
+pwsh -File scripts/fetch_deps.ps1     # ONNX Runtime + model OCR (+ CT2 nếu release có)
+pwsh -File scripts/fetch_python.ps1   # ctranslate2 + sentencepiece (tuỳ chọn)
+build.bat                              # build Release + windeployqt
 ```
 
-Script tải từ nguồn chính thức và **kiểm tra SHA256** mỗi file:
-ONNX Runtime DirectML (NuGet), DirectML runtime (NuGet), model PP-OCRv4 (RapidOCR),
-từ điển (PaddleOCR). Đã có sẵn thì bỏ qua.
+### Model dùng trong app
 
-Sau đó:
+| Loại | Model | Nguồn |
+|---|---|---|
+| OCR dò dòng | `ch_PP-OCRv4_det_infer.onnx` | RapidOCR (HF) — tự tải, kiểm SHA256 |
+| OCR chữ Anh | `en_PP-OCRv4_rec_mobile.onnx` + `en_dict.txt` | RapidOCR / PaddleOCR |
+| OCR chữ Trung | `ch_PP-OCRv4_rec_infer.onnx` + `ppocr_keys_v1.txt` | RapidOCR / PaddleOCR |
+| OCR chữ Nhật | `japan_PP-OCRv4_rec_infer.onnx` + `japan_dict.txt` | cycloneboy (HF) |
+| Dịch en→vi | `models/ct2-en-vi-int8` | GitHub Release `models-ct2.zip` |
+| Dịch zh→vi | `models/ct2-zh-vi` (HachimiMT-60) | GitHub Release `models-ct2.zip` |
+| Dịch ja→vi | `models/ct2-ja-vi` (hirashiba-medium) | GitHub Release `models-ct2.zip` |
 
-```cmd
-build.bat
-```
-
-Hoặc thủ công (MSYS2 / CMake):
-
-```bash
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-```
+Thiếu model dịch CT2 thì app vẫn chạy: engine "Tự động" rơi xuống Google (cần mạng).
 
 ---
 
-## 9. Run
+## 9. Chạy
 
-Double-click `run.bat`, or from a terminal:
-
-```cmd
-.\run.bat
-```
-
-Or run directly (ensure `C:\msys64\mingw64\bin` is in `PATH`):
+Double-click `run.bat`, hoặc:
 
 ```cmd
-build\EZTranslator.exe
+run.bat
 ```
+
+Hoặc chạy trực tiếp `build\Release\EZTranslator.exe` (Qt runtime đã được `windeployqt` chép cạnh exe).

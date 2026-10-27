@@ -1,6 +1,8 @@
 #pragma once
 #include <QWidget>
 
+class QPushButton;
+
 /**
  * MiniFloatBar – Thanh nổi nhỏ hiển thị khi đang dịch.
  *
@@ -15,6 +17,9 @@ public:
 
     void setRunning(bool running);
 
+    /** Hiển thị đúng phím tắt dừng dịch (Cài đặt → Phím tắt) trên nút Dừng. */
+    void setStopHotkeyText(const QString& keyText);
+
 signals:
     void requestStopTranslation();
     void requestOpenSettings();
@@ -28,6 +33,8 @@ private:
     void applyState(bool running);
 
     QWidget* m_statusRow{nullptr};
+    QPushButton* m_stopBtn{nullptr}; ///< nút Dừng — chữ chứa phím tắt đang gán
+    QString  m_stopHotkey{"F8"};
     bool     m_running{false};
     QPoint   m_dragStart;
 };
