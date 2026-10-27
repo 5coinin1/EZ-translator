@@ -2,12 +2,14 @@
 
 #include <QColor>
 #include <QPoint>
+#include <QRect>
 #include <QString>
 #include <QWidget>
 
 #include "core/Types.h"
 
 class QLabel;
+class QScrollArea;
 
 namespace EZTranslator {
 
@@ -29,7 +31,8 @@ public:
      *                            tràn sang vùng UI bên cạnh; 0 = dùng mặc định.
      */
     void showTranslation(const QString& source, const QString& translation,
-                         const QPoint& cursorScreenPos, int sourceWidthLogical = 0);
+                         const QPoint& cursorScreenPos, int sourceWidthLogical = 0,
+                         const QRect& selectionScreenRect = {});
 
     void hidePopup();
 
@@ -42,9 +45,12 @@ protected:
 private:
     void applyAppearance();
     void placeNear(const QPoint& cursorScreenPos);
+    void placeBeside(const QRect& selectionScreenRect);
 
     QLabel* m_source{nullptr};
     QLabel* m_body{nullptr};
+    QWidget* m_content{nullptr};
+    QScrollArea* m_scrollArea{nullptr};
     EZTranslator::AppSettings m_appearance;
     QColor m_popupBackground{QColor(16, 18, 24, 238)};
     QColor m_popupBorder{QColor(130, 150, 180, 170)};

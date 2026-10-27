@@ -348,6 +348,28 @@ void OcrWorker::recognizeRegion(const QString& id, quint64 requestToken, quint64
     emit regionFinished(id, requestToken);
 }
 
+void OcrWorker::recognizeSelection(const QString& id, const QImage& image, qint64 queuedAtMs)
+{
+    const quint64 token = id.toULongLong();
+    if (token != m_latestSelectionToken.load())
+        return;
+    const qint64 startedAtMs = EZTranslator::ocrMonotonicMs();
+    // Dải bôi nhiều dòng rộng hơn hover band: giới hạn mặc định 640 làm chữ
+    // 25-35px co còn ~10px rồi detector bỏ sót. Giữ độ phân giải detector.
+    const int detLimit = qBound(960, image.width(), 1800);
+    const QList<OcrTextBox> boxes = m_engine.recognize(
+        image, [this, token]() { return token != m_latestSelectionToken.load(); }, {}, detLimit);
+    if (token != m_latestSelectionToken.load())
+        return;
+    const QString text = OcrTextAssembler::assemble(boxes).trimmed();
+    qInfo().noquote() << "[OCR_METRIC] path=selection request=" << id
+                      << "queueMs=" << qMax<qint64>(0, startedAtMs - queuedAtMs)
+                      << "totalMs=" << (EZTranslator::ocrMonotonicMs() - startedAtMs)
+                      << "detLimit=" << detLimit << "boxes=" << boxes.size()
+                      << "chars=" << text.size();
+    emit selectionRecognized(id, text);
+}
+
 void OcrWorker::probeHover(const QString& id, const QImage& band, const QPoint& cursorLocal,
                            qint64 queuedAtMs)
 {

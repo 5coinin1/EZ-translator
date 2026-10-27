@@ -133,6 +133,7 @@ public slots:
     void onRegionOcrFinished(const QString& regionId, quint64 requestToken);
     void onHoverProbed(const QString& id, const QString& text, const QRect& lineRect,
                        bool clippedByBand);
+    void onSelectionRecognized(const QString& id, const QString& text);
 
 private:
     void initConnections();
@@ -336,6 +337,13 @@ private:
     QPoint  m_hoverProbedCursor;     ///< vị trí con trỏ đã dò xong (chặn dò lại)
     bool    m_hoverPending{false};   ///< đã dò được dòng, đang chờ bản dịch để hiện 1 lần
     QHash<QString, QString> m_hoverCache;
+    bool m_selectionButtonDown{false};
+    bool m_selectionActive{false};
+    QPoint m_selectionDragStart;
+    QRect m_selectionFrameClient;
+    QImage m_selectionFrame;
+    QRect m_selectionScreenRect;
+    quint64 m_selectionToken{0};
 
     /// Hình học + mục đích của từng probe đang chờ. Kết quả trả về theo token nên
     /// probe "dò trước" và probe cuối không tranh nhau state dùng chung.
@@ -379,6 +387,8 @@ private:
      */
     void sendHoverProbe(const QPoint& screenPoint, bool prefetch, int stage = 0);
     void flushPendingHoverProbe();
+    void sendHoverSelection(const QPoint& releaseScreen);
+    [[nodiscard]] QRect hoverSelectionLogicalRect() const;
 
     /** Hiện bản dịch cho một dòng (hiện nguồn + bản dịch cùng lúc, hoặc đợi worker). */
     void showHoverLine(const QString& text, const QRect& lineClient,

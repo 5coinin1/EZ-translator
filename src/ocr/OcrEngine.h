@@ -52,7 +52,8 @@ public:
     /** Detection rồi Recognition; trả box có text (chưa assemble). */
     [[nodiscard]] QList<OcrTextBox> recognize(const QImage& image,
                                               const std::function<bool()>& cancelled = {},
-                                              const ProgressFn& progress = {});
+                                              const ProgressFn& progress = {},
+                                              int detLimitSideOverride = 0);
 
     [[nodiscard]] OcrTimings lastTimings() const;
 
@@ -62,7 +63,8 @@ public:
 private:
     /** Nạp model chữ của HỆ CHỮ CÒN LẠI (en ↔ zh) theo nhu cầu — xem recognize(). */
     QList<OcrTextBox> recognizeProcessed(const QImage& image, bool allowAlt = true,
-                                         const ProgressFn& progress = {});
+                                         const ProgressFn& progress = {},
+                                         int detLimitSideOverride = 0);
     /** Nhận dạng các box đã detect, dùng chung cho path thường và tile detect-once. */
     QList<OcrTextBox> recognizeBoxes(const QImage& image, const QList<OcrTextBox>& boxes,
                                      bool allowAlt);

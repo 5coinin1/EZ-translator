@@ -242,6 +242,7 @@ void MainWindow::buildUi()
     m_cardHover = new QPushButton(QStringLiteral("Dịch khi chỉ chuột"), displaySeg);
     m_cardHover->setCheckable(true);
     m_cardHover->setCursor(Qt::PointingHandCursor);
+    m_cardHover->setToolTip(QStringLiteral("Chỉ chuột để dịch nhanh, hoặc kéo chuột trái bôi chọn chữ để dịch đoạn đã chọn bên phải."));
     m_cardFloat = new QPushButton(QStringLiteral("Cửa sổ nổi"), displaySeg);
     m_cardFloat->setCheckable(true);
     m_cardFloat->setCursor(Qt::PointingHandCursor);

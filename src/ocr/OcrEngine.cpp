@@ -194,7 +194,8 @@ QString OcrEngine::recProviderName() const
 
 QList<OcrTextBox> OcrEngine::recognize(const QImage& image,
                                       const std::function<bool()>& cancelled,
-                                      const ProgressFn& progress)
+                                      const ProgressFn& progress,
+                                      int detLimitSideOverride)
 {
     m_cancelled = cancelled;
     if (!isLoaded() || image.isNull())
@@ -213,7 +214,8 @@ QList<OcrTextBox> OcrEngine::recognize(const QImage& image,
                       && input.width() >= 1600 && input.height() >= 900
                       && area >= 1500000;
     if (!tile) {
-        const QList<OcrTextBox> result = recognizeProcessed(input, true, progress);
+        const QList<OcrTextBox> result = recognizeProcessed(
+            input, true, progress, detLimitSideOverride);
         m_impl->lastTiming.boxes = result.size();
         m_impl->lastTiming.totalMs = double(ocrMonotonicMs() - startedAt);
         return result;
@@ -245,7 +247,10 @@ QList<OcrTextBox> OcrEngine::recognize(const QImage& image,
                 if (tileRect.width() < 8 || tileRect.height() < 8)
                     continue;
                 const QList<OcrTextBox> boxes =
-                    m_impl->detector.detect(input.copy(tileRect), m_impl->options.detLimitSide);
+                    m_impl->detector.detect(input.copy(tileRect),
+                                            detLimitSideOverride > 0
+                                                ? detLimitSideOverride
+                                                : m_impl->options.detLimitSide);
                 ++m_impl->lastTiming.detCalls;
                 ++m_impl->lastTiming.tileCount;
                 m_impl->lastTiming.detMs += m_impl->detector.lastMs();
@@ -304,7 +309,7 @@ QList<OcrTextBox> OcrEngine::recognize(const QImage& image,
             if (tileRect.width() < 8 || tileRect.height() < 8)
                 continue;
             const QList<OcrTextBox> boxes =
-                recognizeProcessed(input.copy(tileRect), false);
+                recognizeProcessed(input.copy(tileRect), false, {}, detLimitSideOverride);
             for (OcrTextBox box : boxes) {
                 box.rect.translate(tileRect.topLeft());
                 merged.append(box);
@@ -358,12 +363,13 @@ QList<OcrTextBox> OcrEngine::recognize(const QImage& image,
 }
 
 QList<OcrTextBox> OcrEngine::recognizeProcessed(const QImage& input, bool allowAlt,
-                                               const ProgressFn& progress)
+                                               const ProgressFn& progress,
+                                               int detLimitSideOverride)
 {
     if (!isLoaded() || input.isNull() || (m_cancelled && m_cancelled()))
         return {};
 
-    const QList<OcrTextBox> boxes = m_impl->detector.detect(input);
+    const QList<OcrTextBox> boxes = m_impl->detector.detect(input, detLimitSideOverride);
     ++m_impl->lastTiming.detCalls;
     ++m_impl->lastTiming.tileCount;
     m_impl->lastTiming.detMs += m_impl->detector.lastMs();

@@ -1,4 +1,5 @@
 #include "AppController.h"
+#include "app/HoverSelectionGeometry.h"
 #include "ui/MainWindow.h"
 #include "ui/RegionEditorWindow.h"
 #include "ui/region/RegionSnipperOverlay.h"
@@ -791,6 +792,8 @@ void AppController::spawnOcrWorker(QThread*& thread, EZTranslator::OcrWorker*& w
     if (hoverWorker) {
         connect(worker, &EZTranslator::OcrWorker::hoverProbed,
                 this, &AppController::onHoverProbed, Qt::QueuedConnection);
+        connect(worker, &EZTranslator::OcrWorker::selectionRecognized,
+                this, &AppController::onSelectionRecognized, Qt::QueuedConnection);
     } else {
         connect(worker, &EZTranslator::OcrWorker::regionRecognizedPartial,
                 this, &AppController::onRegionRecognizedPartial, Qt::QueuedConnection);
@@ -1100,6 +1103,10 @@ void AppController::startHover()
     m_hoverStillSince = m_clock.isValid() ? m_clock.elapsed() : 0;
     m_hoverEmptyStreak = 0;
     m_hoverLastValidMs = m_clock.isValid() ? m_clock.elapsed() : 0;
+    m_selectionButtonDown = false;
+    m_selectionActive = false;
+    m_selectionFrame = QImage();
+    m_selectionScreenRect = QRect();
     m_hoverTimer->start();
     qInfo() << "[Hover] enabled";
 }
@@ -1121,6 +1128,13 @@ void AppController::stopHover()
     m_hoverFrameReady = false;
     m_hoverFrameSettle = 0;
     m_hoverEmptyStreak = 0;
+    m_selectionButtonDown = false;
+    m_selectionActive = false;
+    m_selectionFrame = QImage();
+    m_selectionScreenRect = QRect();
+    ++m_selectionToken;
+    if (m_hoverOcrWorker)
+        m_hoverOcrWorker->noteSelectionRequest(m_selectionToken);
     ++m_hoverTranslationToken; // vô hiệu hoá kết quả dịch đang về
 }
 
@@ -1215,6 +1229,15 @@ void AppController::onHoverTick()
         m_hoverPopup->hidePopup();
         m_hoverLineValid = false;
         m_hoverPending = false;
+        if (m_selectionActive || m_selectionButtonDown) {
+            ++m_selectionToken;
+            if (m_hoverOcrWorker)
+                m_hoverOcrWorker->noteSelectionRequest(m_selectionToken);
+            ++m_hoverTranslationToken;
+        }
+        m_selectionButtonDown = false;
+        m_selectionActive = false;
+        m_selectionFrame = QImage();
         return;
     }
 
@@ -1225,6 +1248,15 @@ void AppController::onHoverTick()
         m_hoverPopup->hidePopup();
         m_hoverLineValid = false;
         m_hoverPending = false;
+        if (m_selectionActive || m_selectionButtonDown) {
+            ++m_selectionToken;
+            if (m_hoverOcrWorker)
+                m_hoverOcrWorker->noteSelectionRequest(m_selectionToken);
+            ++m_hoverTranslationToken;
+        }
+        m_selectionButtonDown = false;
+        m_selectionActive = false;
+        m_selectionFrame = QImage();
         return;
     }
 
@@ -1233,7 +1265,39 @@ void AppController::onHoverTick()
         return;
     const QPoint screenPoint(cursorNative.x, cursorNative.y);
 
+    // Popup bôi chọn có thanh cuộn: tương tác trong popup không phải nét bôi mới.
+    if (m_selectionActive && m_hoverPopup->isVisible()
+        && m_hoverPopup->geometry().contains(cursorToLogical(screenPoint)))
+        return;
+
     const QRect client = m_hoverClientPhysical;
+    const bool leftDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    if (leftDown && !m_selectionButtonDown) {
+        m_selectionButtonDown = true;
+        m_selectionActive = false;
+        m_selectionFrame = client.contains(screenPoint) ? m_hoverFrame : QImage();
+        m_selectionFrameClient = client;
+        m_selectionDragStart = screenPoint;
+        m_selectionScreenRect = QRect();
+        m_hoverPopup->hidePopup();
+        m_hoverLineValid = false;
+        m_hoverPending = false;
+        m_pendingHoverProbe.valid = false;
+        m_hoverPrefetch = HoverPrefetch();
+        m_hoverProbes.clear();
+        m_hoverLastFinalToken = 0;
+        ++m_selectionToken;
+        if (m_hoverOcrWorker)
+            m_hoverOcrWorker->noteSelectionRequest(m_selectionToken);
+        ++m_hoverTranslationToken;
+    } else if (!leftDown && m_selectionButtonDown) {
+        m_selectionButtonDown = false;
+        sendHoverSelection(screenPoint);
+        m_selectionFrame = QImage();
+    }
+    if (leftDown || m_selectionActive)
+        return;
+
     if (client.isEmpty() || !client.contains(screenPoint)) {
         note(QStringLiteral("con trỏ NGOÀI vùng client"));
         m_hoverPopup->hidePopup();
@@ -1407,6 +1471,81 @@ void AppController::flushPendingHoverProbe()
     sendHoverProbe(pending.screenPoint, pending.prefetch, pending.stage);
 }
 
+QRect AppController::hoverSelectionLogicalRect() const
+{
+    return QRect(cursorToLogical(m_selectionScreenRect.topLeft()),
+                 QSize(sizeToLogical(m_selectionScreenRect.width()),
+                       sizeToLogical(m_selectionScreenRect.height())));
+}
+
+void AppController::sendHoverSelection(const QPoint& releaseScreen)
+{
+    if (m_selectionFrame.isNull() || !m_hoverOcrWorker || !m_hoverOcrReady
+        || m_selectionFrameClient.isEmpty())
+        return;
+
+    const QRect selected = EZTranslator::hoverSelectionEndpointRect(
+                               m_selectionDragStart, releaseScreen)
+                               .intersected(m_selectionFrameClient);
+    // Click thông thường tiếp tục dùng hover; chỉ kéo đủ xa mới coi là chọn chữ.
+    if (selected.width() < 8
+        || (releaseScreen - m_selectionDragStart).manhattanLength() < 12)
+        return;
+
+    const QRect readRect = EZTranslator::hoverSelectionReadRect(
+        m_selectionDragStart, releaseScreen, m_selectionFrameClient);
+    const double scaleX = double(m_selectionFrame.width()) / m_selectionFrameClient.width();
+    const double scaleY = double(m_selectionFrame.height()) / m_selectionFrameClient.height();
+    const QRect frameRect(
+        int(std::floor((readRect.left() - m_selectionFrameClient.left()) * scaleX)),
+        int(std::floor((readRect.top() - m_selectionFrameClient.top()) * scaleY)),
+        int(std::ceil(readRect.width() * scaleX)),
+        int(std::ceil(readRect.height() * scaleY)));
+    const QRect cropped = frameRect.intersected(m_selectionFrame.rect());
+    if (cropped.isEmpty())
+        return;
+
+    QImage image = m_selectionFrame.copy(cropped);
+    constexpr qint64 maxPixels = 3000000;
+    if (qint64(image.width()) * image.height() > maxPixels) {
+        const double factor = std::sqrt(double(maxPixels)
+                                        / double(qint64(image.width()) * image.height()));
+        image = image.scaled(qMax(1, qRound(image.width() * factor)),
+                             qMax(1, qRound(image.height() * factor)),
+                             Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    }
+
+    m_selectionActive = true;
+    m_selectionScreenRect = readRect;
+    const quint64 token = ++m_selectionToken;
+    m_hoverOcrWorker->noteSelectionRequest(token);
+    qInfo().noquote() << "[Hover] selection endpoints=" << selected
+                      << "readRect=" << readRect << "image=" << image.size()
+                      << "request=" << token;
+    const bool queued = QMetaObject::invokeMethod(
+        m_hoverOcrWorker, "recognizeSelection", Qt::QueuedConnection,
+        Q_ARG(QString, QString::number(token)), Q_ARG(QImage, image),
+        Q_ARG(qint64, EZTranslator::ocrMonotonicMs()));
+    if (!queued)
+        m_selectionActive = false;
+}
+
+void AppController::onSelectionRecognized(const QString& id, const QString& text)
+{
+    if (!m_selectionActive || id.toULongLong() != m_selectionToken
+        || m_state != EZTranslator::TranslationState::Running || m_overlayMode)
+        return;
+    if (text.isEmpty()) {
+        qInfo() << "[Hover] selection OCR empty" << id;
+        m_selectionActive = false;
+        m_mainWindow->setStatus(QStringLiteral("Không nhận diện được chữ trong vùng đã chọn"),
+                                QColor("#f59e0b"));
+        return;
+    }
+    const QRect clientRect = m_selectionScreenRect.translated(-m_selectionFrameClient.topLeft());
+    showHoverLine(text, clientRect, m_selectionScreenRect.topRight());
+}
+
 void AppController::showHoverLine(const QString& text, const QRect& lineClient,
                                   const QPoint& cursorScreen)
 {
@@ -1429,7 +1568,8 @@ void AppController::showHoverLine(const QString& text, const QRect& lineClient,
     if (!cached.isEmpty()) {
         m_hoverPending = false;
         m_hoverTranslation = cached;
-        m_hoverPopup->showTranslation(text, cached, logical, sourceWidth);
+        m_hoverPopup->showTranslation(text, cached, logical, sourceWidth,
+                                      m_selectionActive ? hoverSelectionLogicalRect() : QRect());
         return;
     }
 
@@ -1441,7 +1581,8 @@ void AppController::showHoverLine(const QString& text, const QRect& lineClient,
 
     if (!ensureTranslator()) {
         m_hoverPending = false;
-        m_hoverPopup->showTranslation(text, QString(), logical, sourceWidth);
+        m_hoverPopup->showTranslation(text, QString(), logical, sourceWidth,
+                                      m_selectionActive ? hoverSelectionLogicalRect() : QRect());
         return;
     }
 
@@ -1472,6 +1613,11 @@ void AppController::onHoverProbed(const QString& id, const QString& text, const 
     const HoverProbeGeom geom = geomIt.value();
     m_hoverProbes.erase(geomIt);
     m_hoverProbeRunning = false;
+
+    if (m_selectionButtonDown || m_selectionActive) {
+        flushPendingHoverProbe();
+        return;
+    }
 
     if (!m_hoverPopup) {
         flushPendingHoverProbe();
@@ -2454,6 +2600,17 @@ void AppController::onQuit()
 
 void AppController::onTargetWindowSelected(quintptr handle, const QString& /*title*/, const QString& /*processName*/)
 {
+    m_selectionActive = false;
+    m_selectionButtonDown = false;
+    m_selectionFrame = QImage();
+    m_selectionScreenRect = QRect();
+    ++m_selectionToken;
+    if (m_hoverOcrWorker)
+        m_hoverOcrWorker->noteSelectionRequest(m_selectionToken);
+    ++m_hoverTranslationToken;
+    if (m_hoverPopup)
+        m_hoverPopup->hidePopup();
+    m_hoverFrameReady = false;
     clearVisualCaches();
     if (m_state == EZTranslator::TranslationState::Running || m_captureStartedForPreview) {
         if (m_capture) m_capture->stop();
@@ -3582,18 +3739,22 @@ void AppController::onTranslationReady(const QString& regionId, quint64 token,
             return; // đang ở chế độ Overlay: không hiện cửa sổ nổi
 
         m_hoverPending = false;
-        const QString translated = document.paragraphs.value(0).trimmed();
+        const QString translated = document.displayText();
         const qint64 hoverTranslateMs =
             m_clock.isValid() ? m_clock.elapsed() - m_hoverProbeMs : -1;
         qInfo().noquote() << "[PIPE_METRIC] path=hover stage=translation request=" << token
                           << "translationMs=" << hoverTranslateMs
-                          << "presented=1 chars=" << translated.size();
+                          << "presented=1 sourceChars=" << m_hoverSource.size()
+                          << "paragraphs=" << document.paragraphs.size()
+                          << "complete=" << document.complete
+                          << "chars=" << translated.size();
 
         if (translated.isEmpty()) {
             // Không dịch được → vẫn hiện dòng gốc để không im lặng.
             m_hoverPopup->showTranslation(m_hoverSource, QString(),
                                           cursorToLogical(m_hoverLineCursor),
-                                          sizeToLogical(m_hoverLineClient.width()));
+                                          sizeToLogical(m_hoverLineClient.width()),
+                                          m_selectionActive ? hoverSelectionLogicalRect() : QRect());
             return;
         }
 
@@ -3604,7 +3765,8 @@ void AppController::onTranslationReady(const QString& regionId, quint64 token,
         // Hiện ĐỒNG THỜI nguồn + bản dịch, chỉ một lần (không còn hai giai đoạn).
         m_hoverPopup->showTranslation(m_hoverSource, translated,
                                       cursorToLogical(m_hoverLineCursor),
-                                      sizeToLogical(m_hoverLineClient.width()));
+                                      sizeToLogical(m_hoverLineClient.width()),
+                                      m_selectionActive ? hoverSelectionLogicalRect() : QRect());
         return;
     }
 
