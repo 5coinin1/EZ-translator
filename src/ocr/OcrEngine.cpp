@@ -140,6 +140,7 @@ bool OcrEngine::load(const OcrOptions& options, QString* error)
         return false;
 
     m_impl->loaded = false;
+<<<<<<< HEAD
     QString detError;
     QString recError;
     const QString fallbackDevice = options.useGpu ? QStringLiteral("auto") : QStringLiteral("cpu");
@@ -147,6 +148,10 @@ bool OcrEngine::load(const OcrOptions& options, QString* error)
     const QString recDevice = options.recDevice.isEmpty() ? fallbackDevice : options.recDevice;
     Q_UNUSED(m_impl->detRuntime.configure(detDevice, options.gpuAdapterIndex, &detError));
     Q_UNUSED(m_impl->recRuntime.configure(recDevice, options.gpuAdapterIndex, &recError));
+=======
+    const QString configuredProvider = m_impl->runtime.configure(options.useGpu, options.gpuAdapterIndex, error);
+    Q_UNUSED(configuredProvider);
+>>>>>>> ba37210 (perf: CPU-first OCR with int8 recognition and progressive preview)
     m_impl->binarize = options.binarize;
     m_impl->options = options;
     m_impl->options.detDevice = detDevice;
@@ -375,7 +380,11 @@ QList<OcrTextBox> OcrEngine::recognizeProcessed(const QImage& input, bool allowA
     // tiên trong lúc các dòng còn lại vẫn đang chạy. GPU đã batch cả trang nên
     // không cần chia; chia thêm chỉ làm tăng dispatch.
     const bool progressive = progress
+<<<<<<< HEAD
                              && m_impl->recRuntime.providerName() == QLatin1String("CPU")
+=======
+                             && m_impl->runtime.providerName() == QLatin1String("CPU")
+>>>>>>> ba37210 (perf: CPU-first OCR with int8 recognition and progressive preview)
                              && boxes.size() >= 8
                              && qEnvironmentVariable("EZ_OCR_PROGRESSIVE", QStringLiteral("1"))
                                     != QLatin1String("0");

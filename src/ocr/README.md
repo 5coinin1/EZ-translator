@@ -92,8 +92,13 @@ không dựng plate**; kết quả full ngay sau đó thay thế bằng box đ�
 - GPU không dùng progressive vì batch cả trang đã nhanh.
 - Tắt/A-B: `EZ_OCR_PROGRESSIVE=0`; đổi cụm: `EZ_OCR_PROGRESSIVE_CHUNK=<2..12>`.
 
+<<<<<<< HEAD
 > Phần **dịch offline** dùng CTranslate2: CPU int8 hoặc CUDA float16 nếu tìm thấy
 > cuBLAS/cuDNN (sidecar tự fallback CPU). Marian ONNX chỉ dùng GPU khi ép
+=======
+> Phần **dịch offline** vẫn chạy CTranslate2 int8 trên **CPU** (ổn định và nhanh hơn
+> Marian GPU với batch nhỏ); Marian ONNX chỉ dùng GPU khi ép
+>>>>>>> ba37210 (perf: CPU-first OCR with int8 recognition and progressive preview)
 > `EZ_TRANSLATE_ENGINE=marian`. `useGpuAcceleration` là cờ legacy, không điều khiển OCR.
 
 ## Tài nguyên (máy yếu)
