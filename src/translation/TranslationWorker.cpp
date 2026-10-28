@@ -58,6 +58,11 @@ TranslationWorker::TranslationWorker(QObject* parent)
 
 TranslationWorker::~TranslationWorker() = default;
 
+void TranslationWorker::clearCache()
+{
+    m_cache.clear();
+}
+
 void TranslationWorker::configure(const TranslationConfig& config)
 {
     // Đổi engine/API/model/system prompt → bản dịch cũ trong cache không còn đúng

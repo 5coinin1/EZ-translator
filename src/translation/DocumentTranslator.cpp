@@ -8,6 +8,22 @@
 
 namespace EZTranslator {
 
+QString TranslatedDocument::displayText() const
+{
+    QStringList visible;
+    const int count = std::max(paragraphs.size(), sourceParagraphs.size());
+    visible.reserve(count);
+    for (int i = 0; i < count; ++i) {
+        const QString translated = paragraphs.value(i).trimmed();
+        const QString source = sourceParagraphs.value(i).trimmed();
+        if (!translated.isEmpty())
+            visible.append(translated);
+        else if (!source.isEmpty())
+            visible.append(source);
+    }
+    return visible.join(QStringLiteral("\n\n"));
+}
+
 namespace {
 
 // Cùng luật với OcrTextAssembler::endsWithSentenceEnd (module translation không link module ocr

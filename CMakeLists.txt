@@ -73,6 +73,7 @@ set(SOURCES
     src/overlay/TranslationPopup.cpp
 
     # App
+    src/app/HoverSelectionGeometry.h
     src/app/AppController.h
     src/app/AppController.cpp
 
@@ -460,6 +461,21 @@ find_package(Qt6 COMPONENTS Test QUIET)
 if(Qt6Test_FOUND)
     enable_testing()
 
+    add_executable(test_hover_selection tests/test_hover_selection.cpp)
+    target_include_directories(test_hover_selection PRIVATE src)
+    target_link_libraries(test_hover_selection PRIVATE Qt6::Core Qt6::Test)
+    set_target_properties(test_hover_selection PROPERTIES WIN32_EXECUTABLE FALSE AUTOMOC ON)
+    add_test(NAME test_hover_selection COMMAND test_hover_selection)
+
+    add_executable(test_translation_popup
+        tests/test_translation_popup.cpp
+        src/overlay/TranslationPopup.cpp
+    )
+    target_include_directories(test_translation_popup PRIVATE src)
+    target_link_libraries(test_translation_popup PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+    set_target_properties(test_translation_popup PROPERTIES WIN32_EXECUTABLE FALSE AUTOMOC ON)
+    add_test(NAME test_translation_popup COMMAND test_translation_popup)
+
     add_executable(test_scroll_ocr_reuse tests/test_scroll_ocr_reuse.cpp)
     target_link_libraries(test_scroll_ocr_reuse PRIVATE ez_ocr Qt6::Test)
     set_target_properties(test_scroll_ocr_reuse PROPERTIES WIN32_EXECUTABLE FALSE)
@@ -581,6 +597,7 @@ if(Qt6Test_FOUND)
     target_include_directories(test_translation PRIVATE src)
     target_link_libraries(test_translation PRIVATE Qt6::Core Qt6::Test)
     set_target_properties(test_translation PROPERTIES WIN32_EXECUTABLE FALSE)
+    add_test(NAME test_translation COMMAND test_translation)
     if(MINGW OR GCC)
         target_compile_options(test_translation PRIVATE -finput-charset=UTF-8 -fexec-charset=UTF-8)
     endif()

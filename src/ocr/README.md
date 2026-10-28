@@ -1,4 +1,4 @@
-﻿# ocr/
+# ocr/
 
 Đọc chữ trên ảnh ROI. **Tách Detection và Recognition thành 2 giai đoạn riêng biệt.**
 

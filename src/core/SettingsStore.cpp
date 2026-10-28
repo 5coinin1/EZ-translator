@@ -1,4 +1,5 @@
 #include "core/SettingsStore.h"
+#include "core/HotkeyBindings.h"
 
 #include <QColor>
 #include <QSettings>
@@ -147,14 +148,9 @@ void load(AppSettings& settings)
     settings.windowOpacity = store.value("windowOpacity", settings.windowOpacity).toInt();
 
     // ── Phím tắt ────────────────────────────────────────────────────────────
-    settings.toggleTranslationHotkey =
-        str("toggleTranslationHotkey", settings.toggleTranslationHotkey);
-    settings.selectRegionHotkey =
-        str("selectRegionHotkey", settings.selectRegionHotkey, /*protectEmpty=*/false);
-    settings.showRegionHotkey =
-        str("showRegionHotkey", settings.showRegionHotkey, /*protectEmpty=*/false);
-    settings.openSettingsHotkey =
-        str("openSettingsHotkey", settings.openSettingsHotkey, /*protectEmpty=*/false);
+    for (const auto& binding : hotkeyBindings)
+        settings.*(binding.value) =
+            str(binding.settingsKey, settings.*(binding.value), /*protectEmpty=*/false);
 
     store.endGroup();
 }
@@ -213,10 +209,8 @@ void save(const AppSettings& settings)
     store.setValue("windowOpacity", settings.windowOpacity);
 
     // ── Phím tắt ────────────────────────────────────────────────────────────
-    store.setValue("toggleTranslationHotkey", settings.toggleTranslationHotkey);
-    store.setValue("selectRegionHotkey", settings.selectRegionHotkey);
-    store.setValue("showRegionHotkey", settings.showRegionHotkey);
-    store.setValue("openSettingsHotkey", settings.openSettingsHotkey);
+    for (const auto& binding : hotkeyBindings)
+        store.setValue(QLatin1String(binding.settingsKey), settings.*(binding.value));
 
     store.endGroup();
     store.sync();

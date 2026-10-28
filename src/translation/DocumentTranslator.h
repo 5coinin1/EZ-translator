@@ -19,6 +19,9 @@ struct TranslatedDocument
     QList<int>  lineCounts;       ///< số dòng nguồn của mỗi đoạn (để đặt overlay)
     bool complete{false};         ///< mọi đoạn đã có bản dịch
     int  newTranslations{0};      ///< số đoạn được dịch trong lần gọi này
+
+    /** Ghép mọi đoạn cho popup; đoạn dịch lỗi vẫn hiện nguồn để không mất chữ. */
+    [[nodiscard]] QString displayText() const;
 };
 
 /**

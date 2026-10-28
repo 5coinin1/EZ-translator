@@ -60,6 +60,10 @@ public slots:
     void probeHover(const QString& id, const QImage& band, const QPoint& cursorLocal,
                     qint64 queuedAtMs);
 
+    /** OCR đúng vùng người dùng vừa kéo chọn, không tự mở rộng sang dòng bên cạnh. */
+    void recognizeSelection(const QString& id, const QImage& image, qint64 queuedAtMs);
+    void noteSelectionRequest(quint64 token) { m_latestSelectionToken.store(token); }
+
 signals:
     void loaded(bool ok, const QString& provider, const QString& error);
     /**
@@ -83,6 +87,7 @@ signals:
     /** @param clippedByBand dòng chạm mép dải ⇒ gần như chắc chắn bị cắt đầu/cuối. */
     void hoverProbed(const QString& id, const QString& text, const QRect& lineRect,
                      bool clippedByBand);
+    void selectionRecognized(const QString& id, const QString& text);
 
 private:
     void warmUp();
@@ -92,6 +97,7 @@ private:
     /// Số yêu cầu OCR VÙNG đã xếp hàng nhưng chưa chạy (luồng UI tăng, worker giảm). Dùng để bỏ
     /// dựng plate khi còn yêu cầu mới đang chờ (xem recognizeRegion).
     std::atomic<int> m_pendingRequests{0};
+    std::atomic<quint64> m_latestSelectionToken{0};
     std::mutex m_regionTokensMutex;
     QHash<QString, quint64> m_regionTokens;
     QHash<QString, ScrollOcrReuse> m_scrollReuse;

@@ -242,6 +242,7 @@ void MainWindow::buildUi()
     m_cardHover = new QPushButton(QStringLiteral("Dịch khi chỉ chuột"), displaySeg);
     m_cardHover->setCheckable(true);
     m_cardHover->setCursor(Qt::PointingHandCursor);
+    m_cardHover->setToolTip(QStringLiteral("Chỉ chuột để dịch nhanh, hoặc kéo chuột trái bôi chọn chữ để dịch đoạn đã chọn bên phải."));
     m_cardFloat = new QPushButton(QStringLiteral("Cửa sổ nổi"), displaySeg);
     m_cardFloat->setCheckable(true);
     m_cardFloat->setCursor(Qt::PointingHandCursor);
@@ -639,6 +640,15 @@ MainWindow::DisplayMode MainWindow::displayMode() const
     if (m_cardFloat && m_cardFloat->isChecked())
         return DisplayMode::FloatingWindow;
     return DisplayMode::HoverTranslate;
+}
+
+void MainWindow::setDisplayMode(DisplayMode mode)
+{
+    QPushButton* button = mode == DisplayMode::ScreenOverlay ? m_cardOverlay
+                          : mode == DisplayMode::FloatingWindow ? m_cardFloat
+                                                                 : m_cardHover;
+    if (button && !button->isChecked())
+        button->setChecked(true); // idToggled đồng bộ AppController và UI
 }
 
 void MainWindow::setRegions(const QList<EZTranslator::TranslationRegion>& regions, int current)

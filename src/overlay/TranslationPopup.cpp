@@ -5,6 +5,8 @@
 #include <QLabel>
 #include <QPainter>
 #include <QRect>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QScreen>
 #include <QVBoxLayout>
 
@@ -32,19 +34,36 @@ TranslationPopup::TranslationPopup(QWidget* parent)
     setAttribute(Qt::WA_TranslucentBackground, true);
     setFocusPolicy(Qt::NoFocus);
 
-    m_source = new QLabel(this);
+    m_content = new QWidget();
+    m_content->setAttribute(Qt::WA_TranslucentBackground);
+    m_source = new QLabel(m_content);
     m_source->setWordWrap(true);
     m_source->setTextInteractionFlags(Qt::NoTextInteraction);
 
-    m_body = new QLabel(this);
+    m_body = new QLabel(m_content);
     m_body->setWordWrap(true);
     m_body->setTextInteractionFlags(Qt::NoTextInteraction);
 
+    auto* contentLayout = new QVBoxLayout(m_content);
+    contentLayout->setContentsMargins(14, 11, 14, 13);
+    contentLayout->setSpacing(7);
+    contentLayout->addWidget(m_source);
+    contentLayout->addWidget(m_body);
+
+    m_scrollArea = new QScrollArea(this);
+    m_scrollArea->setFrameShape(QFrame::NoFrame);
+    m_scrollArea->setWidgetResizable(false);
+    m_scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_scrollArea->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; border: none; }"));
+    m_scrollArea->viewport()->setAutoFillBackground(false);
+    m_scrollArea->viewport()->setStyleSheet(QStringLiteral("background: transparent;"));
+    m_content->setStyleSheet(QStringLiteral("background: transparent;"));
+    m_scrollArea->setWidget(m_content);
+
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(14, 11, 14, 13);
-    layout->setSpacing(7);
-    layout->addWidget(m_source);
-    layout->addWidget(m_body);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(m_scrollArea);
 
     applyAppearance();
 }
@@ -129,7 +148,8 @@ void TranslationPopup::paintEvent(QPaintEvent*)
 }
 
 void TranslationPopup::showTranslation(const QString& source, const QString& translation,
-                                       const QPoint& cursorScreenPos, int sourceWidthLogical)
+                                       const QPoint& cursorScreenPos, int sourceWidthLogical,
+                                       const QRect& selectionScreenRect)
 {
     const QString body = translation.trimmed().isEmpty() ? source.trimmed() : translation.trimmed();
     if (body.isEmpty()) {
@@ -143,19 +163,44 @@ void TranslationPopup::showTranslation(const QString& source, const QString& tra
                              ? qBound(kMinBodyWidth, sourceWidthLogical, kMaxBodyWidth)
                              : kMaxBodyWidth;
 
-    m_body->setMaximumWidth(maxWidth);
+    QScreen* screen = QGuiApplication::screenAt(
+        selectionScreenRect.isValid() ? selectionScreenRect.center() : cursorScreenPos);
+    if (!screen)
+        screen = QGuiApplication::primaryScreen();
+    const QRect available = screen ? screen->availableGeometry() : QRect(0, 0, 1920, 1080);
+    const int contentWidth = qMin(maxWidth + 28, qMax(120, available.width() - 24));
+
+    m_body->setMaximumWidth(contentWidth - 28);
     m_body->setText(body);
 
     // Chỉ hiện dòng gốc khi nó thật sự khác bản dịch (tránh lặp hai lần cùng chữ).
     const QString trimmedSource = source.trimmed();
     const bool showSource = m_appearance.textWindowShowSource && !trimmedSource.isEmpty()
                             && trimmedSource != body;
-    m_source->setMaximumWidth(maxWidth);
+    m_source->setMaximumWidth(contentWidth - 28);
     m_source->setText(trimmedSource);
     m_source->setVisible(showSource);
 
-    adjustSize();
-    placeNear(cursorScreenPos);
+    m_content->setFixedWidth(contentWidth);
+    m_content->adjustSize();
+    const int contentHeight = m_content->sizeHint().height();
+    m_content->resize(contentWidth, contentHeight);
+    const int maxHeight = selectionScreenRect.isValid()
+                              ? qMax(160, available.height() * 3 / 4)
+                              : available.height();
+    const int visibleHeight = qMin(contentHeight, maxHeight);
+    const int scrollBarWidth = contentHeight > visibleHeight
+                                   ? m_scrollArea->verticalScrollBar()->sizeHint().width()
+                                   : 0;
+    m_scrollArea->setFixedSize(qMin(available.width(), contentWidth + scrollBarWidth),
+                               visibleHeight);
+    setFixedSize(m_scrollArea->size());
+    m_scrollArea->verticalScrollBar()->setValue(0);
+    setAttribute(Qt::WA_TransparentForMouseEvents, !selectionScreenRect.isValid());
+    if (selectionScreenRect.isValid())
+        placeBeside(selectionScreenRect);
+    else
+        placeNear(cursorScreenPos);
     show();
     raise();
 }
@@ -191,6 +236,25 @@ void TranslationPopup::placeNear(const QPoint& cursorScreenPos)
     x = qBound(area.left(), x, std::max(area.left(), area.right() - popupSize.width()));
     y = qBound(area.top(), y, std::max(area.top(), area.bottom() - popupSize.height()));
 
+    move(x, y);
+}
+
+void TranslationPopup::placeBeside(const QRect& selectionScreenRect)
+{
+    QScreen* screen = QGuiApplication::screenAt(selectionScreenRect.center());
+    if (!screen)
+        screen = QGuiApplication::primaryScreen();
+    const QRect area = screen ? screen->availableGeometry() : QRect(0, 0, 1920, 1080);
+    const int popupW = qMin(width(), area.width());
+    const int popupH = qMin(height(), area.height());
+    constexpr int gap = 12;
+
+    int x = selectionScreenRect.right() + gap;
+    if (x + popupW > area.right() + 1)
+        x = selectionScreenRect.left() - gap - popupW;
+    x = qBound(area.left(), x, qMax(area.left(), area.right() + 1 - popupW));
+    const int y = qBound(area.top(), selectionScreenRect.top(),
+                         qMax(area.top(), area.bottom() + 1 - popupH));
     move(x, y);
 }
 

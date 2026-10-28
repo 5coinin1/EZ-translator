@@ -23,6 +23,19 @@ class TestTranslation : public QObject
 
 private slots:
 
+    void popup_keepsEveryTranslatedParagraph()
+    {
+        TranslatedDocument document;
+        document.sourceParagraphs = {QStringLiteral("First."), QStringLiteral("Second."),
+                                     QStringLiteral("Third.")};
+        document.paragraphs = {QStringLiteral("Thứ nhất."), QStringLiteral("Thứ hai."),
+                               QStringLiteral("Thứ ba.")};
+        QCOMPARE(document.displayText(), QStringLiteral("Thứ nhất.\n\nThứ hai.\n\nThứ ba."));
+
+        document.paragraphs[1].clear();
+        QCOMPARE(document.displayText(), QStringLiteral("Thứ nhất.\n\nSecond.\n\nThứ ba."));
+    }
+
     // ── T1 ───────────────────────────────────────────────────────────────────
     void cache_basics()
     {

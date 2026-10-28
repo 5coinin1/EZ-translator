@@ -34,7 +34,7 @@ private:
 
     QWidget* m_statusRow{nullptr};
     QPushButton* m_stopBtn{nullptr}; ///< nút Dừng — chữ chứa phím tắt đang gán
-    QString  m_stopHotkey{"F8"};
+    QString  m_stopHotkey{"Alt+G"};
     bool     m_running{false};
     QPoint   m_dragStart;
 };

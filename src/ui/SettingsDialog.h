@@ -1,5 +1,6 @@
 #pragma once
 #include <QDialog>
+#include <QHash>
 #include "core/Types.h"
 
 class QListWidget;
@@ -80,10 +81,7 @@ private:
     bool             m_loadingSettings{false};
 
     // Hotkeys page widgets
-    QKeySequenceEdit* m_hotkeyToggle{nullptr};
-    QKeySequenceEdit* m_hotkeyRegion{nullptr};
-    QKeySequenceEdit* m_hotkeyShowRegion{nullptr};
-    QKeySequenceEdit* m_hotkeySettings{nullptr};
+    QHash<QString, QKeySequenceEdit*> m_hotkeyEdits;
 
     // Appearance preview widgets
     ToggleSwitch*    m_novelModeSwitch{nullptr};

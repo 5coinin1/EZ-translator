@@ -120,12 +120,11 @@ void GlobalHotkeys::clear()
 {
 #ifdef _WIN32
     for (auto it = m_idByHotkeyId.cbegin(); it != m_idByHotkeyId.cend(); ++it) {
-        // HWND không lưu: UnregisterHotKey(NULL, id) chỉ huỷ theo thread hiện tại —
-        // đủ dùng vì apply() luôn được gọi trên GUI thread.
-        UnregisterHotKey(nullptr, it.key());
+        UnregisterHotKey(reinterpret_cast<HWND>(m_ownerWindow), it.key());
     }
 #endif
     m_idByHotkeyId.clear();
+    m_ownerWindow = 0;
 }
 
 QStringList GlobalHotkeys::apply(const QList<Binding>& bindings, quintptr ownerWindow)
@@ -140,6 +139,7 @@ QStringList GlobalHotkeys::apply(const QList<Binding>& bindings, quintptr ownerW
             failed.append(binding.id);
         return failed;
     }
+    m_ownerWindow = ownerWindow;
 
     for (int index = 0; index < bindings.size(); ++index) {
         const Binding& binding = bindings.at(index);
