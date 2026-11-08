@@ -12,6 +12,7 @@
 
 #include "translation/DocumentTranslator.h"
 #include "translation/LanguageDetect.h"
+#include "translation/ModelList.h"
 #include "translation/TranslationCache.h"
 #include "translation/TranslationPost.h"
 
@@ -193,6 +194,56 @@ private slots:
 
     // ── T5 ──────────────────────────────────────────────────────────────────
     // T4b: cau VIET HOA toan bo phai duoc chuan hoa ve dang cau truoc khi goi engine.
+    // Suy ra URL /models từ endpoint chat completions.
+    void modelList_buildsUrls()
+    {
+        QString fallback;
+        QCOMPARE(EZTranslator::ModelList::modelsUrl(
+                     QStringLiteral("https://api.openai.com/v1/chat/completions"), &fallback)
+                     .toString(),
+                 QStringLiteral("https://api.openai.com/v1/models"));
+        QVERIFY(fallback.isEmpty());
+
+        QCOMPARE(EZTranslator::ModelList::modelsUrl(
+                     QStringLiteral("http://localhost:11434/v1/chat/completions"), &fallback)
+                     .toString(),
+                 QStringLiteral("http://localhost:11434/v1/models"));
+        QVERIFY(fallback.isEmpty());
+
+        QCOMPARE(EZTranslator::ModelList::modelsUrl(
+                     QStringLiteral("https://openrouter.ai/api/v1/chat/completions"), &fallback)
+                     .toString(),
+                 QStringLiteral("https://openrouter.ai/api/v1/models"));
+        QVERIFY(fallback.isEmpty());
+
+        const QUrl hostOnly = EZTranslator::ModelList::modelsUrl(
+            QStringLiteral("http://localhost:11434"), &fallback);
+        QCOMPARE(hostOnly.toString(), QStringLiteral("http://localhost:11434/v1/models"));
+        QCOMPARE(fallback, QStringLiteral("http://localhost:11434/models"));
+    }
+
+    // Đọc data[].id (OpenAI) và models[].name (Ollama native), lọc model không chat.
+    void modelList_parsesAndFilters()
+    {
+        const QByteArray openai = R"({"data":[
+            {"id":"gpt-4o-mini"},
+            {"id":"text-embedding-3-small"},
+            {"id":"whisper-1"}
+        ]})";
+        const QStringList parsed = EZTranslator::ModelList::parseModels(openai);
+        QCOMPARE(parsed, QStringList({QStringLiteral("gpt-4o-mini"),
+                                      QStringLiteral("text-embedding-3-small"),
+                                      QStringLiteral("whisper-1")}));
+        QCOMPARE(EZTranslator::ModelList::chatModels(parsed),
+                 QStringList({QStringLiteral("gpt-4o-mini")}));
+
+        const QByteArray ollama =
+            R"({"models":[{"name":"qwen2.5:1.5b"},{"name":"qwen2.5:0.5b"}]})";
+        QCOMPARE(EZTranslator::ModelList::parseModels(ollama),
+                 QStringList({QStringLiteral("qwen2.5:1.5b"),
+                              QStringLiteral("qwen2.5:0.5b")}));
+    }
+
     void document_normalizesAllCapsForEngine()
     {
         TranslationCache cache;

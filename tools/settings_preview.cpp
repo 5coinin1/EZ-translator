@@ -5,10 +5,12 @@
 //   settings_preview.exe [thư-mục-xuất] [rộng] [cao]
 #include <QApplication>
 #include <QDir>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QListWidget>
 #include <QPixmap>
 #include <QStackedWidget>
+#include <QTimer>
 
 #include <cstdio>
 
@@ -35,6 +37,15 @@ int main(int argc, char** argv)
     dialog.move(-4000, -4000);
     dialog.show();
     QApplication::processEvents();
+
+    // Chờ model list (nếu có) tải xong trước khi render. Mặc định 0 để giữ
+    // hành vi cũ; đặt EZ_PREVIEW_WAIT_MS=2500 khi cần xem trạng thái auto-detect.
+    const int waitMs = qEnvironmentVariableIntValue("EZ_PREVIEW_WAIT_MS");
+    if (waitMs > 0) {
+        QEventLoop loop;
+        QTimer::singleShot(waitMs, &loop, &QEventLoop::quit);
+        loop.exec();
+    }
 
     const QString outDir = argc > 1 ? QString::fromLocal8Bit(argv[1])
                                     : QDir::currentPath() + QStringLiteral("/build/settings_preview");

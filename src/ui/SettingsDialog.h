@@ -1,6 +1,7 @@
 #pragma once
 #include <QDialog>
 #include <QHash>
+#include <QStringList>
 #include "core/Types.h"
 
 class QListWidget;
@@ -11,6 +12,11 @@ class QPlainTextEdit;
 class QLabel;
 class QPushButton;
 class QKeySequenceEdit;
+class QNetworkAccessManager;
+class QNetworkReply;
+class QShowEvent;
+class QTimer;
+class QUrl;
 class ToggleSwitch;
 
 /**
@@ -36,6 +42,7 @@ signals:
 
 protected:
     bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
+    void showEvent(QShowEvent* event) override;
 
 private:
     void buildUi();
@@ -48,6 +55,12 @@ private:
     void updatePreview();
     void updateOcrInfo();
     void updateTranslationEngineVisibility();
+
+    void scheduleModelFetch();
+    void fetchModels(bool force = false);
+    void startModelRequest(const QUrl& url);
+    void applyModelList(const QStringList& models);
+    void setModelStatus(const QString& text);
 
     /** Chạy THẬT engine đang chọn trên câu mẫu (luồng nền) và báo kết quả trong dialog. */
     void probeTranslationEngine();
@@ -64,9 +77,19 @@ private:
     QLineEdit*       m_googleApiKey{nullptr};
     QLineEdit*       m_aiEndpoint{nullptr};
     QLineEdit*       m_aiApiKey{nullptr};
-    QLineEdit*       m_aiModel{nullptr};
+    QComboBox*       m_aiModel{nullptr};
+    QPushButton*     m_aiModelRefresh{nullptr};
+    QLabel*          m_aiModelStatus{nullptr};
     QPlainTextEdit*  m_aiPrompt{nullptr};
     QWidget*         m_aiGroup{nullptr};
+
+    QNetworkAccessManager* m_modelManager{nullptr};
+    QNetworkReply*         m_modelReply{nullptr};
+    QTimer*                m_modelDebounce{nullptr};
+    QString                m_modelCacheKey;
+    QStringList            m_modelCache;
+    QString                m_modelRequestKey;
+    QString                m_modelFallbackUrl;
     QPushButton*     m_probeBtn{nullptr};
     QLabel*          m_probeResult{nullptr};
 

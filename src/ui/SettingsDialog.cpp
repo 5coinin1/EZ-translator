@@ -5,6 +5,7 @@
 #include "ui/components/SecondaryButton.h"
 #include "ui/components/ToggleSwitch.h"
 #include "platform/FramelessWindowHelper.h"
+#include "translation/ModelList.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -13,6 +14,7 @@
 #include <QLabel>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCompleter>
 #include <QSpinBox>
 #include <QSlider>
 #include <QPushButton>
@@ -28,7 +30,15 @@
 #include <QScrollArea>
 #include <QMouseEvent>
 #include <QMessageBox>
+#include <QDebug>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QSet>
+#include <QShowEvent>
+#include <QSignalBlocker>
+#include <QTimer>
+#include <QUrl>
 #include <QProcess>
 #include <QFileInfo>
 #include <QCoreApplication>
@@ -222,6 +232,12 @@ SettingsDialog::SettingsDialog(QWidget* parent)
     resize(880, 680);
     setStyleSheet(QString("background-color: %1; border-radius: 12px;")
                       .arg(StyleTheme::ColorBackground));
+
+    m_modelManager = new QNetworkAccessManager(this);
+    m_modelDebounce = new QTimer(this);
+    m_modelDebounce->setSingleShot(true);
+    connect(m_modelDebounce, &QTimer::timeout, this, [this]() { fetchModels(); });
+
     buildUi();
 }
 
@@ -231,6 +247,12 @@ bool SettingsDialog::nativeEvent(const QByteArray& eventType, void* message, qin
     if (EZTranslator::FramelessWindow::handleNativeMessage(this, eventType, message, result))
         return true;
     return QDialog::nativeEvent(eventType, message, result);
+}
+
+void SettingsDialog::showEvent(QShowEvent* event)
+{
+    QDialog::showEvent(event);
+    scheduleModelFetch();
 }
 
 // ─── Helper to create a page heading ─────────────────────────────────────────
@@ -646,15 +668,54 @@ QWidget* SettingsDialog::buildTranslationPage()
     auto* modelCol = new QVBoxLayout();
     modelCol->setSpacing(6);
     modelCol->addWidget(makeItemLabel("Model"));
-    m_aiModel = new QLineEdit(m_aiGroup);
+    m_aiModel = new QComboBox(m_aiGroup);
+    m_aiModel->setEditable(true);
+    m_aiModel->setInsertPolicy(QComboBox::NoInsert);
     m_aiModel->setFixedHeight(36);
-    m_aiModel->setStyleSheet(inputStyle);
-    m_aiModel->setPlaceholderText("gpt-4o-mini");
-    modelCol->addWidget(m_aiModel);
+    m_aiModel->setStyleSheet(comboStyle);
+    m_aiModel->setMinimumContentsLength(18);
+    m_aiModel->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_aiModel->setMaxVisibleItems(20);
+    if (m_aiModel->lineEdit())
+        m_aiModel->lineEdit()->setPlaceholderText(QStringLiteral("qwen2.5:7b / gpt-4o-mini"));
+
+    auto* modelCompleter = new QCompleter(m_aiModel->model(), m_aiModel);
+    modelCompleter->setCaseSensitivity(Qt::CaseInsensitive);
+    modelCompleter->setFilterMode(Qt::MatchContains);
+    modelCompleter->setCompletionMode(QCompleter::PopupCompletion);
+    m_aiModel->setCompleter(modelCompleter);
+
+    auto* modelRow = new QHBoxLayout();
+    modelRow->setSpacing(6);
+    modelRow->addWidget(m_aiModel, 1);
+
+    m_aiModelRefresh = new QPushButton(QStringLiteral("↻"), m_aiGroup);
+    m_aiModelRefresh->setFixedSize(36, 36);
+    m_aiModelRefresh->setToolTip(QStringLiteral("Lấy lại danh sách model"));
+    m_aiModelRefresh->setStyleSheet(R"(
+        QPushButton {
+            background: #0b1320;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            color: #e2e8f0;
+            font-size: 14pt;
+        }
+        QPushButton:hover { border-color: #38bdf8; }
+        QPushButton:disabled { color: #64748b; }
+    )");
+    modelRow->addWidget(m_aiModelRefresh);
+    modelCol->addLayout(modelRow);
 
     keyModelRow->addLayout(keyCol, 1);
     keyModelRow->addLayout(modelCol, 1);
     aiLay->addLayout(keyModelRow);
+
+    m_aiModelStatus = new QLabel(m_aiGroup);
+    m_aiModelStatus->setWordWrap(true);
+    m_aiModelStatus->setStyleSheet(
+        "color: #94a3b8; font-size: 8.5pt; background: transparent;");
+    m_aiModelStatus->setText(QStringLiteral("Chọn engine AI để tự lấy danh sách model."));
+    aiLay->addWidget(m_aiModelStatus);
 
     aiLay->addWidget(makeItemLabel("System prompt"));
     m_aiPrompt = new QPlainTextEdit(m_aiGroup);
@@ -681,6 +742,8 @@ QWidget* SettingsDialog::buildTranslationPage()
                     return;
                 m_settings.translationEngine = m_translationEngine->itemData(index).toString();
                 updateTranslationEngineVisibility();
+                if (m_settings.translationEngine == QLatin1String("ai"))
+                    scheduleModelFetch();
             });
     connect(m_translateDevice, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int index) {
@@ -691,18 +754,203 @@ QWidget* SettingsDialog::buildTranslationPage()
 
     connect(m_googleApiKey, &QLineEdit::textChanged, this,
             [this](const QString& text) { m_settings.googleApiKey = text; });
-    connect(m_aiEndpoint, &QLineEdit::textChanged, this,
-            [this](const QString& text) { m_settings.aiEndpoint = text; });
-    connect(m_aiApiKey, &QLineEdit::textChanged, this,
-            [this](const QString& text) { m_settings.aiApiKey = text; });
-    connect(m_aiModel, &QLineEdit::textChanged, this,
-            [this](const QString& text) { m_settings.aiModel = text; });
+    connect(m_aiEndpoint, &QLineEdit::textChanged, this, [this](const QString& text) {
+        m_settings.aiEndpoint = text;
+        scheduleModelFetch();
+    });
+    connect(m_aiApiKey, &QLineEdit::textChanged, this, [this](const QString& text) {
+        m_settings.aiApiKey = text;
+        scheduleModelFetch();
+    });
+    connect(m_aiModel, &QComboBox::currentTextChanged, this,
+            [this](const QString& text) { m_settings.aiModel = text.trimmed(); });
+    connect(m_aiModelRefresh, &QPushButton::clicked, this, [this]() { fetchModels(true); });
     connect(m_aiPrompt, &QPlainTextEdit::textChanged, this, [this]() {
         if (m_aiPrompt)
             m_settings.aiSystemPrompt = m_aiPrompt->toPlainText();
     });
 
     return page;
+}
+
+void SettingsDialog::scheduleModelFetch()
+{
+    if (m_loadingSettings || !isVisible() || !m_modelDebounce)
+        return;
+    if (!m_translationEngine || !m_aiEndpoint)
+        return;
+    if (m_translationEngine->currentData().toString() != QLatin1String("ai"))
+        return;
+    if (m_aiEndpoint->text().trimmed().isEmpty()) {
+        setModelStatus(QStringLiteral("Nhập endpoint để tự lấy danh sách model."));
+        return;
+    }
+    m_modelDebounce->start(700);
+}
+
+void SettingsDialog::fetchModels(bool force)
+{
+    if (m_loadingSettings || !m_modelManager || !m_translationEngine || !m_aiEndpoint
+        || !m_aiModel) {
+        return;
+    }
+    if (m_translationEngine->currentData().toString() != QLatin1String("ai"))
+        return;
+
+    const QString endpoint = m_aiEndpoint->text().trimmed();
+    if (endpoint.isEmpty()) {
+        setModelStatus(QStringLiteral("Nhập endpoint để tự lấy danh sách model."));
+        return;
+    }
+
+    const QString key = m_aiApiKey ? m_aiApiKey->text().trimmed() : QString();
+    const QString cacheKey = endpoint + QLatin1Char('\n') + key;
+    if (!force && cacheKey == m_modelCacheKey && !m_modelCache.isEmpty()) {
+        applyModelList(m_modelCache);
+        setModelStatus(QStringLiteral("Đã lấy %1 model (cache).").arg(m_modelCache.size()));
+        return;
+    }
+
+    QString fallback;
+    const QUrl url = EZTranslator::ModelList::modelsUrl(endpoint, &fallback);
+    if (!url.isValid()) {
+        setModelStatus(QStringLiteral("Endpoint không hợp lệ."));
+        return;
+    }
+
+    m_modelRequestKey = key;
+    m_modelFallbackUrl = fallback;
+    startModelRequest(url);
+}
+
+void SettingsDialog::startModelRequest(const QUrl& url)
+{
+    if (m_modelReply) {
+        disconnect(m_modelReply, nullptr, this, nullptr);
+        m_modelReply->abort();
+        m_modelReply->deleteLater();
+        m_modelReply = nullptr;
+    }
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("EZ-Translator"));
+    if (!m_modelRequestKey.isEmpty()) {
+        request.setRawHeader("Authorization",
+                             "Bearer " + m_modelRequestKey.toUtf8());
+    }
+
+    qInfo().noquote() << "[AI models] GET" << url.toString();
+    m_modelReply = m_modelManager->get(request);
+    setModelStatus(QStringLiteral("Đang lấy danh sách model..."));
+    if (m_aiModelRefresh)
+        m_aiModelRefresh->setEnabled(false);
+
+    QNetworkReply* reply = m_modelReply;
+    QTimer::singleShot(8000, reply, [reply]() {
+        if (reply && reply->isRunning())
+            reply->abort();
+    });
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        if (reply != m_modelReply) {
+            reply->deleteLater();
+            return;
+        }
+        m_modelReply = nullptr;
+        if (m_aiModelRefresh)
+            m_aiModelRefresh->setEnabled(true);
+
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const bool canceled = reply->error() == QNetworkReply::OperationCanceledError;
+        const QByteArray body = reply->readAll();
+        const QString errorText = reply->errorString();
+        reply->deleteLater();
+
+        if (canceled) {
+            setModelStatus(QStringLiteral("Hết thời gian lấy danh sách model."));
+            return;
+        }
+
+        if (status == 401 || status == 403) {
+            setModelStatus(
+                QStringLiteral("Không lấy được danh sách: API key không hợp lệ (%1).")
+                    .arg(status));
+            return;
+        }
+
+        if ((status == 404 || status == 400) && !m_modelFallbackUrl.isEmpty()) {
+            const QUrl fallback(m_modelFallbackUrl);
+            m_modelFallbackUrl.clear();
+            qInfo() << "[AI models] thu URL du phong" << fallback.toString();
+            startModelRequest(fallback);
+            return;
+        }
+
+        if (status < 200 || status >= 300 || body.isEmpty()) {
+            qWarning().noquote() << "[AI models] loi status=" << status
+                                 << "error=" << errorText;
+            const QString reason =
+                errorText.isEmpty() ? QStringLiteral("HTTP %1").arg(status) : errorText;
+            setModelStatus(QStringLiteral("Không lấy được danh sách model: %1").arg(reason));
+            return;
+        }
+
+        const QStringList all = EZTranslator::ModelList::parseModels(body);
+        const QStringList models = EZTranslator::ModelList::chatModels(all);
+        if (models.isEmpty()) {
+            setModelStatus(
+                QStringLiteral("Provider không trả model chat nào. Nhập model thủ công."));
+            return;
+        }
+
+        const QString currentModel = m_aiModel ? m_aiModel->currentText().trimmed() : QString();
+        m_modelCacheKey = m_aiEndpoint->text().trimmed() + QLatin1Char('\n')
+                          + m_modelRequestKey;
+        m_modelCache = models;
+        applyModelList(models);
+        qInfo() << "[AI models] loaded" << models.size() << "model(s)";
+        if (!currentModel.isEmpty() && !models.contains(currentModel)) {
+            setModelStatus(
+                QStringLiteral("Đã lấy %1 model; model hiện tại không có trong danh sách.")
+                    .arg(models.size()));
+        } else if (currentModel.isEmpty() && models.size() > 1) {
+            setModelStatus(
+                QStringLiteral("Đã lấy %1 model. Chọn model để dùng.").arg(models.size()));
+        } else {
+            setModelStatus(QStringLiteral("Đã lấy %1 model.").arg(models.size()));
+        }
+    });
+}
+
+void SettingsDialog::applyModelList(const QStringList& models)
+{
+    if (!m_aiModel || models.isEmpty())
+        return;
+
+    const QString current = m_aiModel->currentText().trimmed();
+    const QSignalBlocker blocker(m_aiModel);
+    m_aiModel->clear();
+    m_aiModel->addItems(models);
+
+    const int index =
+        current.isEmpty() ? -1 : m_aiModel->findText(current, Qt::MatchFixedString);
+    if (index >= 0)
+        m_aiModel->setCurrentIndex(index);
+    else if (!current.isEmpty())
+        m_aiModel->setEditText(current);
+    else if (models.size() == 1)
+        m_aiModel->setCurrentIndex(0);
+    else
+        m_aiModel->setCurrentIndex(-1);
+
+    m_settings.aiModel = m_aiModel->currentText().trimmed();
+}
+
+void SettingsDialog::setModelStatus(const QString& text)
+{
+    if (m_aiModelStatus)
+        m_aiModelStatus->setText(text);
 }
 
 void SettingsDialog::updateTranslationEngineVisibility()
@@ -798,8 +1046,11 @@ void SettingsDialog::setSettings(const EZTranslator::AppSettings& settings)
         m_aiEndpoint->setText(m_settings.aiEndpoint);
     if (m_aiApiKey)
         m_aiApiKey->setText(m_settings.aiApiKey);
-    if (m_aiModel)
-        m_aiModel->setText(m_settings.aiModel);
+    if (m_aiModel) {
+        const QSignalBlocker blocker(m_aiModel);
+        m_aiModel->clear();
+        m_aiModel->setEditText(m_settings.aiModel);
+    }
     if (m_aiPrompt)
         m_aiPrompt->setPlainText(m_settings.aiSystemPrompt);
 
@@ -811,6 +1062,7 @@ void SettingsDialog::setSettings(const EZTranslator::AppSettings& settings)
 
     updatePreview();
     m_loadingSettings = false;
+    scheduleModelFetch();
 }
 
 void SettingsDialog::updateOcrInfo()
