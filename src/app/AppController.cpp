@@ -1081,7 +1081,7 @@ const QString kHoverId = QStringLiteral("hover");
  *  - các bước sau: nới thêm khi đoạn vẫn còn chạm mép dải / câu còn dài hơn dải.
  */
 constexpr struct { int width; int height; } kBandStages[] = {
-    {1200, 96}, {1200, 260}, {1600, 300}, {2200, 340}, {3000, 380},
+    {1200, 240}, {1400, 340}, {1600, 440}, {2200, 520}, {3000, 620},
 };
 constexpr int kBandStageCount = int(sizeof(kBandStages) / sizeof(kBandStages[0]));
 

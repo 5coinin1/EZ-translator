@@ -27,6 +27,12 @@ namespace TranslationPost {
  * Loại: rỗng; echo y hệt nguồn; một ký tự lặp; quá ngắn so với nguồn; quá dài
  * bất thường (hallucination).
  */
+/**
+ * @brief Doi dau cau CJK (。！？，：；、) sang dau Latin khi dich sang ngon ngu
+ * khong dung chu Han/Nhat. Google/offline doi khi giu nguyen dau cau nguon.
+ */
+[[nodiscard]] QString normalizePunctuation(const QString& text, const QString& target);
+
 [[nodiscard]] bool isUsableTranslation(const QString& source, const QString& translation);
 
 } // namespace TranslationPost

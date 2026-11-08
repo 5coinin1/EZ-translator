@@ -221,6 +221,24 @@ QString applyPunctuation(const QString& source, const QString& translation)
     return result;
 }
 
+QString normalizePunctuation(const QString& text, const QString& target)
+{
+    if (target.startsWith(QLatin1String("zh")) || target == QLatin1String("ja"))
+        return text;
+
+    QString out = text;
+    out.replace(QChar(0x3002), QLatin1Char('.')); // 。
+    out.replace(QChar(0xFF01), QLatin1Char('!')); // ！
+    out.replace(QChar(0xFF1F), QLatin1Char('?')); // ？
+    out.replace(QChar(0xFF0C), QLatin1Char(',')); // ，
+    out.replace(QChar(0xFF1A), QLatin1Char(':')); // ：
+    out.replace(QChar(0xFF1B), QLatin1Char(';')); // ；
+    out.replace(QChar(0x3001), QStringLiteral(", ")); // 、
+    out.replace(QChar(0xFF08), QLatin1Char('(')); // （
+    out.replace(QChar(0xFF09), QLatin1Char(')')); // ）
+    return out;
+}
+
 bool isUsableTranslation(const QString& source, const QString& translation)
 {
     const QString s = source.trimmed();

@@ -137,6 +137,30 @@ private slots:
                  QStringLiteral("Xin chào"));
     }
 
+    // Đổi dấu câu CJK sang Latin khi đích không phải zh/ja.
+    void post_normalizePunctuation()
+    {
+        QCOMPARE(TranslationPost::normalizePunctuation(
+                     QStringLiteral("Xin chào thế giới。 Bạn khỏe？"), QStringLiteral("vi")),
+                 QStringLiteral("Xin chào thế giới. Bạn khỏe?"));
+        QCOMPARE(TranslationPost::normalizePunctuation(
+                     QStringLiteral("こんにちは。元気？"), QStringLiteral("ja")),
+                 QStringLiteral("こんにちは。元気？"));
+    }
+
+    // Cả pipeline DocumentTranslator phải đổi dấu câu nguồn CJK sang đích vi.
+    void document_normalizesTargetPunctuation()
+    {
+        TranslationCache cache;
+        DocumentTranslator translator(&cache);
+        const TranslatedDocument doc = translator.translate(
+            QStringLiteral("你好，世界。"), "zh", "vi",
+            [](const QStringList&) {
+                return QStringList{ QStringLiteral("Xin chào thế giới。") };
+            });
+        QCOMPARE(doc.paragraphs.value(0), QStringLiteral("Xin chào thế giới."));
+    }
+
     // ── T7: lọc bản dịch rác ─────────────────────────────────────────────────
     void post_isUsable()
     {
@@ -168,6 +192,46 @@ private slots:
     }
 
     // ── T5 ──────────────────────────────────────────────────────────────────
+    // T4b: cau VIET HOA toan bo phai duoc chuan hoa ve dang cau truoc khi goi engine.
+    void document_normalizesAllCapsForEngine()
+    {
+        TranslationCache cache;
+        DocumentTranslator translator(&cache);
+        const QString source = QStringLiteral("WE ARE THE ANGELS OF DESTRUCTION.");
+        QStringList received;
+
+        const TranslatedDocument doc = translator.translate(
+            source, "en", "vi", [&](const QStringList& units) {
+                received = units;
+                return QStringList{QStringLiteral("Chung ta la nhung thien than huy diet.")};
+            });
+
+        QCOMPARE(received.size(), 1);
+        QCOMPARE(received.first(), QStringLiteral("We are the angels of destruction."));
+        QCOMPARE(doc.sourceParagraphs.first(), source);
+        QCOMPARE(doc.paragraphs.first(),
+                 QStringLiteral("Chung ta la nhung thien than huy diet."));
+    }
+
+    void document_keepsShortAcronyms()
+    {
+        TranslationCache cache;
+        DocumentTranslator translator(&cache);
+        QStringList received;
+
+        translator.translate(QStringLiteral("NPC"), "en", "vi", [&](const QStringList& units) {
+            received = units;
+            return QStringList{QStringLiteral("NPC")};
+        });
+        QCOMPARE(received.value(0), QStringLiteral("NPC"));
+
+        translator.translate(QStringLiteral("HP"), "en", "vi", [&](const QStringList& units) {
+            received = units;
+            return QStringList{QStringLiteral("HP")};
+        });
+        QCOMPARE(received.value(0), QStringLiteral("HP"));
+    }
+
     void document_capsLongUnits()
     {
         // Đoạn dài phải được cắt thành nhiều đơn vị ≤ ~140 ký tự trước khi gửi engine (thời gian

@@ -4,6 +4,9 @@
 #include "translation/TranslationPost.h"
 #include "translation/ProtectedText.h"
 
+#include <QRegularExpression>
+#include <QSet>
+
 #include <algorithm>
 
 namespace EZTranslator {
@@ -43,6 +46,142 @@ bool endsWithSentenceEnd(const QString& text)
            || last == QChar(0xFF1F) || last == QChar(0x0964) || last == QChar(0x061F)
            || last == QChar(0x1362) || last == QChar(0x104B) || last == QChar(0x17D4)
            || last == QChar(0x0F0D);
+}
+
+bool isVowel(QChar c)
+{
+    const QChar lower = c.toLower();
+    return lower == QLatin1Char('a') || lower == QLatin1Char('e') || lower == QLatin1Char('i')
+           || lower == QLatin1Char('o') || lower == QLatin1Char('u') || lower == QLatin1Char('y');
+}
+
+bool preserveAcronym(const QString& token)
+{
+    static const QSet<QString> keep = {
+        QStringLiteral("AI"),   QStringLiteral("API"),  QStringLiteral("CPU"), QStringLiteral("CT2"),
+        QStringLiteral("CUDA"), QStringLiteral("DPS"),  QStringLiteral("DPI"), QStringLiteral("EU"),
+        QStringLiteral("EXP"),  QStringLiteral("FPS"),  QStringLiteral("GDI"), QStringLiteral("GPU"),
+        QStringLiteral("HP"),   QStringLiteral("HUD"),  QStringLiteral("ID"),  QStringLiteral("MP"),
+        QStringLiteral("NASA"), QStringLiteral("NATO"), QStringLiteral("NPC"), QStringLiteral("OCR"),
+        QStringLiteral("OK"),   QStringLiteral("ONNX"), QStringLiteral("PC"),  QStringLiteral("RAM"),
+        QStringLiteral("RPG"),  QStringLiteral("TV"),   QStringLiteral("UI"),  QStringLiteral("UK"),
+        QStringLiteral("URL"),  QStringLiteral("USA"),  QStringLiteral("USB"), QStringLiteral("UX"),
+        QStringLiteral("WGC"),  QStringLiteral("XP"),   QStringLiteral("DLC"), QStringLiteral("MMO"),
+    };
+    const QString upper = token.toUpper();
+    if (keep.contains(upper))
+        return true;
+    if (token.size() <= 4) {
+        bool hasVowel = false;
+        for (const QChar& c : token) {
+            if (isVowel(c)) {
+                hasVowel = true;
+                break;
+            }
+        }
+        if (!hasVowel)
+            return true;
+    }
+    return false;
+}
+
+/**
+ * Chu?n h�a c�ch vi?t hoa tru?c khi d?ch.
+ *
+ * OCR truy?n tranh/website thu?ng tr? v? c�u VI?T HOA ho?c tr?n case
+ * ("WE ARE THe Angels Of Destruction."). CTranslate2/Marian tokenize theo c?
+ * ch?, n�n c�u c� nhi?u t? vi?t hoa cho ra b?n d?ch sai nghia. H�m n�y ch? h?
+ * c�c t? VI?T HOA (tr? nh�n ng?n nhu NPC/HP/EXP/USA...) r?i vi?t hoa ch? c�i
+ * d?u c�u. Text ngu?n hi?n th? v?n gi? nguy�n.
+ */
+QString normalizeAllCapsForTranslation(const QString& text)
+{
+    struct Span
+    {
+        int start;
+        int end;
+    };
+    QList<Span> spans;
+    for (int i = 0; i < text.size();) {
+        if (!text.at(i).isLetter()) {
+            ++i;
+            continue;
+        }
+        const int start = i;
+        while (i < text.size()
+               && (text.at(i).isLetter() || text.at(i) == QLatin1Char('\'')
+                   || text.at(i) == QChar(0x2019))) {
+            ++i;
+        }
+        spans.append({start, i});
+    }
+
+    int allCapsWords = 0;
+    int longCapsWords = 0;
+    for (const Span& span : spans) {
+        int letters = 0;
+        bool allUpper = true;
+        for (int i = span.start; i < span.end; ++i) {
+            if (text.at(i).isLetter()) {
+                ++letters;
+                if (!text.at(i).isUpper()) {
+                    allUpper = false;
+                    break;
+                }
+            }
+        }
+        // B? qua ch? m?t k� t? (A, B, I...) d? kh�ng k�o c?u thu?ng v�o ch? d? chu?n h�a.
+        if (letters >= 2 && allUpper) {
+            ++allCapsWords;
+            if (span.end - span.start >= 4)
+                ++longCapsWords;
+        }
+    }
+
+    // Kh�ng d?ng v�o c�u thu?ng ch? c� m?t nh�n ng?n ("I love NASA.").
+    if (longCapsWords == 0 && allCapsWords < 2)
+        return text;
+
+    QString out = text;
+    for (const Span& span : spans) {
+        bool hasLetter = false;
+        bool allUpper = true;
+        for (int i = span.start; i < span.end; ++i) {
+            if (text.at(i).isLetter()) {
+                hasLetter = true;
+                if (!text.at(i).isUpper()) {
+                    allUpper = false;
+                    break;
+                }
+            }
+        }
+        if (!hasLetter || !allUpper)
+            continue;
+        const QString token = text.mid(span.start, span.end - span.start);
+        if (preserveAcronym(token))
+            continue;
+        for (int i = span.start; i < span.end; ++i) {
+            if (out.at(i).isLetter())
+                out[i] = out.at(i).toLower();
+        }
+    }
+
+    for (int i = 0; i < out.size(); ++i) {
+        if (out.at(i).isLetter()) {
+            out[i] = out.at(i).toUpper();
+            break;
+        }
+    }
+
+    // Gi? "I" v� c�c d?ng "I'm", "I've", "I'll", "I'd" ? ch? vi?t hoa.
+    static const QRegularExpression standaloneI(QStringLiteral("\\bi\\b"));
+    out.replace(standaloneI, QStringLiteral("I"));
+    static const QRegularExpression iContraction(
+        QStringLiteral("\\bi(['\\x{2019}])(m|ve|ll|d)\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+    out.replace(iContraction, QStringLiteral("I\\1\\2"));
+
+    return out;
 }
 
 // Đơn vị dịch tối đa ~140 ký tự. Thời gian decode tỉ lệ với đơn vị DÀI NHẤT trong lô (cả lô chờ
@@ -221,6 +360,13 @@ TranslatedDocument DocumentTranslator::translate(const QString& assembledText, c
         }
     }
 
+    // Engine nhận bản dạng câu cho câu VIẾT HOA TOÀN BỘ; text nguồn vẫn giữ nguyên để
+    // hiển thị/so khớp overlay. Cache dùng khóa đã chuẩn hóa để tái dùng bản dịch câu thường.
+    QStringList unitsForTranslation;
+    unitsForTranslation.reserve(units.size());
+    for (const QString& unit : units)
+        unitsForTranslation.append(normalizeAllCapsForTranslation(unit));
+
     document.paragraphs = QStringList(document.sourceParagraphs.size());
     for (int i = 0; i < document.sourceParagraphs.size(); ++i) {
         const QString& paragraph = document.sourceParagraphs.at(i);
@@ -236,11 +382,13 @@ TranslatedDocument DocumentTranslator::translate(const QString& assembledText, c
     QStringList missing;
     QList<int> missingIndex;
     for (int i = 0; i < units.size(); ++i) {
-        const QString cached = m_cache ? m_cache->get(units.at(i), source, target) : QString();
+        const QString& unitForTranslation = unitsForTranslation.at(i);
+        const QString cached =
+            m_cache ? m_cache->get(unitForTranslation, source, target) : QString();
         if (!cached.isEmpty())
             translations[i] = cached;
         else {
-            missing.append(units.at(i));
+            missing.append(unitForTranslation);
             missingIndex.append(i);
         }
     }
@@ -248,17 +396,20 @@ TranslatedDocument DocumentTranslator::translate(const QString& assembledText, c
     if (!missing.isEmpty() && fn) {
         const QStringList produced = fn(missing);
         for (int k = 0; k < produced.size() && k < missingIndex.size(); ++k) {
-            const QString sourceUnit = units.at(missingIndex.at(k));
+            const int unitIndex = missingIndex.at(k);
+            const QString sourceUnit = units.at(unitIndex);
+            const QString& unitForTranslation = unitsForTranslation.at(unitIndex);
 
             // Hậu xử lý: gộp lặp, khôi phục dấu câu nguồn, lọc output rác.
             QString value = TranslationPost::collapseRepeats(produced.at(k));
             value = TranslationPost::applyPunctuation(sourceUnit, value);
+            value = TranslationPost::normalizePunctuation(value, target);
             if (value.isEmpty() || !TranslationPost::isUsableTranslation(sourceUnit, value))
                 continue; // rác → để trống, lần sau thử lại
 
-            translations[missingIndex.at(k)] = value;
+            translations[unitIndex] = value;
             if (m_cache)
-                m_cache->put(sourceUnit, source, target, value);
+                m_cache->put(unitForTranslation, source, target, value);
             ++document.newTranslations;
         }
     }

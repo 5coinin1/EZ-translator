@@ -47,6 +47,7 @@ private:
 
     void updatePreview();
     void updateOcrInfo();
+    void updateTranslationEngineVisibility();
 
     /** Chạy THẬT engine đang chọn trên câu mẫu (luồng nền) và báo kết quả trong dialog. */
     void probeTranslationEngine();
@@ -57,6 +58,8 @@ private:
 
     // Translation page widgets
     QComboBox*       m_translationEngine{nullptr};
+    QWidget*         m_deviceGroup{nullptr};
+    QWidget*         m_googleGroup{nullptr};
     QComboBox*       m_translateDevice{nullptr};
     QLineEdit*       m_googleApiKey{nullptr};
     QLineEdit*       m_aiEndpoint{nullptr};

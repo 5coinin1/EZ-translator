@@ -148,9 +148,12 @@ int main(int argc, char** argv)
     }
 
     // ── Bản dịch mẫu ────────────────────────────────────────────────────────
-    const QString text = QStringLiteral(
-        "Good morning, how are you?\n\nOpen the door\n\n"
-        "I am very happy today\n\nWhere is the key?\n\nThank you very much\n\nHello world");
+    const QString text = qEnvironmentVariableIsSet("EZ_TEXT")
+                             ? qEnvironmentVariable("EZ_TEXT")
+                             : QStringLiteral(
+                                   "Good morning, how are you?\n\nOpen the door\n\n"
+                                   "I am very happy today\n\nWhere is the key?\n\n"
+                                   "Thank you very much\n\nHello world");
 
     TranslationCache cache;
     DocumentTranslator document(&cache);

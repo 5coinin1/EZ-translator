@@ -12,8 +12,9 @@ namespace EZTranslator {
  * Có 2 chế độ:
  *  - Có API key → dùng Cloud Translation API chính thức (v2), batch nhiều câu
  *    trong một request, hạn mức/thanh toán theo tài khoản Google Cloud.
- *  - Không có key → dùng endpoint công khai `translate_a/single` (`client=gtx`),
- *    không cần cấu hình nhưng có thể bị giới hạn.
+ *  - Không có key → gọi RPC `batchexecute` (`rpcids=MkEWBc`) của web
+ *    translate.google.com - đường web app đang dùng, không cần key và không bị
+ *    429 như `translate_a/single?client=gtx`. Endpoint gtx vẫn được giữ dự phòng.
  *
  * Gọi đồng bộ (đợi mạng) nên chỉ nên gọi cho các unit MỚI chưa có trong cache.
  */

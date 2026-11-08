@@ -576,31 +576,41 @@ QWidget* SettingsDialog::buildTranslationPage()
         "Tự động: dùng model offline nếu có, không thì Google. "
         "Offline: chỉ dịch trên máy (không gửi dữ liệu ra mạng)."));
 
-    lay->addSpacing(10);
-    lay->addWidget(makeSectionLabel("Thiết bị dịch (CTranslate2)"));
-    m_translateDevice = new QComboBox(content);
+    m_deviceGroup = new QWidget(content);
+    auto* deviceLay = new QVBoxLayout(m_deviceGroup);
+    deviceLay->setContentsMargins(0, 0, 0, 0);
+    deviceLay->setSpacing(8);
+    deviceLay->addSpacing(10);
+    deviceLay->addWidget(makeSectionLabel("Thiết bị dịch (CTranslate2)"));
+    m_translateDevice = new QComboBox(m_deviceGroup);
     m_translateDevice->setFixedHeight(36);
     m_translateDevice->setStyleSheet(comboStyle);
     m_translateDevice->addItem("Tự động (CUDA → CPU)", "auto");
     m_translateDevice->addItem("CPU", "cpu");
     m_translateDevice->addItem("CUDA", "cuda");
-    lay->addWidget(m_translateDevice);
-    lay->addWidget(makeHint(
+    deviceLay->addWidget(m_translateDevice);
+    deviceLay->addWidget(makeHint(
         "Tự động dùng CUDA nếu máy có, ngược lại CPU. "
         "Chỉ áp dụng cho engine offline CTranslate2; Marian/Google/AI không đổi."));
+    lay->addWidget(m_deviceGroup);
 
     // ── Google ────────────────────────────────────────────────────────────────
-    lay->addSpacing(10);
-    lay->addWidget(makeSectionLabel("Google Translate"));
-    lay->addWidget(makeItemLabel("API key (tùy chọn)"));
-    m_googleApiKey = new QLineEdit(content);
+    m_googleGroup = new QWidget(content);
+    auto* googleLay = new QVBoxLayout(m_googleGroup);
+    googleLay->setContentsMargins(0, 0, 0, 0);
+    googleLay->setSpacing(8);
+    googleLay->addSpacing(10);
+    googleLay->addWidget(makeSectionLabel("Google Translate"));
+    googleLay->addWidget(makeItemLabel("API key (tùy chọn)"));
+    m_googleApiKey = new QLineEdit(m_googleGroup);
     m_googleApiKey->setFixedHeight(36);
     m_googleApiKey->setStyleSheet(inputStyle);
     m_googleApiKey->setPlaceholderText("Để trống để dùng endpoint miễn phí");
-    lay->addWidget(m_googleApiKey);
-    lay->addWidget(makeHint(
+    googleLay->addWidget(m_googleApiKey);
+    googleLay->addWidget(makeHint(
         "Có key → dùng Cloud Translation API chính thức (cần bật billing). "
-        "Để trống → dùng translate.googleapis.com miễn phí, có thể bị giới hạn."));
+        "Để trống → dùng Google Translate miễn phí qua web RPC, có thể bị giới hạn."));
+    lay->addWidget(m_googleGroup);
 
     // ── AI / LLM ──────────────────────────────────────────────────────────────
     lay->addSpacing(10);
@@ -670,6 +680,7 @@ QWidget* SettingsDialog::buildTranslationPage()
                 if (!m_translationEngine || index < 0)
                     return;
                 m_settings.translationEngine = m_translationEngine->itemData(index).toString();
+                updateTranslationEngineVisibility();
             });
     connect(m_translateDevice, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int index) {
@@ -692,6 +703,20 @@ QWidget* SettingsDialog::buildTranslationPage()
     });
 
     return page;
+}
+
+void SettingsDialog::updateTranslationEngineVisibility()
+{
+    if (!m_translationEngine)
+        return;
+    const QString engine = m_translationEngine->currentData().toString();
+    const bool automatic = engine.isEmpty() || engine == QLatin1String("auto");
+    if (m_deviceGroup)
+        m_deviceGroup->setVisible(automatic || engine == QLatin1String("offline"));
+    if (m_googleGroup)
+        m_googleGroup->setVisible(automatic || engine == QLatin1String("google"));
+    if (m_aiGroup)
+        m_aiGroup->setVisible(automatic || engine == QLatin1String("ai"));
 }
 
 void SettingsDialog::setSettings(const EZTranslator::AppSettings& settings)
@@ -765,6 +790,7 @@ void SettingsDialog::setSettings(const EZTranslator::AppSettings& settings)
         m_translationEngine->setCurrentIndex(index >= 0 ? index : 0);
         if (index < 0)
             m_settings.translationEngine = QStringLiteral("auto");
+        updateTranslationEngineVisibility();
     }
     if (m_googleApiKey)
         m_googleApiKey->setText(m_settings.googleApiKey);

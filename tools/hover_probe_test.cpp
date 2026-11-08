@@ -50,10 +50,19 @@ int main(int argc, char** argv)
     worker.load(options);
     qInfo() << "[test] load ms =" << timer.elapsed();
 
-    // Panel tối + 3 dòng trắng cách nhau 34px: một "đoạn hội thoại" thu nhỏ.
-    QImage image(1200, 260, QImage::Format_RGB32);
-    image.fill(QColor(24, 26, 32));
-    {
+    QImage image;
+    QPoint cursor(300, 74);
+    if (argc > 1) {
+        image = QImage(QString::fromLocal8Bit(argv[1]));
+        if (image.isNull()) {
+            qWarning() << "khong doc duoc anh" << argv[1];
+            return 4;
+        }
+        cursor = image.rect().center();
+    } else {
+        // Panel tối + 3 dòng trắng cách nhau 34px: một "đoạn hội thoại" thu nhỏ.
+        image = QImage(1200, 260, QImage::Format_RGB32);
+        image.fill(QColor(24, 26, 32));
         QPainter painter(&image);
         painter.setPen(Qt::white);
         QFont font = painter.font();
@@ -68,20 +77,30 @@ int main(int argc, char** argv)
 
     // Trỏ vào DÒNG GIỮA — nếu thuật toán chỉ đọc dòng con trỏ thì kết quả là 1 dòng.
     timer.restart();
-    worker.probeHover(QStringLiteral("test"), image, QPoint(300, 74),
+    worker.probeHover(QStringLiteral("test"), image, cursor,
                       EZTranslator::ocrMonotonicMs());
     const qint64 ms = timer.elapsed();
 
     qInfo().noquote() << "[test] text =" << text;
     qInfo() << "[test] rect =" << rect << "clipped =" << clipped << "ms =" << ms;
 
-    // Bản cũ: đơn vị là DÒNG con trỏ (không gom đoạn) — test kiểm đúng điều đó.
-    const bool oneLine = !text.contains(QLatin1Char('\n'));
-    const bool isCursorLine = text.contains(QLatin1String("guard"), Qt::CaseInsensitive);
-    qInfo() << "[test] so dong =" << text.count(QLatin1Char('\n')) + 1
-            << "| dung dong con tro =" << isCursorLine;
-    qInfo() << ((oneLine && isCursorLine) ? "[test] PASS: doc dung dong con tro (ban cu)"
-                                          : "[test] FAIL");
+    if (argc > 1) {
+        qInfo().noquote() << "[test] external image text =" << text;
+        return text.trimmed().isEmpty() ? 1 : 0;
+    }
 
-    return (oneLine && isCursorLine) ? 0 : 1;
+    // Bản cũ: đơn vị là DÒNG con trỏ (không gom đoạn) — test kiểm đúng điều đó.
+    // Mong d?i: gom c? 3 d�ng c?a do?n (kh�ng ch? d�ng con tr?).
+    const bool threeLines = text.count(QLatin1Char('\n')) == 2;
+    const bool hasAllLines = text.contains(QLatin1String("Open the door"), Qt::CaseInsensitive)
+                             && text.contains(QLatin1String("guard"), Qt::CaseInsensitive)
+                             && text.contains(QLatin1String("Thank you"), Qt::CaseInsensitive);
+    const bool tallEnough = rect.height() >= 70;
+    qInfo() << "[test] so dong =" << text.count(QLatin1Char('\n')) + 1
+            << "| du 3 dong =" << hasAllLines << "| rect cao =" << rect.height();
+    qInfo() << ((threeLines && hasAllLines && tallEnough)
+                    ? "[test] PASS: doc ca do?n 3 d�ng"
+                    : "[test] FAIL");
+
+    return (threeLines && hasAllLines && tallEnough) ? 0 : 1;
 }

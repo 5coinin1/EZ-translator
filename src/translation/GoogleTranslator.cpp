@@ -23,6 +23,8 @@ namespace {
 
 constexpr int kFreeTimeoutMs = 4000; ///< chặn 'kẹt luồng' khi mạng treo
 constexpr int kFreeBatchTimeoutMs = 6000;
+constexpr int kFreeWebTimeoutMs = 4500;  ///< web RPC chậm hơn gtx ~1.3s
+constexpr int kFreeWebBatchTimeoutMs = 12000;
 constexpr int kApiTimeoutMs = 10000;
 
 struct ReplyResult
@@ -124,6 +126,205 @@ ReplyResult waitForReply(QNetworkReply* reply, int timeoutMs, const QString& log
                              << "| body:" << QString::fromUtf8(result.body.left(300));
     }
     reply->deleteLater();
+    return result;
+}
+
+/**
+ * Google web app gọi bản dịch qua RPC `batchexecute` (rpcids=MkEWBc) - cùng
+ * endpoint mà translate.google.com dùng. Khác với `translate_a/single`
+ * (client=gtx), đường này không bị chặn 429 trên nhiều IP và không cần key.
+ *
+ * Body: f.req=[[["MkEWBc","[[\"text\",\"en\",\"vi\",true],[null]]",null,"generic"]]]
+ * Response là envelope JSON, phần tử [0][2] là chuỗi JSON của kết quả.
+ */
+QByteArray buildWebForm(const QString& line, const QString& source, const QString& target)
+{
+    QJsonArray textSpec;
+    textSpec.append(line);
+    textSpec.append(source.isEmpty() ? QStringLiteral("auto") : source);
+    textSpec.append(target);
+    textSpec.append(true);
+
+    QJsonArray options;
+    options.append(QJsonValue::Null);
+
+    QJsonArray inner;
+    inner.append(textSpec);
+    inner.append(options);
+
+    QJsonArray rpc;
+    rpc.append(QStringLiteral("MkEWBc"));
+    rpc.append(QString::fromUtf8(QJsonDocument(inner).toJson(QJsonDocument::Compact)));
+    rpc.append(QJsonValue::Null);
+    rpc.append(QStringLiteral("generic"));
+
+    QJsonArray rpcList;
+    rpcList.append(rpc);
+    QJsonArray payload;
+    payload.append(rpcList);
+
+    return "f.req="
+           + QUrl::toPercentEncoding(
+               QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact)));
+}
+
+bool isCjkTarget(const QString& target)
+{
+    return target.startsWith(QLatin1String("zh")) || target == QLatin1String("ja");
+}
+
+/** Ghép các câu trong một bản dịch. Google cắt câu và bỏ khoảng trắng giữa
+ *  các mảnh; tiếng Việt cần thêm lại, còn zh/ja thì không. */
+QString joinWebPieces(QStringList pieces, const QString& target)
+{
+    const bool cjk = isCjkTarget(target);
+    static const QString noSpaceBefore = QStringLiteral(",.;:!?%)]}\u00bb\u201d\u2019");
+    QString text;
+    for (QString part : pieces) {
+        if (part.isEmpty())
+            continue;
+        if (!cjk && !text.isEmpty() && !text.back().isSpace() && !part.front().isSpace()
+            && !noSpaceBefore.contains(part.front())) {
+            text += QLatin1Char(' ');
+        }
+        text += part;
+    }
+    return text;
+}
+
+QString parseWebResponse(const QByteArray& data, const QString& target)
+{
+    const QString raw = QString::fromUtf8(data);
+    int start = raw.indexOf(QStringLiteral("[[\"wrb.fr\""));
+    if (start < 0)
+        start = raw.indexOf(QStringLiteral("[["));
+    if (start < 0)
+        return {};
+
+    // Bỏ phần đánh dấu độ dài/chunk sau JSON nếu có.
+    const int end = raw.lastIndexOf(QLatin1Char(']'));
+    QJsonDocument document;
+    if (end > start)
+        document = QJsonDocument::fromJson(raw.mid(start, end - start + 1).toUtf8());
+    if (!document.isArray()) {
+        // Một số phản hồi tách mỗi envelope thành một dòng.
+        for (const QString& line : raw.split(QLatin1Char('\n'))) {
+            if (!line.contains(QLatin1String("wrb.fr")))
+                continue;
+            document = QJsonDocument::fromJson(line.trimmed().toUtf8());
+            if (document.isArray())
+                break;
+        }
+    }
+    if (!document.isArray())
+        return {};
+
+    for (const QJsonValue& envelopeValue : document.array()) {
+        if (!envelopeValue.isArray())
+            continue;
+        const QJsonArray envelope = envelopeValue.toArray();
+        if (envelope.size() < 3 || envelope.at(0).toString() != QLatin1String("wrb.fr")
+            || envelope.at(1).toString() != QLatin1String("MkEWBc")) {
+            continue;
+        }
+
+        const QJsonDocument payload =
+            QJsonDocument::fromJson(envelope.at(2).toString().toUtf8());
+        if (!payload.isArray())
+            continue;
+        const QJsonArray root = payload.array();
+        if (root.size() < 2 || !root.at(1).isArray())
+            continue;
+
+        QStringList pieces;
+        for (const QJsonValue& rowValue : root.at(1).toArray()) {
+            if (!rowValue.isArray())
+                continue;
+            const QJsonArray row = rowValue.toArray();
+            for (const QJsonValue& segmentValue : row) {
+                if (!segmentValue.isArray())
+                    continue;
+                const QJsonArray segment = segmentValue.toArray();
+                if (segment.size() <= 5 || !segment.at(5).isArray())
+                    continue;
+                for (const QJsonValue& pieceValue : segment.at(5).toArray()) {
+                    if (!pieceValue.isArray())
+                        continue;
+                    const QJsonArray piece = pieceValue.toArray();
+                    if (!piece.isEmpty() && piece.at(0).isString())
+                        pieces.append(piece.at(0).toString());
+                }
+            }
+        }
+
+        const QString text = joinWebPieces(pieces, target);
+        if (!text.isEmpty())
+            return text;
+    }
+    return {};
+}
+
+/** Đường web app: mỗi dòng một request, tối đa hai request song song. */
+QStringList translateFreeWeb(QNetworkAccessManager& manager, const QStringList& lines,
+                             const QString& source, const QString& target,
+                             int* failedStatus, bool* timedOut, qint64* retryAfterMs)
+{
+    QStringList result;
+    result.resize(lines.size());
+    QElapsedTimer batchTimer;
+    batchTimer.start();
+
+    const QString userAgent = QStringLiteral(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+
+    for (int start = 0; start < lines.size(); start += 2) {
+        QNetworkReply* replies[2] = {nullptr, nullptr};
+        const int count = std::min(2, int(lines.size()) - start);
+        for (int offset = 0; offset < count; ++offset) {
+            const QString& line = lines.at(start + offset);
+            if (line.trimmed().isEmpty())
+                continue;
+
+            QUrl url(QStringLiteral(
+                "https://translate.google.com/_/TranslateWebserverUi/data/batchexecute"));
+            QUrlQuery query;
+            query.addQueryItem(QStringLiteral("rpcids"), QStringLiteral("MkEWBc"));
+            url.setQuery(query);
+
+            QNetworkRequest request(url);
+            request.setHeader(QNetworkRequest::ContentTypeHeader,
+                              QStringLiteral("application/x-www-form-urlencoded;charset=UTF-8"));
+            request.setHeader(QNetworkRequest::UserAgentHeader, userAgent);
+            replies[offset] = manager.post(request, buildWebForm(line, source, target));
+        }
+
+        bool stop = false;
+        for (int offset = 0; offset < count; ++offset) {
+            QNetworkReply* reply = replies[offset];
+            if (!reply)
+                continue;
+            const int remainingMs = kFreeWebBatchTimeoutMs - int(batchTimer.elapsed());
+            if (stop || remainingMs <= 0) {
+                reply->abort();
+                reply->deleteLater();
+                stop = true;
+                continue;
+            }
+            const ReplyResult response = waitForReply(
+                reply, std::min(kFreeWebTimeoutMs, remainingMs), QStringLiteral("[Google] web"));
+            if (response.status != 0 && failedStatus)
+                *failedStatus = response.status;
+            if (response.timedOut && timedOut)
+                *timedOut = true;
+            if (response.retryAfterMs > 0 && retryAfterMs)
+                *retryAfterMs = response.retryAfterMs;
+            result[start + offset] = parseWebResponse(response.body, target);
+            stop = stop || response.status == 429 || response.timedOut;
+        }
+        if (stop)
+            break;
+    }
     return result;
 }
 
@@ -286,7 +487,6 @@ QStringList GoogleTranslator::translate(const QStringList& lines, const QString&
         return empty;
     }
 
-    bool officialRateLimited = false;
     if (!m_impl->apiKey.isEmpty()) {
         int status = 0;
         bool timedOut = false;
@@ -302,7 +502,6 @@ QStringList GoogleTranslator::translate(const QStringList& lines, const QString&
         }
 
         if (status == 429) {
-            officialRateLimited = true;
             m_impl->breaker.recordFailure(TranslationCircuitBreaker::Failure::RateLimited,
                                           m_impl->clock.elapsed(), retryAfterMs);
         } else if (timedOut || status >= 500 || status == 0) {
@@ -314,6 +513,23 @@ QStringList GoogleTranslator::translate(const QStringList& lines, const QString&
         qWarning() << "[Google] API chính thức không có kết quả → thử endpoint miễn phí";
     }
 
+    // Đường 1: web app RPC (batchexecute). Đây là đường Google đang dùng và
+    // không bị 429 như translate_a/single?client=gtx.
+    int webStatus = 0;
+    bool webTimedOut = false;
+    qint64 webRetryAfterMs = 0;
+    QStringList webResult = translateFreeWeb(m_impl->manager, lines, source, target, &webStatus,
+                                             &webTimedOut, &webRetryAfterMs);
+    const bool webAny = std::any_of(webResult.cbegin(), webResult.cend(),
+                                    [](const QString& text) { return !text.isEmpty(); });
+    if (webAny) {
+        m_impl->breaker.recordSuccess();
+        return webResult;
+    }
+    if (webStatus == 429)
+        qWarning() << "[Google] web RPC bi 429, thu endpoint gtx";
+
+    // Đường 2: endpoint gtx cũ (có thể đã bị chặn tùy IP).
     int status = 0;
     bool timedOut = false;
     qint64 retryAfterMs = 0;
@@ -321,14 +537,16 @@ QStringList GoogleTranslator::translate(const QStringList& lines, const QString&
                                        &retryAfterMs);
     const bool any = std::any_of(result.cbegin(), result.cend(),
                                  [](const QString& text) { return !text.isEmpty(); });
-    if (any && !officialRateLimited)
+    if (any) {
         m_impl->breaker.recordSuccess();
-    else if (status == 429)
-        m_impl->breaker.recordFailure(TranslationCircuitBreaker::Failure::RateLimited,
-                                      m_impl->clock.elapsed(), retryAfterMs);
-    else if (timedOut || status >= 500 || status == 0)
+    } else if (webStatus == 429 || status == 429) {
+        m_impl->breaker.recordFailure(
+            TranslationCircuitBreaker::Failure::RateLimited, m_impl->clock.elapsed(),
+            retryAfterMs > 0 ? retryAfterMs : webRetryAfterMs);
+    } else if (webTimedOut || timedOut || status >= 500 || status == 0) {
         m_impl->breaker.recordFailure(TranslationCircuitBreaker::Failure::Transient,
                                       m_impl->clock.elapsed());
+    }
     return result;
 }
 

@@ -136,6 +136,138 @@ QList<QList<int>> clusterRow(const QList<QRect>& rects, int gapThreshold)
     return EZTranslator::OcrTextAssembler::clusterRow(rects, gapThreshold);
 }
 
+/**
+ * Gom dong dang chuot thanh ca doan van nhieu dong (truyen tranh, hop thoai).
+ * Chi gom cac dong CANH NHAU, can giua tuong doi va cung co chu, de khong keo
+ * cac menu/item UI nam tren cung cot vao mot cau.
+ */
+QList<QRect> hoverParagraphRects(const QList<EZTranslator::OcrTextBox>& boxes,
+                                 const EZTranslator::OcrTextBox* hit)
+{
+    if (!hit)
+        return {};
+
+    QList<const EZTranslator::OcrTextBox*> sorted;
+    sorted.reserve(boxes.size());
+    for (const EZTranslator::OcrTextBox& box : boxes)
+        sorted.append(&box);
+    std::sort(sorted.begin(), sorted.end(), [](const auto* a, const auto* b) {
+        return a->rect.center().y() < b->rect.center().y();
+    });
+
+    QList<QList<const EZTranslator::OcrTextBox*>> rows;
+    const auto rowRect = [](const QList<const EZTranslator::OcrTextBox*>& row) {
+        QRect r;
+        for (const auto* box : row)
+            r = r.isNull() ? box->rect : r.united(box->rect);
+        return r;
+    };
+
+    for (const auto* box : sorted) {
+        bool added = false;
+        for (auto& row : rows) {
+            const QRect rr = rowRect(row);
+            const int tolerance = std::max(6, std::min(rr.height(), box->rect.height()) / 2 + 2);
+            if (qAbs(box->rect.center().y() - rr.center().y()) <= tolerance) {
+                row.append(box);
+                added = true;
+                break;
+            }
+        }
+        if (!added)
+            rows.append({box});
+    }
+    std::sort(rows.begin(), rows.end(), [&](const auto& a, const auto& b) {
+        return rowRect(a).top() < rowRect(b).top();
+    });
+
+    int hitRow = -1;
+    for (int i = 0; i < rows.size(); ++i) {
+        if (rows.at(i).contains(hit)) {
+            hitRow = i;
+            break;
+        }
+    }
+    if (hitRow < 0)
+        return {hit->rect};
+
+    const auto chooseCluster = [&](const QList<const EZTranslator::OcrTextBox*>& row,
+                                   const QRect& target) {
+        QList<QRect> rects;
+        rects.reserve(row.size());
+        for (const auto* box : row)
+            rects.append(box->rect);
+        const QRect rr = rowRect(row);
+        const QList<QList<int>> clusters = clusterRow(rects, std::max(8, rr.height() * 6 / 5));
+        QList<QRect> best;
+        int bestScore = INT_MIN;
+        for (const QList<int>& cluster : clusters) {
+            QRect cr;
+            for (int index : cluster)
+                cr = cr.isNull() ? rects.at(index) : cr.united(rects.at(index));
+            const int overlap = cr.intersected(target).width();
+            const int centerDiff = qAbs(cr.center().x() - target.center().x());
+            const int score = overlap * 2 - centerDiff;
+            if (score > bestScore) {
+                bestScore = score;
+                best.clear();
+                for (int index : cluster)
+                    best.append(rects.at(index));
+            }
+        }
+        return best;
+    };
+
+    QList<QRect> chosen = chooseCluster(rows.at(hitRow), hit->rect);
+    if (chosen.isEmpty())
+        chosen.append(hit->rect);
+    QRect paragraph;
+    for (const QRect& r : chosen)
+        paragraph = paragraph.isNull() ? r : paragraph.united(r);
+
+    const int lineHeight = std::max(1, hit->rect.height());
+    const int maxRows = 4;
+    int usedRows = 1;
+
+    const auto expand = [&](int direction) {
+        int index = hitRow + direction;
+        while (index >= 0 && index < rows.size() && usedRows < maxRows) {
+            const QRect rr = rowRect(rows.at(index));
+            const int gap = direction < 0 ? paragraph.top() - rr.bottom()
+                                          : rr.top() - paragraph.bottom();
+            if (gap > std::max(12, lineHeight * 9 / 10))
+                break;
+            if (rr.height() > lineHeight * 9 / 5 || rr.height() * 5 < lineHeight * 3)
+                break;
+
+            QList<QRect> cluster = chooseCluster(rows.at(index), paragraph);
+            if (cluster.isEmpty())
+                break;
+            QRect cr;
+            for (const QRect& r : cluster)
+                cr = cr.isNull() ? r : cr.united(r);
+            const int centerDiff = qAbs(cr.center().x() - hit->rect.center().x());
+            const int overlap = cr.intersected(paragraph).width();
+            const int minWidth = std::min(cr.width(), paragraph.width());
+            if (centerDiff > std::max(18, hit->rect.width() / 5)
+                && overlap < minWidth / 3) {
+                break;
+            }
+
+            if (direction < 0)
+                chosen = cluster + chosen;
+            else
+                chosen += cluster;
+            paragraph = paragraph.united(cr);
+            ++usedRows;
+            index += direction;
+        }
+    };
+    expand(-1);
+    expand(1);
+    return chosen;
+}
+
 } // namespace
 
 OcrWorker::OcrWorker(QObject* parent)
@@ -148,7 +280,7 @@ OcrWorker::~OcrWorker() = default;
 void OcrWorker::warmUp()
 {
     // Cùng cỡ dải với hover để shape det được biên dịch sẵn; rec làm nóng vài bề rộng.
-    QImage dummy(1200, 96, QImage::Format_RGB32);
+    QImage dummy(1200, 240, QImage::Format_RGB32);
     dummy.fill(QColor(200, 200, 200));
     const auto detectedBoxes = m_engine.detector().detect(dummy);
     Q_UNUSED(detectedBoxes);
@@ -408,66 +540,32 @@ void OcrWorker::probeHover(const QString& id, const QImage& band, const QPoint& 
     if (hit && hitVertical <= qMax(8, hit->rect.height())
         && hitHorizontal <= qMax(40, hit->rect.width())) {
         // Chỉ lấy CỤM chứa con trỏ trong hàng (tránh nối nhiều tab cách xa nhau).
-        const int rowCenter = hit->rect.center().y();
-        const int rowTolerance = qMax(6, hit->rect.height() / 2 + 2);
-        QList<const EZTranslator::OcrTextBox*> row;
-        for (const EZTranslator::OcrTextBox& box : boxes) {
-            if (qAbs(box.rect.center().y() - rowCenter) <= rowTolerance)
-                row.append(&box);
-        }
-        std::sort(row.begin(), row.end(), [](const auto* a, const auto* b) {
-            return a->rect.left() < b->rect.left();
-        });
-
-        QList<QRect> rowRects;
-        rowRects.reserve(row.size());
-        for (const auto* box : row)
-            rowRects.append(box->rect);
-
-        const int gapThreshold = qMax(8, int(hit->rect.height() * 1.2));
-        QList<QRect> chosen;
-        const QList<QList<int>> clusters = clusterRow(rowRects, gapThreshold);
-        for (const QList<int>& cluster : clusters) {
-            bool holdsCursor = false;
-            for (int index : cluster) {
-                if (row.at(index) == hit) {
-                    holdsCursor = true;
-                    break;
-                }
-            }
-            if (holdsCursor) {
-                for (int index : cluster)
-                    chosen.append(row.at(index)->rect);
-                break;
-            }
-        }
-        if (chosen.isEmpty())
-            chosen.append(hit->rect);
-
+        QList<QRect> toRead = hoverParagraphRects(boxes, hit);
         QRect unionRect;
-        for (const QRect& rect : chosen)
+        for (const QRect& rect : toRead)
             unionRect = unionRect.isNull() ? rect : unionRect.united(rect);
-
-        // Một box có thể phủ nhiều văn bản trên cùng hàng → cắt theo khe mực và chỉ
-        // đọc mảnh mà con trỏ đang chỉ.
-        QList<QRect> toRead = chosen;
         lineRect = unionRect;
-        const int minGap = qMax(8, unionRect.height() * 3 / 5);
-        const QList<QRect> pieces = splitOnInkGaps(band, unionRect, minGap);
-        if (pieces.size() > 1) {
-            const QRect* piece = nullptr;
-            int bestHorizontal = INT_MAX;
-            for (const QRect& candidate : pieces) {
-                const int horizontal =
-                    distanceToSpan(cursorLocal.x(), candidate.left(), candidate.right());
-                if (horizontal < bestHorizontal) {
-                    bestHorizontal = horizontal;
-                    piece = &candidate;
+
+        // Một box có thể phủ nhiều văn bản trên cùng hàng -> cắt theo khe mực.
+        // Đoạn nhiều dòng đã được gom theo hàng, không cắt ngang nữa.
+        if (toRead.size() == 1) {
+            const int minGap = qMax(8, unionRect.height() * 3 / 5);
+            const QList<QRect> pieces = splitOnInkGaps(band, unionRect, minGap);
+            if (pieces.size() > 1) {
+                const QRect* piece = nullptr;
+                int bestHorizontal = INT_MAX;
+                for (const QRect& candidate : pieces) {
+                    const int horizontal =
+                        distanceToSpan(cursorLocal.x(), candidate.left(), candidate.right());
+                    if (horizontal < bestHorizontal) {
+                        bestHorizontal = horizontal;
+                        piece = &candidate;
+                    }
                 }
-            }
-            if (piece && !piece->isEmpty()) {
-                toRead = QList<QRect>{*piece};
-                lineRect = *piece;
+                if (piece && !piece->isEmpty()) {
+                    toRead = QList<QRect>{*piece};
+                    lineRect = *piece;
+                }
             }
         }
 
@@ -522,7 +620,7 @@ void OcrWorker::probeHover(const QString& id, const QImage& band, const QPoint& 
         if (text.isEmpty())
             lineRect = QRect();
         else
-            m_hoverLineHeight = qMax(1, lineRect.height());
+            m_hoverLineHeight = qMax(1, hit->rect.height());
 
     }
 
