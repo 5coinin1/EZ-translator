@@ -88,6 +88,23 @@ private slots:
         QCOMPARE(blocks.at(3).text, QStringLiteral("56"));
     }
 
+    void novelContinuationMergesAcrossParagraphGap()
+    {
+        const QList<QRect> lines = {QRect(30, 20, 280, 18), QRect(30, 42, 280, 18),
+                                    QRect(30, 64, 280, 18), QRect(30, 86, 280, 18),
+                                    QRect(120, 140, 120, 18)};
+        const QStringList text = {QStringLiteral("THAT WAS"),
+                                  QStringLiteral("LITERALLY THE"),
+                                  QStringLiteral("PERFECT TIMING"),
+                                  QStringLiteral("FOR MY ULTIMATE"),
+                                  QStringLiteral("MOVE!")};
+        const auto blocks = EZTranslator::OverlayLayout::groupNovelParagraphs(lines, text);
+        QCOMPARE(blocks.size(), 1);
+        QVERIFY(blocks.first().text.contains(QStringLiteral("ULTIMATE")));
+        QVERIFY(blocks.first().text.contains(QStringLiteral("MOVE!")));
+        QCOMPARE(blocks.first().lineRects.size(), 5);
+    }
+
     void twoColumnsKeepTheirOwnTextAndBounds()
     {
         const QList<QRect> lines = {QRect(30, 20, 280, 18), QRect(600, 20, 280, 18),

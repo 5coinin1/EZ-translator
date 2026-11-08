@@ -150,17 +150,17 @@ struct AppSettings {
     int windowOpacity{100};                         // Độ mờ nội dung overlay (0 - 100)
 
     // Nhóm Phím tắt (đăng ký toàn cục qua Win32 RegisterHotKey)
-    QString toggleTranslationHotkey{"Alt+G"};
-    QString toggleOverlayHotkey{"Alt+F"};
-    QString toggleChatBoxHotkey{"Alt+C"};
-    QString selectRegionHotkey{"Alt+Q"};
-    QString openSettingsHotkey{"Alt+P"};
-    QString openLogHotkey{"Alt+L"};
-    QString clearRegionsHotkey{"Alt+R"};
-    QString clearSelectedRegionHotkey{"Alt+H"};
-    QString showRegionHotkey{"Alt+B"};
-    QString swapLanguagesHotkey{"Alt+V"};
-    QString retryTranslationHotkey{"Alt+T"};
+    QString toggleTranslationHotkey{"Ctrl+F8"};
+    QString toggleOverlayHotkey{"Ctrl+Alt+O"};
+    QString toggleChatBoxHotkey{"Ctrl+Alt+C"};
+    QString selectRegionHotkey{"F6"};
+    QString openSettingsHotkey{"Ctrl+,"};
+    QString openLogHotkey{"Ctrl+Alt+L"};
+    QString clearRegionsHotkey{"Ctrl+Alt+X"};
+    QString clearSelectedRegionHotkey{"Ctrl+Alt+D"};
+    QString showRegionHotkey{"F7"};
+    QString swapLanguagesHotkey{"Ctrl+Alt+V"};
+    QString retryTranslationHotkey{"Ctrl+Alt+T"};
 };
 
 /**

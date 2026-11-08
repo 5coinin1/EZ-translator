@@ -147,6 +147,9 @@ private:
      */
     void applySettings(bool initial);
 
+    /** Cập nhật dòng trạng thái thiết bị OCR/dịch trên footer. */
+    void updateDeviceStatus();
+
     /** Đăng ký lại phím tắt toàn cục theo m_settings; phím bị chiếm → QShortcut dự phòng. */
     void applyHotkeys();
 
@@ -264,6 +267,7 @@ private:
     QList<QThread*>                  m_retiredOcrThreads;       ///< thread OCR chưa kịp dừng khi reload
     int                              m_ocrGeneration{0};        ///< vô hiệu signal của worker cũ
     QString                          m_ocrProvider;
+    QString                          m_translationDevice; ///< "cuda"/"cpu" thực tế từ sidecar
     bool                             m_hoverOcrReady{false};    ///< worker OCR hover nạp xong (chỉ sinh khi cần)
     QElapsedTimer                    m_clock; ///< đồng hồ đơn điệu cho scheduler
     bool                             m_ocrLoadAttempted{false};

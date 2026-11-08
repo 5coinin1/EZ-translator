@@ -5,6 +5,7 @@
 #include "overlay/ParagraphAnchor.h"
 #include "translation/ProtectedText.h"
 
+#include <QSet>
 #include <QStringList>
 
 #include <limits>
@@ -41,6 +42,54 @@ bool endsSentence(const QString& text)
     return last == QLatin1Char('.') || last == QLatin1Char('!') || last == QLatin1Char('?')
            || last == QChar(0x2026) || last == QChar(0x3002) || last == QChar(0xFF01)
            || last == QChar(0xFF1F);
+}
+
+/** Dong/doan tiep theo cua CUNG mot cau bi OCR chen khe trong? */
+bool shouldMergeContinuationText(const QString& previousText, const QString& nextText)
+{
+    const QString previous = previousText.trimmed();
+    const QString next = nextText.trimmed();
+    if (previous.isEmpty() || next.isEmpty())
+        return false;
+    if (endsSentence(previous))
+        return false;
+    if (EZTranslator::isProtectedCode(previous) || EZTranslator::isPageNumber(previous)
+        || EZTranslator::isProtectedCode(next) || EZTranslator::isPageNumber(next)) {
+        return false;
+    }
+    if (next.size() > 48)
+        return false;
+    if (next.split(QLatin1Char(' '), Qt::SkipEmptyParts).size() > 4)
+        return false;
+
+    if (QStringLiteral(",;:-\u2013\u2014").contains(previous.back()))
+        return true;
+
+    static const QSet<QString> needsComplement = {
+        QStringLiteral("a"),        QStringLiteral("an"),      QStringLiteral("the"),
+        QStringLiteral("this"),     QStringLiteral("that"),    QStringLiteral("these"),
+        QStringLiteral("those"),    QStringLiteral("my"),      QStringLiteral("your"),
+        QStringLiteral("his"),      QStringLiteral("her"),     QStringLiteral("its"),
+        QStringLiteral("our"),      QStringLiteral("their"),   QStringLiteral("for"),
+        QStringLiteral("to"),       QStringLiteral("of"),      QStringLiteral("in"),
+        QStringLiteral("on"),       QStringLiteral("at"),      QStringLiteral("with"),
+        QStringLiteral("without"),  QStringLiteral("from"),    QStringLiteral("by"),
+        QStringLiteral("as"),       QStringLiteral("than"),    QStringLiteral("and"),
+        QStringLiteral("or"),       QStringLiteral("but"),     QStringLiteral("if"),
+        QStringLiteral("when"),     QStringLiteral("while"),   QStringLiteral("because"),
+        QStringLiteral("ultimate"), QStringLiteral("final"),   QStringLiteral("last"),
+        QStringLiteral("next"),     QStringLiteral("perfect"), QStringLiteral("only"),
+        QStringLiteral("very"),     QStringLiteral("really"),  QStringLiteral("literally"),
+        QStringLiteral("just"),     QStringLiteral("first"),   QStringLiteral("second"),
+        QStringLiteral("third"),    QStringLiteral("big"),     QStringLiteral("small"),
+        QStringLiteral("true"),     QStringLiteral("real"),    QStringLiteral("own"),
+        QStringLiteral("other"),    QStringLiteral("another"), QStringLiteral("same"),
+        QStringLiteral("whole"),    QStringLiteral("entire"),  QStringLiteral("complete"),
+    };
+    const QString lastWord = previous.section(QLatin1Char(' '), -1).toLower();
+    if (needsComplement.contains(lastWord))
+        return true;
+    return next.front().isLower();
 }
 
 } // namespace
@@ -217,6 +266,24 @@ QList<NovelParagraph> groupNovelParagraphs(const QList<QRect>& lineRects,
         for (const QRect& rect : paragraph.lineRects)
             memberHeights.append(rect.height());
         paragraph.lineHeight = qMax(8, medianInt(memberHeights));
+    }
+
+    // Mot cau comic co the bi OCR tach thanh 2 paragraph vi khe doc lon
+    // ("... FOR MY ULTIMATE" / "MOVE!"). Gop lai de dich tron nghia.
+    for (int i = 1; i < paragraphs.size();) {
+        NovelParagraph& previous = paragraphs[i - 1];
+        const NovelParagraph& next = paragraphs.at(i);
+        if (!shouldMergeContinuationText(previous.text, next.text)) {
+            ++i;
+            continue;
+        }
+        previous.rect = previous.rect.united(next.rect);
+        previous.lineRects += next.lineRects;
+        if (!previous.text.isEmpty() && !next.text.isEmpty())
+            previous.text += QLatin1Char(' ');
+        previous.text += next.text;
+        previous.lineHeight = qMax(previous.lineHeight, next.lineHeight);
+        paragraphs.removeAt(i);
     }
     return paragraphs;
 }

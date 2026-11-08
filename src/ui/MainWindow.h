@@ -71,6 +71,7 @@ public:
     [[nodiscard]] int currentRegionIndex() const;
     void showRegionSelectedSuccess();
     void setStatus(const QString& text, const QColor& color = {});
+    void setDeviceStatus(const QString& ocrProvider, const QString& translationDevice);
     void setShowRegionActive(bool active);
 
     [[nodiscard]] bool hasRegion() const { return m_hasRegion; }
@@ -171,5 +172,6 @@ private:
     EZTranslator::NormalizedRect  m_currentRegion;
     QRect                         m_currentScreenRect;
 
+    StatusIndicator* m_deviceIndicator{nullptr};
     StatusIndicator* m_statusIndicator{nullptr};
 };

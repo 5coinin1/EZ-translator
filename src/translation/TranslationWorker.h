@@ -60,6 +60,9 @@ signals:
     void translated(const QString& id, quint64 token,
                     const EZTranslator::TranslatedDocument& document);
 
+    /** Device CTranslate2 thực tế ("cuda"/"cpu"/rỗng) để UI hiển thị trạng thái. */
+    void deviceStatusChanged(const QString& device);
+
 private:
     struct PendingRequest
     {

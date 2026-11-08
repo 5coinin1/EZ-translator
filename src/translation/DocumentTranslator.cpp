@@ -48,6 +48,73 @@ bool endsWithSentenceEnd(const QString& text)
            || last == QChar(0x0F0D);
 }
 
+/** Hai doan lien tiep co phai la MOT cau bi OCR chen dong trong? */
+bool paragraphLooksProtected(const QStringList& lines)
+{
+    return lines.size() == 1
+           && (isProtectedCode(lines.first()) || isPageNumber(lines.first()));
+}
+
+bool shouldMergeContinuationParagraph(const QStringList& previous,
+                                      const QStringList& next)
+{
+    if (previous.isEmpty() || next.isEmpty())
+        return false;
+    if (paragraphLooksProtected(previous) || paragraphLooksProtected(next))
+        return false;
+
+    const QString previousLast = previous.last().trimmed();
+    const QString nextFirst = next.first().trimmed();
+    if (previousLast.isEmpty() || nextFirst.isEmpty())
+        return false;
+    if (endsWithSentenceEnd(previousLast))
+        return false;
+    if (isProtectedCode(nextFirst) || isPageNumber(nextFirst))
+        return false;
+
+    const QString nextText = next.join(QLatin1Char(' ')).simplified();
+    if (nextText.size() > 48)
+        return false;
+    if (nextText.split(QLatin1Char(' '), Qt::SkipEmptyParts).size() > 4)
+        return false;
+
+    // Dau cau mo: ro rang la cau chua xong.
+    if (QStringLiteral(",;:-–—").contains(previousLast.back()))
+        return true;
+
+    // Tu cuoi can bo ngu/bo nghia: "FOR MY ULTIMATE" + "MOVE!".
+    static const QSet<QString> needsComplement = {
+        QStringLiteral("a"),        QStringLiteral("an"),      QStringLiteral("the"),
+        QStringLiteral("this"),     QStringLiteral("that"),    QStringLiteral("these"),
+        QStringLiteral("those"),    QStringLiteral("my"),      QStringLiteral("your"),
+        QStringLiteral("his"),      QStringLiteral("her"),     QStringLiteral("its"),
+        QStringLiteral("our"),      QStringLiteral("their"),   QStringLiteral("for"),
+        QStringLiteral("to"),       QStringLiteral("of"),      QStringLiteral("in"),
+        QStringLiteral("on"),       QStringLiteral("at"),      QStringLiteral("with"),
+        QStringLiteral("without"),  QStringLiteral("from"),    QStringLiteral("by"),
+        QStringLiteral("as"),       QStringLiteral("than"),    QStringLiteral("and"),
+        QStringLiteral("or"),       QStringLiteral("but"),     QStringLiteral("if"),
+        QStringLiteral("when"),     QStringLiteral("while"),   QStringLiteral("because"),
+        QStringLiteral("ultimate"), QStringLiteral("final"),   QStringLiteral("last"),
+        QStringLiteral("next"),     QStringLiteral("perfect"), QStringLiteral("only"),
+        QStringLiteral("very"),     QStringLiteral("really"),  QStringLiteral("literally"),
+        QStringLiteral("just"),     QStringLiteral("first"),   QStringLiteral("second"),
+        QStringLiteral("third"),    QStringLiteral("big"),     QStringLiteral("small"),
+        QStringLiteral("true"),     QStringLiteral("real"),    QStringLiteral("own"),
+        QStringLiteral("other"),    QStringLiteral("another"), QStringLiteral("same"),
+        QStringLiteral("whole"),    QStringLiteral("entire"),  QStringLiteral("complete"),
+    };
+    const QString lastWord = previousLast.section(QLatin1Char(' '), -1).toLower();
+    if (needsComplement.contains(lastWord))
+        return true;
+
+    // Dong tiep theo bat dau bang chu thuong: gan nhu chac chan la cau noi tiep.
+    if (nextFirst.front().isLower())
+        return true;
+
+    return false;
+}
+
 bool isVowel(QChar c)
 {
     const QChar lower = c.toLower();
@@ -340,6 +407,20 @@ TranslatedDocument DocumentTranslator::translate(const QString& assembledText, c
             flushParagraph();
     }
     flushParagraph();
+
+    // OCR hay chen dong trong giua cac dong cua CUNG mot cau (bong bong truyen,
+    // khoang cach dong lon, chu can giua...). Neu doan truoc chua ket thuc cau va
+    // doan sau la phan noi tiep ("... FOR MY ULTIMATE" + "MOVE!"), gop lai truoc
+    // khi tach cau/dich. Chi gop khi doan sau ngan va co dau hieu noi tiep.
+    for (int i = 1; i < paragraphLines.size();) {
+        if (shouldMergeContinuationParagraph(paragraphLines.at(i - 1),
+                                             paragraphLines.at(i))) {
+            paragraphLines[i - 1] += paragraphLines.at(i);
+            paragraphLines.removeAt(i);
+        } else {
+            ++i;
+        }
+    }
 
     QStringList units;        // đơn vị dịch (mỗi CÂU một đơn vị — xem splitSentences)
     QList<int> unitParagraph; // mỗi đơn vị thuộc đoạn nào

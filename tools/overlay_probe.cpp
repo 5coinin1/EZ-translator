@@ -193,6 +193,7 @@ int main(int argc, char** argv)
     }
     options.useGpu = qEnvironmentVariable("EZ_OCR_USE_GPU", QStringLiteral("1"))
                      != QLatin1String("0");
+    options.binarize = qEnvironmentVariableIsSet("EZ_PROBE_BINARIZE");
 
     OcrEngine engine;
     QString error;

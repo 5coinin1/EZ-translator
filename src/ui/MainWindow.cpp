@@ -420,18 +420,24 @@ void MainWindow::buildUi()
 
     // ── Footer ────────────────────────────────────────────────────────────────
     auto* footer = new QWidget(this);
-    footer->setFixedHeight(40);
+    footer->setFixedHeight(58);
     footer->setStyleSheet(QString("background-color: %1; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;")
                               .arg(StyleTheme::ColorSurface));
 
-    auto* footerLay = new QHBoxLayout(footer);
-    footerLay->setContentsMargins(StyleTheme::SpacingXL, 0, StyleTheme::SpacingM, 0);
-    footerLay->setSpacing(StyleTheme::SpacingM);
+    auto* footerLay = new QVBoxLayout(footer);
+    footerLay->setContentsMargins(StyleTheme::SpacingXL, 4, StyleTheme::SpacingM, 4);
+    footerLay->setSpacing(2);
 
+    // Dòng 1: thiết bị đang chạy (OCR/ dịch) - luôn hiện, không bị cảnh báo ghi đè.
+    m_deviceIndicator = new StatusIndicator(footer);
+    m_deviceIndicator->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+
+    // Dòng 2: cảnh báo/hành động/trạng thái tạm thời.
     m_statusIndicator = new StatusIndicator(footer);
+    m_statusIndicator->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
+    footerLay->addWidget(m_deviceIndicator);
     footerLay->addWidget(m_statusIndicator);
-    footerLay->addStretch();
 
     root->addWidget(footer);
 }
@@ -843,6 +849,46 @@ void MainWindow::setStatus(const QString& text, const QColor& color)
 {
     QColor c = color.isValid() ? color : QColor(StyleTheme::ColorTextSecondary);
     m_statusIndicator->setState(text, c);
+}
+
+void MainWindow::setDeviceStatus(const QString& ocrProvider, const QString& translationDevice)
+{
+    if (!m_deviceIndicator)
+        return;
+
+    QString ocr = ocrProvider.trimmed();
+    if (ocr.isEmpty()) {
+        ocr = QStringLiteral("đang tải...");
+    } else {
+        ocr.replace(QStringLiteral("Det:"), QString());
+        ocr.replace(QStringLiteral("Rec:"), QString());
+        ocr.replace(QLatin1Char('/'), QStringLiteral(" / "));
+    }
+
+    QString translation = translationDevice.trimmed();
+    if (translation.isEmpty()) {
+        translation = QStringLiteral("chưa chạy");
+    } else if (translation.compare(QLatin1String("cuda"), Qt::CaseInsensitive) == 0) {
+        translation = QStringLiteral("CUDA");
+    } else if (translation.compare(QLatin1String("cpu"), Qt::CaseInsensitive) == 0) {
+        translation = QStringLiteral("CPU");
+    } else if (translation.compare(QLatin1String("directml"), Qt::CaseInsensitive) == 0) {
+        translation = QStringLiteral("DirectML");
+    } else if (translation.compare(QLatin1String("none"), Qt::CaseInsensitive) == 0) {
+        translation = QStringLiteral("chưa chạy");
+    }
+
+    const QString text =
+        QStringLiteral("OCR: %1   ·   Dịch: %2").arg(ocr, translation);
+    qInfo().noquote() << "[DeviceStatus] OCR=" << ocrProvider
+                      << "| translate=" << translationDevice;
+    const bool cpu = text.contains(QStringLiteral("CPU"), Qt::CaseInsensitive);
+    m_deviceIndicator->setState(text, cpu ? QColor(QStringLiteral("#f59e0b"))
+                                          : QColor(QStringLiteral("#22c55e")));
+    m_deviceIndicator->setToolTip(
+        QStringLiteral("OCR provider: %1\nThiết bị dịch: %2")
+            .arg(ocrProvider.isEmpty() ? QStringLiteral("đang tải") : ocrProvider,
+                 translation));
 }
 
 void MainWindow::setShowRegionActive(bool active)

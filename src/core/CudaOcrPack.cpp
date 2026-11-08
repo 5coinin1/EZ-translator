@@ -1,7 +1,9 @@
 #include "core/CudaOcrPack.h"
 
 #include <QCoreApplication>
+#include <QDebug>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QStandardPaths>
 
@@ -48,8 +50,36 @@ bool isInstalled()
 
 bool requested(const AppSettings& settings)
 {
-    return settings.ocrDetDevice.compare(QStringLiteral("cuda"), Qt::CaseInsensitive) == 0
-           || settings.ocrRecDevice.compare(QStringLiteral("cuda"), Qt::CaseInsensitive) == 0;
+    // "auto" phải thực sự ưu tiên CUDA nếu gói đã cài; trước đây chỉ "cuda"
+    // mới kích hoạt profile, nên auto luôn chạy base DirectML.
+    const auto wantsCuda = [](const QString& device) {
+        return device.compare(QStringLiteral("cuda"), Qt::CaseInsensitive) == 0
+               || device.compare(QStringLiteral("auto"), Qt::CaseInsensitive) == 0;
+    };
+    return wantsCuda(settings.ocrDetDevice) || wantsCuda(settings.ocrRecDevice);
+}
+
+void refreshProfileAppFiles()
+{
+    const QString base = QCoreApplication::applicationDirPath();
+    const QString dest = profileDir();
+    QDir().mkpath(dest);
+    for (const char* name : {"EZTranslator.exe", "wgc_capture_helper.exe", "ct2_server.py"}) {
+        const QString source = QDir(base).filePath(QString::fromLatin1(name));
+        const QString target = QDir(dest).filePath(QString::fromLatin1(name));
+        const QFileInfo srcInfo(source);
+        const QFileInfo dstInfo(target);
+        if (!srcInfo.exists())
+            continue;
+        if (dstInfo.exists() && dstInfo.size() == srcInfo.size()
+            && dstInfo.lastModified() >= srcInfo.lastModified()) {
+            continue;
+        }
+        if (dstInfo.exists())
+            QFile::remove(target);
+        if (!QFile::copy(source, target))
+            qWarning() << "[CUDA] khong refresh duoc" << name << "vao profile";
+    }
 }
 
 bool isProfileProcess()

@@ -244,6 +244,34 @@ private slots:
                               QStringLiteral("qwen2.5:0.5b")}));
     }
 
+    // OCR chèn dòng trống giữa các dòng của cùng một câu comic → phải gộp.
+    void document_joinsComicContinuationAcrossBlankLine()
+    {
+        TranslationCache cache;
+        DocumentTranslator translator(&cache);
+        const QString text =
+            QStringLiteral("THAT WAS\nLITERALLY THE\nPERFECT TIMING\nFOR MY ULTIMATE"
+                           "\n\nMOVE!");
+        const TranslatedDocument doc = translator.translate(text, "en", "vi", nullptr);
+        QCOMPARE(doc.sourceParagraphs.size(), 1);
+        QVERIFY(doc.sourceParagraphs.first().contains(QStringLiteral("ULTIMATE")));
+        QVERIFY(doc.sourceParagraphs.first().contains(QStringLiteral("MOVE!")));
+    }
+
+    // Nhưng label UI ngắn vẫn phải tách đoạn.
+    void document_keepsShortUiLabelsSeparate()
+    {
+        TranslationCache cache;
+        DocumentTranslator translator(&cache);
+        const TranslatedDocument labels =
+            translator.translate(QStringLiteral("HP\n\nMP"), "en", "vi", nullptr);
+        QCOMPARE(labels.sourceParagraphs.size(), 2);
+
+        const TranslatedDocument hint = translator.translate(
+            QStringLiteral("Press any key to continue\n\nOK"), "en", "vi", nullptr);
+        QCOMPARE(hint.sourceParagraphs.size(), 2);
+    }
+
     void document_normalizesAllCapsForEngine()
     {
         TranslationCache cache;

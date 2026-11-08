@@ -228,6 +228,13 @@ void TranslationWorker::configure(const TranslationConfig& config)
             << "| source =" << m_config.source
             << "| offline =" << m_offlineChain.size()
             << "| googleKey =" << (!m_config.googleApiKey.isEmpty());
+
+    if (allowOffline && m_ct2 && m_offlineChain.contains(m_ct2.get())) {
+        if (auto* ct2 = dynamic_cast<CTranslate2Translator*>(m_ct2.get()))
+            emit deviceStatusChanged(ct2->actualDevice());
+    } else {
+        emit deviceStatusChanged(QString());
+    }
 }
 
 QStringList TranslationWorker::runEngines(const QStringList& units)

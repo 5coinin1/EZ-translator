@@ -192,6 +192,13 @@ QString OcrEngine::recProviderName() const
     return m_impl ? m_impl->recRuntime.providerName() : QString();
 }
 
+QImage OcrEngine::preprocess(const QImage& image) const
+{
+    if (!m_impl || !m_impl->binarize || image.isNull())
+        return image;
+    return binarizeImage(image);
+}
+
 QList<OcrTextBox> OcrEngine::recognize(const QImage& image,
                                       const std::function<bool()>& cancelled,
                                       const ProgressFn& progress,
@@ -204,7 +211,7 @@ QList<OcrTextBox> OcrEngine::recognize(const QImage& image,
     const qint64 startedAt = ocrMonotonicMs();
     m_impl->lastTiming = OcrTimings();
 
-    const QImage input = m_impl->binarize ? binarizeImage(image) : image;
+    const QImage input = preprocess(image);
 
     // Anh lon (full window/game UI): det model resize ve ~960px lam mat chu
     // nho. Chia 2x2 co overlap de bao phu cac label/tab ma luot full bo sot.

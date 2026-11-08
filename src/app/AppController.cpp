@@ -929,19 +929,22 @@ void AppController::onOcrLoaded(int generation, bool hoverWorker, bool ok, const
         return;
 
     m_ocrProvider = provider;
+    updateDeviceStatus();
     const bool anyCpu = m_ocrProvider.contains(QStringLiteral("CPU"));
     const bool anyGpu = m_ocrProvider.contains(QStringLiteral("DirectML"))
                         || m_ocrProvider.contains(QStringLiteral("CUDA"));
     if (anyCpu) {
         const QString detail = error.left(90);
-        m_mainWindow->setStatus(QStringLiteral("OCR: ") + m_ocrProvider
-                                    + (detail.isEmpty() ? QString() : QStringLiteral(" (")
-                                                                     + detail + ')'),
-                                anyGpu ? QColor("#f59e0b") : QColor("#38bdf8"));
+        // Dòng cảnh báo riêng; dòng thiết bị phía trên vẫn giữ provider thật.
+        m_mainWindow->setStatus(
+            QStringLiteral("OCR đang chạy CPU")
+                + (anyGpu ? QStringLiteral(" (có GPU nhưng fallback)") : QString())
+                + (detail.isEmpty() ? QString() : QStringLiteral(" - ") + detail),
+            anyGpu ? QColor("#f59e0b") : QColor("#38bdf8"));
         if (!detail.isEmpty())
             qInfo() << "[OCR] fallback detail:" << detail;
     } else {
-        m_mainWindow->setStatus(QStringLiteral("OCR: ") + m_ocrProvider, QColor("#22c55e"));
+        m_mainWindow->setStatus(QStringLiteral("OCR sẵn sàng"), QColor("#22c55e"));
     }
 
     qInfo() << "[OCR] ready (worker vùng), provider =" << m_ocrProvider;
@@ -998,6 +1001,11 @@ bool AppController::ensureTranslator()
             [this, config]() { m_translateWorker->configure(config); });
     connect(m_translateWorker, &EZTranslator::TranslationWorker::translated,
             this, &AppController::onTranslationReady, Qt::QueuedConnection);
+    connect(m_translateWorker, &EZTranslator::TranslationWorker::deviceStatusChanged,
+            this, [this](const QString& device) {
+                m_translationDevice = device;
+                updateDeviceStatus();
+            }, Qt::QueuedConnection);
     connect(m_translateThread, &QThread::finished, m_translateWorker, &QObject::deleteLater);
 
     m_translateThread->start();
@@ -1715,6 +1723,7 @@ void AppController::start()
     // NẠP SẴN ENGINE (chạy nền, không chặn UI) ngay khi mở app: model OCR (DirectML init) và
     // sidecar dịch (Python + CTranslate2) tốn vài giây cold start — trước đây bản dịch THẬT đầu
     // tiên phải chờ >5s sau khi bấm Bắt đầu. Nạp trước thì bấm là dịch được ngay.
+    updateDeviceStatus();
     QTimer::singleShot(0, this, [this]() { preloadEngines(); });
 }
 
@@ -2412,19 +2421,73 @@ void AppController::onSettingsSaved(const EZTranslator::AppSettings& settings)
         m_regionLineTexts.clear();
         m_regionSourceText.clear();
         m_regionTranslatedText.clear();
-    m_paragraphTranslations.clear();
+        m_paragraphTranslations.clear();
         m_regionServedHash.clear();
         m_regionOcrContentHash.clear();
         m_regionServedContentHash.clear();
+        m_regionStateAtMs.clear();
+        m_regionLastChangeMs.clear();
+        m_regionRequestSource.clear();
+        m_pendingSourceBoxes.clear();
+        m_overlaySuspended = false;
+
+        // Ket qua OCR cua layout CU dang bay ve sau khi clear se "hoi sinh" box cu.
+        // Huy token/mailbox va bao worker bo request de chi layout MOI duoc ap.
+        m_regionOcrMailbox.clearPending();
+        for (auto it = m_regionOcrToken.begin(); it != m_regionOcrToken.end(); ++it) {
+            it.value() = 0;
+            if (m_ocrWorker)
+                m_ocrWorker->noteRegionRequest(it.key(), 0);
+            m_regionOcrMailbox.remove(it.key());
+        }
+        m_regionVerifyPending.clear();
+        m_forceVerifyFrame = false;
+
         m_ocrScheduler.reset();
-        if (m_textOverlay)
+        if (m_textOverlay) {
             m_textOverlay->clear();
+            // An han cua so trong suot; box moi se show lai qua updateOverlay().
+            m_textOverlay->hideOverlay();
+        }
+
+        // Anh tinh (WGC khong phat frame moi) => chu dong OCR lai tu frame cu.
+        if (m_overlayMode && m_state == EZTranslator::TranslationState::Running
+            && !m_lastCapture.image.isNull()) {
+            QTimer::singleShot(0, this, [this]() {
+                if (m_state != EZTranslator::TranslationState::Running
+                    || m_lastCapture.image.isNull())
+                    return;
+                m_forceVerifyFrame = true;
+                onCaptureFrame(m_lastCapture);
+                m_forceVerifyFrame = false;
+            });
+        }
+
+        qInfo() << "[Overlay] novelMode=" << m_settings.novelMode
+                << "-> cleared old boxes, fresh OCR requested";
     }
 
     if (ocrReloadNeeded && m_ocrLoadAttempted)
         reloadOcr();
 
     m_mainWindow->setStatus(QStringLiteral("Đã lưu cài đặt"), QColor("#38bdf8"));
+}
+
+void AppController::updateDeviceStatus()
+{
+    if (!m_mainWindow)
+        return;
+
+    QString translation;
+    const QString engine = m_settings.translationEngine;
+    if (engine == QLatin1String("google"))
+        translation = QStringLiteral("Google");
+    else if (engine == QLatin1String("ai"))
+        translation = QStringLiteral("AI/LLM");
+    else
+        translation = m_translationDevice;
+
+    m_mainWindow->setDeviceStatus(m_ocrProvider, translation);
 }
 
 void AppController::applySettings(bool initial)
@@ -2485,7 +2548,7 @@ void AppController::applySettings(bool initial)
     if (m_translateWorker) {
         QMetaObject::invokeMethod(m_translateWorker, "configure", Qt::QueuedConnection,
                                   Q_ARG(EZTranslator::TranslationConfig, m_translationConfig));
-    }
+    }    updateDeviceStatus();
 }
 
 void AppController::applyHotkeys()
@@ -2516,6 +2579,14 @@ void AppController::applyHotkeys()
     }
 
     const QStringList failed = m_hotkeys->apply(bindings, m_mainWindow->winId());
+
+    int activeHotkeys = 0;
+    for (const GlobalHotkeys::Binding& binding : bindings) {
+        if (!binding.sequence.isEmpty())
+            ++activeHotkeys;
+    }
+    qInfo() << "[Hotkeys] registered" << (activeHotkeys - failed.size()) << "/"
+            << activeHotkeys;
 
     // Phím bị app khác chiếm (hoặc OS từ chối) → QShortcut dự phòng: vẫn dùng được khi
     // cửa sổ app đang focus, kèm cảnh báo trên thanh trạng thái.
@@ -2548,6 +2619,7 @@ void AppController::applyHotkeys()
 
 void AppController::dispatchHotkey(const QString& id)
 {
+    qInfo().noquote() << "[Hotkey] activated" << id;
     if (id == QLatin1String("toggle")) {
         onToggleTranslation();
     } else if (id == QLatin1String("overlay")) {
@@ -3666,6 +3738,7 @@ void AppController::handleRegionBoxes(const QString& regionId,
                         for (auto& overlay : cachedBoxes) {
                             overlay.textColor = contrastTextColor(regionImage);
                             overlay.coverColor = regionPaperColor(regionImage);
+                            overlay.glass = false;
                             if (!plate.isNull()) {
                                 overlay.plate = plate;
                                 overlay.plateRect = pixelRect;
@@ -3751,6 +3824,7 @@ void AppController::handleRegionBoxes(const QString& regionId,
         for (EZTranslator::OverlayBox& overlay : regionBoxes) {
             overlay.textColor = textColor;
             overlay.coverColor = coverColor;
+            overlay.glass = !m_settings.novelMode;
             if (!plate.isNull()) {
                 overlay.plate = plate;
                 overlay.plateRect = pixelRect;
@@ -3998,9 +4072,13 @@ void AppController::onTranslationReady(const QString& regionId, quint64 token,
         const bool novelLayout = novelParagraphs != m_regionNovelParagraphs.constEnd();
         const QColor coverColor =
             novelLayout ? regionPaperColor(regionImage) : regionCoverColor(regionImage);
+        // Novel mode luôn paper; UI/line layout dùng glass. Cờ nằm trên TỪNG box
+        // để lúc OCR rebuild một region không làm đổi hiệu ứng của region khác.
+        const bool useGlass = !novelLayout && !m_settings.novelMode;
         for (EZTranslator::OverlayBox& overlay : boxes) {
             overlay.textColor = textColor;
             overlay.coverColor = coverColor;
+            overlay.glass = useGlass;
             if (!novelLayout) {
                 overlay.backdrop = regionImage;
                 overlay.backdropRect = regionBounds;
@@ -4149,9 +4227,9 @@ void AppController::updateOverlay(const QSize& frameSize)
         return;
     }
 
-    // Mixed regions: paper mode wins, because a glass panel drawn over a
-    // reading column looks broken and hides the page texture.
-    m_textOverlay->setGlassEnabled(m_regionNovelParagraphs.isEmpty());
+    // Glass/paper da duoc quyet dinh tren TUNG box (OverlayBox::glass). Khong
+    // bat/tat theo m_regionNovelParagraphs vi tap nay co the tam rong trong luc
+    // OCR/layout rebuild, lam ca overlay nhay tu paper sang glass.
     m_textOverlay->showOverTarget(client);
     m_textOverlay->setBoxes(all, frameSize);
 }

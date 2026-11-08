@@ -32,6 +32,7 @@ int main(int argc, char** argv)
     options.dictionaryPath = dir + QStringLiteral("/en_dict.txt");
     options.useGpu = qEnvironmentVariable("EZ_OCR_USE_GPU", QStringLiteral("1"))
                      != QLatin1String("0");
+    options.binarize = qEnvironmentVariableIsSet("EZ_OCR_BINARIZE");
 
     OcrWorker worker;
     QString text;

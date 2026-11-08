@@ -204,7 +204,8 @@ void TextOverlay::paintEvent(QPaintEvent*)
         if (!box.coverOnly && box.text.isEmpty())
             continue;
 
-        if (m_glass && !box.plate.isNull())
+        const bool useGlass = m_glass && box.glass;
+        if (useGlass && !box.plate.isNull())
             continue;
 
         const QRectF target(box.rect.x() * scaleX, box.rect.y() * scaleY,
@@ -254,6 +255,8 @@ void TextOverlay::paintEvent(QPaintEvent*)
         for (int boxIndex = 0; boxIndex < m_boxes.size(); ++boxIndex) {
             const OverlayBox& box = m_boxes.at(boxIndex);
             if (!box.coverOnly && box.text.isEmpty())
+                continue;
+            if (!box.glass)
                 continue;
             const QRectF target(box.rect.x() * scaleX, box.rect.y() * scaleY,
                                 box.rect.width() * scaleX, box.rect.height() * scaleY);

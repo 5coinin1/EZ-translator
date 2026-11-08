@@ -41,6 +41,8 @@ public:
     void stop();
 
     [[nodiscard]] bool isReady() const override;
+    /** Device sidecar thực tế báo về: "cuda" hoặc "cpu" (rỗng nếu chưa sẵn sàng). */
+    [[nodiscard]] QString actualDevice() const { return m_actualDevice; }
     [[nodiscard]] QString name() const override { return QStringLiteral("Offline (CT2 int8)"); }
 
     [[nodiscard]] QStringList translate(const QStringList& lines, const QString& source,
@@ -69,6 +71,7 @@ private:
     QString m_sourceLang;
     QString m_targetLang;
     QString m_device{QStringLiteral("auto")};
+    QString m_actualDevice;
     bool m_ready{false};
     QElapsedTimer m_clock;
     qint64 m_lastStartAttemptMs{-1000000}; ///< giãn cách giữa các lần thử khởi động lại

@@ -57,6 +57,9 @@ public:
 
     [[nodiscard]] OcrTimings lastTimings() const;
 
+    /** Áp tiền xử lý cấu hình (nhị phân hóa Otsu nếu bật) lên ảnh trước det/rec. */
+    [[nodiscard]] QImage preprocess(const QImage& image) const;
+
     [[nodiscard]] OcrDetector& detector();
     [[nodiscard]] OcrRecognizer& recognizer();
 

@@ -37,6 +37,10 @@ struct OverlayBox
     // (navy đậm — trên trang sáng người dùng thấy "cover đen" nhấp nháy). App đặt màu nền vùng.
     QColor  coverColor;
     bool    coverOnly{false};
+    // true = dùng glass panel (UI); false = paper/plate đục (novel/reading).
+    // Tách khỏi cờ toàn cục để region UI và region novel không kéo nhau đổi
+    // hiệu ứng khi OCR/layout đang rebuild.
+    bool    glass{true};
     // Novel/reading layout: fit to the whole paragraph slot instead of only
     // the union of source glyph lines, so paragraph gaps can be used without
     // pushing text into the next paragraph.

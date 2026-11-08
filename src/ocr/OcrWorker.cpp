@@ -510,9 +510,13 @@ void OcrWorker::probeHover(const QString& id, const QImage& band, const QPoint& 
     // giới hạn, nên dải rộng gấp rưỡi mà giữ giới hạn 640 thì chữ nhỏ đi 1.5 lần và
     // det dễ hụt. Thang theo bề rộng dải (dải thường 1200 → vẫn đúng 640 như trước).
     const int limitSide = qBound(640, 640 * band.width() / 1200, 2048);
+    // Nhị phân hóa (nếu bật trong Cài đặt) phải áp cho cả hover; trước đây hover
+    // gọi thẳng detector/recognizer nên bỏ qua tiền xử lý của OcrEngine.
+    const QImage preparedBand = m_engine.preprocess(band);
 
     // PHA 1 — chỉ DÒ dòng (detection rẻ), CHƯA nhận dạng chữ.
-    const QList<EZTranslator::OcrTextBox> boxes = m_engine.detector().detect(band, limitSide);
+    const QList<EZTranslator::OcrTextBox> boxes =
+        m_engine.detector().detect(preparedBand, limitSide);
 
     // Chọn box con trỏ đang chỉ: ưu tiên trục dọc rồi ngang (khoảng cách tới MÉP box).
     const EZTranslator::OcrTextBox* hit = nullptr;
@@ -550,7 +554,7 @@ void OcrWorker::probeHover(const QString& id, const QImage& band, const QPoint& 
         // Đoạn nhiều dòng đã được gom theo hàng, không cắt ngang nữa.
         if (toRead.size() == 1) {
             const int minGap = qMax(8, unionRect.height() * 3 / 5);
-            const QList<QRect> pieces = splitOnInkGaps(band, unionRect, minGap);
+            const QList<QRect> pieces = splitOnInkGaps(preparedBand, unionRect, minGap);
             if (pieces.size() > 1) {
                 const QRect* piece = nullptr;
                 int bestHorizontal = INT_MAX;
@@ -578,7 +582,7 @@ void OcrWorker::probeHover(const QString& id, const QImage& band, const QPoint& 
             input.append(box);
         }
         const QList<EZTranslator::OcrTextBox> recognized =
-            m_engine.recognizer().recognize(band, input);
+            m_engine.recognizer().recognize(preparedBand, input);
         recTimings = m_engine.recognizer().lastTimings();
         recRan = true;
 

@@ -10,6 +10,9 @@
 #include <QTimer>
 #include <QWidget>
 #include <QPixmap>
+#include <QLockFile>
+#include <QMessageBox>
+#include <QStandardPaths>
 #include "ui/theme/StyleTheme.h"
 #include "app/AppController.h"
 #include "core/CudaOcrPack.h"
@@ -40,6 +43,25 @@ int main(int argc, char* argv[])
     app.setApplicationDisplayName("EZ-Translator");
     app.setOrganizationName("EZTeam");
     app.setOrganizationDomain("eztranslator.local");
+
+    // RegisterHotKey là tài nguyên toàn cục: instance thứ hai sẽ không đăng ký được
+    // phím tắt nào. Chỉ cho một instance chạy (trừ chế độ dev/preview).
+    const bool allowMultipleInstances =
+        app.arguments().contains(QStringLiteral("--render-preview"))
+        || qEnvironmentVariableIsSet("EZ_ALLOW_MULTIPLE_INSTANCE");
+    const QString instanceLockPath =
+        QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+            .filePath(QStringLiteral("EZTranslator.instance.lock"));
+    QLockFile instanceLock(instanceLockPath);
+    instanceLock.setStaleLockTime(15000);
+    if (!allowMultipleInstances && !instanceLock.tryLock(1000)) {
+        qWarning() << "[APP] mot instance khac dang chay";
+        QMessageBox::information(
+            nullptr, QStringLiteral("EZ-Translator"),
+            QStringLiteral("EZ-Translator đang chạy.\n"
+                           "Hãy dùng cửa sổ hiện có (hoặc biểu tượng ở khay hệ thống)."));
+        return 0;
+    }
 
     if (!qEnvironmentVariableIsSet("EZ_CUDA_PROFILE")
         && !app.arguments().contains(QStringLiteral("--render-preview"))) {
@@ -74,6 +96,7 @@ int main(int argc, char* argv[])
                        QDir(baseDir).filePath(QStringLiteral("platforms")));
             if (!modelsDir.isEmpty())
                 env.insert(QStringLiteral("EZ_MODELS_DIR"), modelsDir);
+            EZTranslator::CudaOcrPack::refreshProfileAppFiles();
             qInfo().noquote() << "[LAUNCH] CUDA OCR profile =" << profileDir;
             QProcess launcher;
             launcher.setProgram(EZTranslator::CudaOcrPack::profileExe());

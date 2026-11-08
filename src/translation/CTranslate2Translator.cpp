@@ -155,6 +155,7 @@ bool CTranslate2Translator::isReady() const
 void CTranslate2Translator::stop()
 {
     m_ready = false;
+    m_actualDevice.clear();
     m_buffer.clear();
     if (m_process.state() != QProcess::NotRunning) {
         m_process.closeWriteChannel();
@@ -168,6 +169,7 @@ void CTranslate2Translator::markFailed(const QString& reason)
     if (!reason.isEmpty())
         qWarning().noquote() << "[CT2]" << reason;
     m_ready = false;
+    m_actualDevice.clear();
     m_buffer.clear();
     if (m_process.state() != QProcess::NotRunning) {
         m_process.kill();
@@ -271,9 +273,11 @@ bool CTranslate2Translator::waitForReadyLine(int timeoutMs, QString* error)
             if (object.contains(QStringLiteral("ready"))) {
                 const QString device = object.value(QStringLiteral("device")).toString();
                 const QString compute = object.value(QStringLiteral("compute")).toString();
-                if (!device.isEmpty())
+                if (!device.isEmpty()) {
+                    m_actualDevice = device.trimmed().toLower();
                     qInfo().noquote() << "[Translate] CT2 sidecar device =" << device
                                       << "| compute =" << compute;
+                }
                 return true;
             }
         }

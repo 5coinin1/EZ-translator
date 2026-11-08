@@ -23,4 +23,8 @@ QString installScriptPath();
 [[nodiscard]] bool requested(const AppSettings& settings);
 [[nodiscard]] bool isProfileProcess();
 
+/** Chép exe/helper/ct2_server hiện tại vào profile nếu bản trong profile cũ.
+ *  Không đụng tới ONNX Runtime CUDA/CUDA DLLs đã cài. */
+void refreshProfileAppFiles();
+
 } // namespace EZTranslator::CudaOcrPack

@@ -1677,7 +1677,8 @@ QWidget* SettingsDialog::buildHotkeysPage()
 
     auto* info = new QLabel(QStringLiteral(
         "Nhấp vào ô rồi nhấn tổ hợp phím. Phím hoạt động cả khi game đang mở. "
-        "Để trống để tắt phím tắt."), page);
+        "Để trống để tắt phím tắt. Nếu phím không chạy, có thể ứng dụng khác đang giữ "
+        "tổ hợp đó."), page);
     info->setWordWrap(true);
     info->setStyleSheet(QStringLiteral("color:#94a3b8; font-size:9pt;"));
     outer->addWidget(info);
