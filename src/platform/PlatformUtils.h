@@ -25,4 +25,7 @@ bool setAutoStart(const QString& appName, const QString& executablePath, bool en
 /** Kiểm tra app có đang được bật khởi động cùng Windows không. */
 bool isAutoStartEnabled(const QString& appName);
 
+/** Bo góc native cho cửa sổ frameless (Windows 11 DWM). Trả false nếu OS không hỗ trợ. */
+bool setRoundedCorners(quintptr windowHandle, bool enabled = true);
+
 } // namespace EZTranslator::Platform

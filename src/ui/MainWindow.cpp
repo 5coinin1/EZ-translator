@@ -10,6 +10,7 @@
 #include "ui/theme/IconFactory.h"
 #include "core/WindowEnumerator.h"
 #include "platform/FramelessWindowHelper.h"
+#include "platform/PlatformUtils.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -67,6 +68,7 @@ MainWindow::MainWindow(QWidget* parent)
     setObjectName("MainWindow");
     buildUi();
     populateInitialData();
+    EZTranslator::Platform::setRoundedCorners(quintptr(winId()), true);
 }
 
 void MainWindow::buildUi()

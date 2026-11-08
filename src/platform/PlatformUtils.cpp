@@ -11,6 +11,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <dwmapi.h>
 #endif
 
 namespace EZTranslator::Platform {
@@ -26,6 +27,23 @@ constexpr DWORD kMonitorOnly = 0x00000001;
 constexpr auto kRunKeyPath = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 
 } // namespace
+
+bool setRoundedCorners(quintptr windowHandle, bool enabled)
+{
+    HWND hwnd = reinterpret_cast<HWND>(windowHandle);
+    if (!hwnd || !IsWindow(hwnd))
+        return false;
+
+    // DWMWA_WINDOW_CORNER_PREFERENCE = 33 (Windows 11). DWMWCP_ROUND = 2,
+    // DWMWCP_DONOTROUND = 1. Trên Windows 10 API trả E_INVALIDARG -> false.
+    constexpr DWORD kCornerPreferenceAttribute = 33;
+    constexpr int kDoNotRound = 1;
+    constexpr int kRound = 2;
+    const int preference = enabled ? kRound : kDoNotRound;
+    const HRESULT hr = DwmSetWindowAttribute(hwnd, kCornerPreferenceAttribute,
+                                             &preference, sizeof(preference));
+    return SUCCEEDED(hr);
+}
 
 bool setExcludedFromCapture(quintptr windowHandle, bool excluded)
 {
@@ -72,6 +90,7 @@ bool isAutoStartEnabled(const QString& appName)
 bool setExcludedFromCapture(quintptr, bool) { return false; }
 bool setAutoStart(const QString&, const QString&, bool) { return false; }
 bool isAutoStartEnabled(const QString&) { return false; }
+bool setRoundedCorners(quintptr, bool) { return false; }
 
 #endif
 

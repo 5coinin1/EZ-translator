@@ -5,6 +5,7 @@
 #include "ui/components/SecondaryButton.h"
 #include "ui/components/ToggleSwitch.h"
 #include "platform/FramelessWindowHelper.h"
+#include "platform/PlatformUtils.h"
 #include "translation/ModelList.h"
 
 #include <QVBoxLayout>
@@ -239,6 +240,7 @@ SettingsDialog::SettingsDialog(QWidget* parent)
     connect(m_modelDebounce, &QTimer::timeout, this, [this]() { fetchModels(); });
 
     buildUi();
+    EZTranslator::Platform::setRoundedCorners(quintptr(winId()), true);
 }
 
 bool SettingsDialog::nativeEvent(const QByteArray& eventType, void* message, qintptr* result)
